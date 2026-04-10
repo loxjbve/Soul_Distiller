@@ -45,6 +45,31 @@ def delete_project(session: Session, project_id: str) -> None:
     session.execute(delete(Project).where(Project.id == project_id))
 
 
+def delete_project_cascade(session: Session, project_id: str) -> None:
+    run_ids = list(session.scalars(select(AnalysisRun.id).where(AnalysisRun.project_id == project_id)))
+    session_ids = list(session.scalars(select(ChatSession.id).where(ChatSession.project_id == project_id)))
+    draft_ids = list(session.scalars(select(SkillDraft.id).where(SkillDraft.project_id == project_id)))
+    document_ids = list(session.scalars(select(DocumentRecord.id).where(DocumentRecord.project_id == project_id)))
+
+    if run_ids:
+        session.execute(delete(AnalysisEvent).where(AnalysisEvent.run_id.in_(run_ids)))
+        session.execute(delete(AnalysisFacet).where(AnalysisFacet.run_id.in_(run_ids)))
+    if session_ids:
+        session.execute(delete(GeneratedArtifact).where(GeneratedArtifact.session_id.in_(session_ids)))
+        session.execute(delete(ChatTurn).where(ChatTurn.session_id.in_(session_ids)))
+        session.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids)))
+    if draft_ids:
+        session.execute(delete(SkillVersion).where(SkillVersion.draft_id.in_(draft_ids)))
+    session.execute(delete(SkillVersion).where(SkillVersion.project_id == project_id))
+    session.execute(delete(SkillDraft).where(SkillDraft.project_id == project_id))
+    if document_ids:
+        session.execute(delete(TextChunk).where(TextChunk.document_id.in_(document_ids)))
+    session.execute(delete(TextChunk).where(TextChunk.project_id == project_id))
+    session.execute(delete(DocumentRecord).where(DocumentRecord.project_id == project_id))
+    session.execute(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
+    session.execute(delete(Project).where(Project.id == project_id))
+
+
 def create_document(session: Session, **kwargs: Any) -> DocumentRecord:
     document = DocumentRecord(**kwargs)
     session.add(document)

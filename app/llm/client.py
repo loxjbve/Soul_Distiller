@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import BoundedSemaphore, Lock
@@ -32,11 +33,13 @@ class LLMError(Exception):
         raw_text: str | None = None,
         request_url: str | None = None,
         status_code: int | None = None,
+        request_payload: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.raw_text = raw_text
         self.request_url = request_url
         self.status_code = status_code
+        self.request_payload = request_payload
 
 
 def normalize_provider_kind(provider_kind: str | None) -> str:
@@ -109,6 +112,7 @@ class OpenAICompatibleClient:
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
         max_tokens: int = 1400,
+        stream_handler: Callable[[str], None] | None = None,
     ) -> ChatCompletionResult:
         resolved_model = model or self.resolve_model()
         if normalize_api_mode(self.config.api_mode) == "responses":
@@ -120,6 +124,26 @@ class OpenAICompatibleClient:
             }
             if response_format:
                 payload["text"] = {"format": response_format}
+            if stream_handler:
+                stream_payload = {**payload, "stream": True}
+                meta = self._post_stream_text_with_meta(
+                    "/responses",
+                    stream_payload,
+                    timeout=180.0,
+                    stream_handler=stream_handler,
+                    event_parser=self._parse_responses_stream_event,
+                )
+                content = meta["content"]
+                usage = self._extract_usage({"usage": meta.get("usage") or {}}, messages, content)
+                return ChatCompletionResult(
+                    content=content,
+                    model=resolved_model,
+                    usage=usage,
+                    request_url=meta["url"],
+                    request_payload=stream_payload,
+                    raw_response_text=meta["response_text"],
+                    response_id=meta.get("response_id"),
+                )
             data, meta = self._post_json_with_meta("/responses", payload)
             content = self._extract_responses_text(data)
         else:
@@ -131,6 +155,26 @@ class OpenAICompatibleClient:
             }
             if response_format:
                 payload["response_format"] = response_format
+            if stream_handler:
+                stream_payload = {**payload, "stream": True}
+                meta = self._post_stream_text_with_meta(
+                    "/chat/completions",
+                    stream_payload,
+                    timeout=180.0,
+                    stream_handler=stream_handler,
+                    event_parser=self._parse_chat_completions_stream_event,
+                )
+                content = meta["content"]
+                usage = self._extract_usage({"usage": meta.get("usage") or {}}, messages, content)
+                return ChatCompletionResult(
+                    content=content,
+                    model=resolved_model,
+                    usage=usage,
+                    request_url=meta["url"],
+                    request_payload=stream_payload,
+                    raw_response_text=meta["response_text"],
+                    response_id=meta.get("response_id"),
+                )
             data, meta = self._post_json_with_meta("/chat/completions", payload)
             try:
                 content = str(data["choices"][0]["message"]["content"] or "")
@@ -140,6 +184,7 @@ class OpenAICompatibleClient:
                     raw_text=meta["response_text"],
                     request_url=meta["url"],
                     status_code=meta["status_code"],
+                    request_payload=payload,
                 ) from exc
         usage = self._extract_usage(data, messages, content)
         return ChatCompletionResult(
@@ -199,6 +244,7 @@ class OpenAICompatibleClient:
                 raw_text=meta["response_text"],
                 request_url=meta["url"],
                 status_code=meta["status_code"],
+                request_payload=payload,
             ) from exc
         tool_calls = [
             LLMToolCall(
@@ -359,6 +405,44 @@ class OpenAICompatibleClient:
             "total_tokens": prompt_tokens + completion_tokens,
         }
 
+    @staticmethod
+    def _parse_responses_stream_event(event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any] | None]:
+        event_type = str(event.get("type") or "")
+        response = event.get("response") or {}
+        response_id = (
+            str(response.get("id") or "")
+            or str(event.get("response_id") or "")
+            or str(event.get("id") or "")
+            or None
+        )
+        usage = None
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            usage = dict(response["usage"])
+        if event_type == "response.output_text.delta":
+            return str(event.get("delta") or ""), response_id, usage
+        if event_type in {"response.completed", "response.done"}:
+            return "", response_id, usage
+        return "", response_id, usage
+
+    @staticmethod
+    def _parse_chat_completions_stream_event(event: dict[str, Any]) -> tuple[str, str | None, dict[str, Any] | None]:
+        response_id = str(event.get("id") or "") or None
+        usage = dict(event.get("usage") or {}) if isinstance(event.get("usage"), dict) else None
+        choices = event.get("choices") or []
+        if not choices:
+            return "", response_id, usage
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, str):
+            return content, response_id, usage
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("text") or ""))
+            return "".join(parts), response_id, usage
+        return "", response_id, usage
+
     def _url(self, path: str) -> str:
         base = self._resolve_base_url().rstrip("/") + "/"
         return urljoin(base, path.lstrip("/"))
@@ -384,6 +468,122 @@ class OpenAICompatibleClient:
     def _get_json(self, path: str, *, timeout: float = 20.0) -> dict[str, Any]:
         data, _meta = self._get_json_with_meta(path, timeout=timeout)
         return data
+
+    def _post_stream_text_with_meta(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+        stream_handler: Callable[[str], None],
+        event_parser: Callable[[dict[str, Any]], tuple[str, str | None, dict[str, Any] | None]],
+    ) -> dict[str, Any]:
+        url = self._url(path)
+        raw_lines: list[str] = []
+        content_parts: list[str] = []
+        response_id: str | None = None
+        usage: dict[str, Any] = {}
+        try:
+            with _LLM_REQUEST_SEMAPHORE:
+                with httpx.Client(timeout=timeout) as client:
+                    with client.stream("POST", url, headers=self._headers(), json=payload) as response:
+                        if response.is_error:
+                            response_text = response.read().decode("utf-8", errors="replace")
+                            self._append_log(
+                                {
+                                    "timestamp": _utcnow_iso(),
+                                    "method": "POST",
+                                    "url": url,
+                                    "provider_kind": self.config.provider_kind,
+                                    "api_mode": normalize_api_mode(self.config.api_mode),
+                                    "request_body": payload,
+                                    "status_code": response.status_code,
+                                    "response_text": response_text,
+                                    "ok": False,
+                                    "error": f"HTTP {response.status_code}",
+                                    "stream": True,
+                                }
+                            )
+                            raise LLMError(
+                                f"Remote service returned HTTP {response.status_code}.",
+                                raw_text=response_text,
+                                request_url=url,
+                                status_code=response.status_code,
+                                request_payload=payload,
+                            )
+                        for raw_line in response.iter_lines():
+                            line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
+                            if not line:
+                                continue
+                            raw_lines.append(line)
+                            if line.startswith(":"):
+                                continue
+                            if not line.startswith("data:"):
+                                continue
+                            data_text = line[5:].strip()
+                            if not data_text or data_text == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data_text)
+                            except json.JSONDecodeError:
+                                continue
+                            delta, next_response_id, next_usage = event_parser(event)
+                            if delta:
+                                content_parts.append(delta)
+                                stream_handler(delta)
+                            if next_response_id:
+                                response_id = next_response_id
+                            if next_usage:
+                                usage = next_usage
+        except LLMError:
+            raise
+        except Exception as exc:
+            partial_text = "".join(content_parts) or "\n".join(raw_lines) or None
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "response_text": partial_text,
+                    "raw_stream": "\n".join(raw_lines),
+                    "ok": False,
+                    "error": str(exc),
+                    "stream": True,
+                }
+            )
+            raise LLMError(
+                f"Request failed: {exc}",
+                raw_text=partial_text,
+                request_url=url,
+                request_payload=payload,
+            ) from exc
+
+        content = "".join(content_parts)
+        self._append_log(
+            {
+                "timestamp": _utcnow_iso(),
+                "method": "POST",
+                "url": url,
+                "provider_kind": self.config.provider_kind,
+                "api_mode": normalize_api_mode(self.config.api_mode),
+                "request_body": payload,
+                "response_text": content,
+                "raw_stream": "\n".join(raw_lines),
+                "ok": True,
+                "stream": True,
+            }
+        )
+        return {
+            "url": url,
+            "response_text": content,
+            "raw_stream": "\n".join(raw_lines),
+            "content": content,
+            "response_id": response_id,
+            "usage": usage,
+        }
 
     def _post_json_with_meta(
         self,
@@ -411,7 +611,7 @@ class OpenAICompatibleClient:
                     "error": str(exc),
                 }
             )
-            raise LLMError(f"Request failed: {exc}", request_url=url) from exc
+            raise LLMError(f"Request failed: {exc}", request_url=url, request_payload=payload) from exc
 
         if response.is_error:
             self._append_log(
@@ -433,6 +633,7 @@ class OpenAICompatibleClient:
                 raw_text=response_text,
                 request_url=url,
                 status_code=response.status_code,
+                request_payload=payload,
             )
 
         try:
@@ -457,6 +658,7 @@ class OpenAICompatibleClient:
                 raw_text=response_text,
                 request_url=url,
                 status_code=response.status_code,
+                request_payload=payload,
             ) from exc
 
         if not isinstance(data, dict):
@@ -479,6 +681,7 @@ class OpenAICompatibleClient:
                 raw_text=response_text,
                 request_url=url,
                 status_code=response.status_code,
+                request_payload=payload,
             )
 
         self._append_log(

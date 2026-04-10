@@ -30,6 +30,14 @@ class AnalysisTaskRunner:
         future = self.executor.submit(self._execute, run_id)
         self.futures[run_id] = future
 
+    def submit_facet_rerun(self, project_id: str, facet_key: str) -> None:
+        future_key = f"facet:{project_id}:{facet_key}"
+        if self.run_inline:
+            self._execute_facet_rerun(project_id, facet_key)
+            return
+        future = self.executor.submit(self._execute_facet_rerun, project_id, facet_key)
+        self.futures[future_key] = future
+
     def _execute(self, run_id: str) -> None:
         try:
             with self.db.session() as session:
@@ -54,6 +62,27 @@ class AnalysisTaskRunner:
             raise
         finally:
             self.futures.pop(run_id, None)
+
+    def _execute_facet_rerun(self, project_id: str, facet_key: str) -> None:
+        future_key = f"facet:{project_id}:{facet_key}"
+        try:
+            with self.db.session() as session:
+                self.engine.rerun_facet(session, project_id, facet_key)
+        except Exception as exc:
+            with self.db.session() as session:
+                run = repository.get_latest_analysis_run(session, project_id)
+                if run:
+                    repository.add_analysis_event(
+                        session,
+                        run.id,
+                        event_type="facet",
+                        level="error",
+                        message=f"Facet rerun crashed: {exc}",
+                        payload_json={"facet_key": facet_key},
+                    )
+            raise
+        finally:
+            self.futures.pop(future_key, None)
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=True)

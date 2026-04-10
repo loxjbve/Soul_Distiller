@@ -1,4 +1,4 @@
-document.addEventListener("DOMContentLoaded", () => {
+﻿document.addEventListener("DOMContentLoaded", () => {
     const shell = document.querySelector("[data-preprocess-shell]");
     if (!shell) {
         return;
@@ -15,6 +15,7 @@ document.addEventListener("DOMContentLoaded", () => {
         liveAssistantNode: null,
         liveToolDetails: null,
         eventSource: null,
+        isSending: false,
     };
 
     const elements = {
@@ -37,6 +38,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     renderAll();
+    updateComposerState();
     bindEvents();
 
     function bindEvents() {
@@ -53,7 +55,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (!state.currentSession) {
                 return;
             }
-            const nextTitle = window.prompt("输入新的会话标题", state.currentSession.title || "");
+            const nextTitle = window.prompt("杈撳叆鏂扮殑浼氳瘽鏍囬", state.currentSession.title || "");
             if (nextTitle === null) {
                 return;
             }
@@ -67,7 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
 
         elements.deleteSession.addEventListener("click", async () => {
-            if (!state.currentSessionId || !window.confirm("确定删除这个预分析会话吗？")) {
+            if (!state.currentSessionId || !window.confirm("纭畾鍒犻櫎杩欎釜棰勫垎鏋愪細璇濆悧锛?)) {
                 return;
             }
             await fetchJson(`/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}`, {
@@ -96,29 +98,45 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function sendMessage() {
         const message = elements.composer.value.trim();
-        if (!message || !state.currentSessionId) {
+        if (!message || !state.currentSessionId || state.isSending) {
             return;
         }
         closeStream();
-        elements.composer.value = "";
-        hideSuggestions();
-        state.currentSession.turns.push({
+        const optimisticTurn = {
             id: `local-user-${Date.now()}`,
             role: "user",
             content: message,
             trace: {},
             created_at: new Date().toISOString(),
-        });
+        };
+        elements.composer.value = "";
+        hideSuggestions();
+        state.currentSession.turns.push(optimisticTurn);
+        state.isSending = true;
+        updateComposerState();
         renderChat();
-        addContextPill("检索中...");
-        const payload = await fetchJson(
-            `/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}/messages`,
-            {
-                method: "POST",
-                body: JSON.stringify({ message }),
+        addContextPill("妫€绱腑...");
+        try {
+            const payload = await fetchJson(
+                `/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}/messages`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({ message }),
+                }
+            );
+            if (!payload.stream_id) {
+                throw new Error("Missing stream id from server");
             }
-        );
-        openStream(payload.stream_id);
+            openStream(payload.stream_id);
+        } catch (error) {
+            state.currentSession.turns = (state.currentSession.turns || []).filter((turn) => turn.id !== optimisticTurn.id);
+            elements.composer.value = message;
+            addContextPill("send failed");
+            appendLocalError(error instanceof Error ? error.message : "Request failed");
+            state.isSending = false;
+            updateComposerState();
+            renderChat();
+        }
     }
 
     function openStream(streamId) {
@@ -163,13 +181,19 @@ document.addEventListener("DOMContentLoaded", () => {
             closeStream();
             await loadSession(state.currentSessionId);
         });
-        source.addEventListener("error", async (event) => {
+        source.addEventListener("stream_error", async (event) => {
             closeStream();
-            if (event?.data) {
-                addContextPill("执行失败");
-            }
+            const payload = safeParseJson(event.data);
+            appendLocalError(payload?.message || "Execution failed");
+            addContextPill("execution failed");
             await loadSession(state.currentSessionId);
         });
+        source.onerror = () => {
+            if (state.eventSource !== source) {
+                return;
+            }
+            addContextPill("connection interrupted");
+        };
     }
 
     async function loadSession(sessionId) {
@@ -252,14 +276,14 @@ document.addEventListener("DOMContentLoaded", () => {
         if (block.type === "status") {
             const pill = document.createElement("div");
             pill.className = "turn-pill";
-            pill.textContent = block.label || block.message || "处理中";
+            pill.textContent = block.label || block.message || "澶勭悊涓?;
             return pill;
         }
         if (block.type === "artifact") {
             const card = document.createElement("a");
             card.className = "artifact-card";
             card.href = `/api/projects/${state.projectId}/preprocess/artifacts/${block.id}/download`;
-            card.innerHTML = `<strong>${escapeHtml(block.filename || "artifact")}</strong><small>${escapeHtml(block.summary || "生成文件")}</small>`;
+            card.innerHTML = `<strong>${escapeHtml(block.filename || "artifact")}</strong><small>${escapeHtml(block.summary || "鐢熸垚鏂囦欢")}</small>`;
             return card;
         }
         const details = document.createElement("details");
@@ -286,7 +310,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const button = document.createElement("button");
             button.type = "button";
             button.className = "secondary-button top-gap";
-            button.textContent = `插入 ${mention}`;
+            button.textContent = `鎻掑叆 ${mention}`;
             button.addEventListener("click", () => insertMention(mention));
             card.appendChild(button);
             elements.documentList.appendChild(card);
@@ -299,7 +323,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!artifacts.length) {
             const empty = document.createElement("p");
             empty.className = "muted";
-            empty.textContent = "当前会话还没有生成文件。";
+            empty.textContent = "褰撳墠浼氳瘽杩樻病鏈夌敓鎴愭枃浠躲€?;
             elements.artifactList.appendChild(empty);
             return;
         }
@@ -307,7 +331,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const link = document.createElement("a");
             link.className = "artifact-card";
             link.href = artifact.download_url;
-            link.innerHTML = `<strong>${escapeHtml(artifact.filename)}</strong><small>${escapeHtml(artifact.summary || "下载产物")}</small>`;
+            link.innerHTML = `<strong>${escapeHtml(artifact.filename)}</strong><small>${escapeHtml(artifact.summary || "涓嬭浇浜х墿")}</small>`;
             elements.artifactList.appendChild(link);
         });
     }
@@ -391,6 +415,23 @@ document.addEventListener("DOMContentLoaded", () => {
         state.liveAssistantNode = null;
         state.liveAssistantText = "";
         state.liveToolDetails = null;
+        state.isSending = false;
+        updateComposerState();
+    }
+
+    function updateComposerState() {
+        elements.sendButton.disabled = state.isSending;
+        elements.composer.disabled = state.isSending;
+    }
+
+    function appendLocalError(message) {
+        state.currentSession.turns.push({
+            id: `local-error-${Date.now()}`,
+            role: "assistant",
+            content: `Request failed:\n\n${message}`,
+            trace: { blocks: [{ type: "status", label: "execution failed" }] },
+            created_at: new Date().toISOString(),
+        });
     }
 
     function scrollChatToBottom() {
@@ -408,6 +449,14 @@ async function fetchJson(url, options = {}) {
         throw new Error(payload.detail || "Request failed");
     }
     return payload;
+}
+
+function safeParseJson(text) {
+    try {
+        return JSON.parse(text || "null");
+    } catch {
+        return null;
+    }
 }
 
 function normalizeTraceBlocks(trace) {
@@ -554,3 +603,4 @@ function hideSuggestions() {
     popup.hidden = true;
     popup.innerHTML = "";
 }
+

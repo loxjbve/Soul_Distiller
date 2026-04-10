@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import time
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -8,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS
@@ -117,6 +120,13 @@ def project_detail(request: Request, project_id: str, session: SessionDep):
     return templates.TemplateResponse(request=request, name="project_detail.html", context=context)
 
 
+@router.post("/projects/{project_id}/delete")
+def delete_project_form(request: Request, project_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    _delete_project_resources(request, session, project.id)
+    return RedirectResponse(url="/", status_code=303)
+
+
 @router.post("/projects/{project_id}/documents")
 async def upload_documents_form(
     request: Request,
@@ -218,8 +228,11 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
     run = repository.get_active_analysis_run(session, project_id)
     if run:
         raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
-    updated_run = request.app.state.analysis_engine.rerun_facet(session, project_id, facet_key)
-    return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={updated_run.id}", status_code=303)
+    latest_run = repository.get_latest_analysis_run(session, project_id)
+    if not latest_run:
+        raise HTTPException(status_code=404, detail="No analysis run found.")
+    request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
+    return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={latest_run.id}", status_code=303)
 
 
 @router.get("/projects/{project_id}/assets", response_class=HTMLResponse)
@@ -498,6 +511,13 @@ def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
     return {"id": project.id, "name": project.name, "description": project.description}
 
 
+@router.delete("/api/projects/{project_id}")
+def delete_project_api(request: Request, project_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    _delete_project_resources(request, session, project.id)
+    return {"ok": True, "project_id": project.id}
+
+
 @router.post("/api/projects/{project_id}/documents")
 async def upload_documents_api(
     request: Request,
@@ -581,6 +601,50 @@ def get_analysis_api(
     if not run:
         raise HTTPException(status_code=404, detail="No analysis run found.")
     return _serialize_analysis_run(run)
+
+
+@router.get("/api/projects/{project_id}/analysis/stream")
+def stream_analysis_api(request: Request, project_id: str, session: SessionDep, run_id: str | None = Query(default=None)):
+    run = _resolve_run(session, project_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="No analysis run found.")
+
+    def generate():
+        last_snapshot = ""
+        while True:
+            with request.app.state.db.session() as live_session:
+                live_run = _resolve_run(live_session, project_id, run_id or run.id)
+                if not live_run:
+                    break
+                payload = _serialize_analysis_run(live_run)
+            encoded = json.dumps(payload, ensure_ascii=False)
+            if encoded != last_snapshot:
+                last_snapshot = encoded
+                yield _format_sse("snapshot", payload)
+            if payload["status"] not in {"queued", "running"}:
+                yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
+                break
+            time.sleep(0.35)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.post("/api/projects/{project_id}/analysis/{facet_key}/rerun")
+def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: SessionDep):
+    run = repository.get_active_analysis_run(session, project_id)
+    if run:
+        raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+    latest_run = repository.get_latest_analysis_run(session, project_id)
+    if not latest_run:
+        raise HTTPException(status_code=404, detail="No analysis run found.")
+    request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
+    session.expire_all()
+    refreshed = repository.get_analysis_run(session, latest_run.id) or latest_run
+    return _serialize_analysis_run(refreshed)
 
 
 @router.post("/api/projects/{project_id}/assets/generate")
@@ -1057,6 +1121,27 @@ def _delete_document_with_file(document: DocumentRecord) -> None:
         path.unlink()
 
 
+def _delete_project_resources(request: Request, session: Session, project_id: str) -> None:
+    document_paths = [Path(document.storage_path) for document in repository.list_project_documents(session, project_id)]
+    artifact_paths = list(
+        Path(artifact.storage_path)
+        for artifact in session.scalars(select(GeneratedArtifact).where(GeneratedArtifact.project_id == project_id))
+    )
+    repository.delete_project_cascade(session, project_id)
+    config = request.app.state.config
+    for path in document_paths + artifact_paths:
+        if path.exists() and path.is_file():
+            path.unlink(missing_ok=True)
+    for directory in (
+        config.upload_dir / project_id,
+        config.assets_dir / project_id,
+        config.output_dir / project_id,
+        config.skill_dir / project_id,
+    ):
+        if directory.exists():
+            shutil.rmtree(directory, ignore_errors=True)
+
+
 def _serialize_document(document: DocumentRecord) -> dict[str, Any]:
     metadata = document.metadata_json or {}
     return {
@@ -1158,6 +1243,10 @@ def _serialize_preprocess_session_detail(chat_session) -> dict[str, Any]:
         "turns": [_serialize_chat_turn(turn) for turn in turns],
         "artifacts": [_serialize_artifact(artifact) for artifact in artifacts],
     }
+
+
+def _format_sse(event_type: str, payload: dict[str, Any]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _settings_payload(payload: dict[str, Any], *, default_provider: str) -> dict[str, Any]:

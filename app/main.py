@@ -31,7 +31,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     database = Database(config)
     database.create_all()
     retrieval = RetrievalService()
-    analysis_engine = AnalysisEngine(retrieval, llm_log_path=str(config.llm_log_path), use_processes=os.name != "nt")
+    analysis_engine = AnalysisEngine(
+        retrieval,
+        db=database,
+        llm_log_path=str(config.llm_log_path),
+        use_processes=False,
+        facet_max_workers=1,
+    )
     analysis_runner = AnalysisTaskRunner(database, analysis_engine, max_workers=4)
     ingest_service = DocumentIngestService(config)
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))

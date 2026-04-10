@@ -140,7 +140,7 @@ class PreprocessAgentService:
             with self.db.session() as session:
                 self._run_turn(session, state)
         except Exception as exc:
-            self._emit(state, "error", {"message": str(exc)})
+            self._emit(state, "stream_error", {"message": str(exc)})
             with self.db.session() as session:
                 chat_session = repository.get_chat_session(session, state.session_id, session_kind="preprocess")
                 if chat_session:

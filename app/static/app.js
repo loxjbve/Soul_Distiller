@@ -16,10 +16,10 @@ function setupDropUploads() {
         const renderFiles = (files) => {
             list.innerHTML = "";
             if (!files.length) {
-                count.textContent = "未选择文件";
+                count.textContent = "No files selected";
                 return;
             }
-            count.textContent = `已选择 ${files.length} 个文件`;
+            count.textContent = `${files.length} file(s) selected`;
             Array.from(files).forEach((file) => {
                 const pill = document.createElement("span");
                 pill.textContent = file.name;
@@ -65,10 +65,11 @@ function setupAnalysisMonitor() {
     if (!monitor) {
         return;
     }
+
     const bootstrap = document.getElementById("analysis-bootstrap");
     const projectId = monitor.dataset.projectId;
     const runId = monitor.dataset.runId;
-    if (!projectId || !runId || !bootstrap) {
+    if (!bootstrap || !projectId || !runId) {
         return;
     }
 
@@ -78,74 +79,128 @@ function setupAnalysisMonitor() {
     } catch {
         payload = null;
     }
+
     if (payload) {
-        renderAnalysis(payload);
+        renderAnalysis(payload, projectId);
     }
 
-    const poll = async () => {
-        const response = await fetch(`/api/projects/${projectId}/analysis?run_id=${encodeURIComponent(runId)}`);
-        if (!response.ok) {
+    const stream = new EventSource(`/api/projects/${projectId}/analysis/stream?run_id=${encodeURIComponent(runId)}`);
+    let pollId = null;
+
+    stream.addEventListener("snapshot", (event) => {
+        const nextPayload = JSON.parse(event.data);
+        renderAnalysis(nextPayload, projectId);
+        if (!["queued", "running"].includes(nextPayload.status)) {
+            stream.close();
+            stopPolling();
+        }
+    });
+
+    stream.addEventListener("done", () => {
+        stream.close();
+        stopPolling();
+    });
+
+    stream.onerror = () => {
+        if (pollId) {
             return;
         }
-        const nextPayload = await response.json();
-        renderAnalysis(nextPayload);
-        if (!["queued", "running"].includes(nextPayload.status)) {
-            clearInterval(intervalId);
-        }
+        pollId = window.setInterval(async () => {
+            const response = await fetch(`/api/projects/${projectId}/analysis?run_id=${encodeURIComponent(runId)}`);
+            if (!response.ok) {
+                return;
+            }
+            const nextPayload = await response.json();
+            renderAnalysis(nextPayload, projectId);
+            if (!["queued", "running"].includes(nextPayload.status)) {
+                stopPolling();
+            }
+        }, 1500);
     };
 
-    const intervalId = window.setInterval(poll, 2000);
+    function stopPolling() {
+        if (pollId) {
+            clearInterval(pollId);
+            pollId = null;
+        }
+    }
 }
 
-function renderAnalysis(payload) {
-    updateText("analysis-run-title", `分析运行 ${payload.id.slice(0, 8)}`);
+function renderAnalysis(payload, projectId) {
+    updateText("analysis-run-title", `Analysis Run ${payload.id.slice(0, 8)}`);
     updateText("analysis-status-chip", payload.status);
-    updateText("analysis-role-chip", payload.summary.target_role || "未指定角色");
-    updateText("analysis-stage", payload.summary.current_stage || "排队中");
-    updateText("analysis-percent", `${payload.summary.progress_percent || 0}%`);
-    updateText("metric-completed", payload.summary.completed_facets || 0);
-    updateText("metric-failed", payload.summary.failed_facets || 0);
-    updateText("metric-llm-success", payload.summary.llm_successes || 0);
-    updateText("metric-llm-failure", payload.summary.llm_failures || 0);
-    updateText("metric-total-tokens", payload.summary.total_tokens || 0);
-    updateText("metric-current-facet", payload.summary.current_facet || "-");
+    updateText("analysis-role-chip", payload.summary?.target_role || "Not set");
+    updateText("analysis-stage", payload.summary?.current_stage || "Queued");
+    updateText("analysis-percent", `${payload.summary?.progress_percent || 0}%`);
+    updateText("metric-completed", payload.summary?.completed_facets || 0);
+    updateText("metric-failed", payload.summary?.failed_facets || 0);
+    updateText("metric-llm-success", payload.summary?.llm_successes || 0);
+    updateText("metric-llm-failure", payload.summary?.llm_failures || 0);
+    updateText("metric-total-tokens", payload.summary?.total_tokens || 0);
+    updateText("metric-current-facet", payload.summary?.current_facet || "-");
 
     const progressFill = document.getElementById("analysis-progress-fill");
     if (progressFill) {
-        progressFill.style.width = `${payload.summary.progress_percent || 0}%`;
+        progressFill.style.width = `${payload.summary?.progress_percent || 0}%`;
     }
 
     const facetStatusList = document.getElementById("facet-status-list");
     if (facetStatusList) {
-        facetStatusList.innerHTML = payload.facets.map(renderFacetStatusCard).join("");
+        facetStatusList.innerHTML = payload.facets.map((facet) => renderFacetStatusCard(facet, payload.status)).join("");
     }
 
     const eventList = document.getElementById("analysis-events");
     if (eventList) {
         eventList.innerHTML = payload.events.length
             ? payload.events.map(renderEventItem).join("")
-            : `<div class="event-item"><strong>暂无事件</strong><p>任务启动后会在这里持续追加日志。</p></div>`;
+            : `<div class="event-item"><strong>No Events Yet</strong><p>Run logs will appear here when analysis starts.</p></div>`;
     }
 
     const resultList = document.getElementById("analysis-result-list");
     if (resultList) {
-        resultList.innerHTML = payload.facets.map(renderFacetResult).join("");
+        resultList.innerHTML = payload.facets.map((facet) => renderFacetResult(facet, payload.status)).join("");
     }
+
+    document.querySelectorAll("[data-facet-rerun]").forEach((button) => {
+        button.onclick = async () => {
+            button.disabled = true;
+            try {
+                const response = await fetch(
+                    `/api/projects/${projectId}/analysis/${encodeURIComponent(button.dataset.facetRerun)}/rerun`,
+                    {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                    }
+                );
+                if (!response.ok) {
+                    const errorPayload = await response.json().catch(() => ({}));
+                    throw new Error(errorPayload.detail || "Rerun failed");
+                }
+            } catch (error) {
+                window.alert(error instanceof Error ? error.message : "Rerun failed");
+                button.disabled = false;
+            }
+        };
+    });
 }
 
-function renderFacetStatusCard(facet) {
+function renderFacetStatusCard(facet, runStatus) {
     const findings = facet.findings || {};
     const llmLine = findings.llm_called
-        ? `LLM ${findings.llm_success ? "成功" : "失败"} · ${findings.total_tokens || 0} tokens`
-        : "未调用 LLM";
+        ? `LLM ${findings.llm_success ? "ok" : "failed"} · ${findings.total_tokens || 0} tokens`
+        : "LLM not used";
+    const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
     return `
-        <article class="facet-status-card status-${facet.status}">
+        <article class="facet-status-card status-${escapeHtml(facet.status || "pending")}">
             <div class="facet-status-head">
                 <strong>${escapeHtml(findings.label || facet.facet_key)}</strong>
-                <span class="status-pill">${escapeHtml(facet.status)}</span>
+                <span class="status-pill">${escapeHtml(facet.status || "pending")}</span>
             </div>
-            <p>${escapeHtml(findings.summary || "等待结果...")}</p>
+            <p>${escapeHtml(findings.summary || "Waiting for result...")}</p>
             <small>${escapeHtml(llmLine)}</small>
+            <div class="inline-actions top-gap">
+                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>Rerun</button>
+            </div>
         </article>
     `;
 }
@@ -161,14 +216,15 @@ function renderEventItem(event) {
                 <strong>${escapeHtml(event.event_type)}</strong>
                 <span>${formatTime(event.created_at)}</span>
             </div>
-            <p>${escapeHtml(event.message)}</p>
+            <p>${escapeHtml(event.message || "")}</p>
             ${payloadHtml}
         </article>
     `;
 }
 
-function renderFacetResult(facet) {
+function renderFacetResult(facet, runStatus) {
     const findings = facet.findings || {};
+    const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
     const bullets = (findings.bullets || [])
         .map((item) => `<li>${escapeHtml(item)}</li>`)
         .join("");
@@ -176,7 +232,7 @@ function renderFacetResult(facet) {
         .map(
             (item) => `
                 <div class="evidence-block">
-                    <strong>${escapeHtml(item.filename || item.document_title || "证据")}</strong>
+                    <strong>${escapeHtml(item.filename || item.document_title || "Evidence")}</strong>
                     <p class="muted">${escapeHtml(item.reason || "")}</p>
                     <blockquote>${escapeHtml(item.quote || "")}</blockquote>
                 </div>
@@ -187,12 +243,30 @@ function renderFacetResult(facet) {
         .map(
             (item) => `
                 <div class="evidence-block">
-                    <strong>${escapeHtml(item.title || "冲突")}</strong>
+                    <strong>${escapeHtml(item.title || "Conflict")}</strong>
                     <p>${escapeHtml(item.detail || "")}</p>
                 </div>
             `
         )
         .join("");
+    const llmTrace = (findings.llm_request_url || findings.llm_error)
+        ? `
+            <div class="top-gap">
+                <h3>LLM Trace</h3>
+                ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
+                ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+            </div>
+        `
+        : "";
+    const liveTrace = findings.llm_live_text
+        ? `
+            <div class="top-gap">
+                <h3>LLM Live Text</h3>
+                <pre class="trace-box">${escapeHtml(findings.llm_live_text)}</pre>
+            </div>
+        `
+        : "";
+
     return `
         <article class="facet-panel">
             <div class="section-head facet-head">
@@ -201,25 +275,30 @@ function renderFacetResult(facet) {
                     <h2>${escapeHtml(findings.label || facet.facet_key)}</h2>
                 </div>
                 <div class="facet-meta">
-                    <span>状态 ${escapeHtml(facet.status)}</span>
-                    <span>置信度 ${(facet.confidence || 0).toFixed(2)}</span>
-                    <span>${facet.accepted ? "已接受" : "待确认"}</span>
+                    <span>Status ${escapeHtml(facet.status || "pending")}</span>
+                    <span>Confidence ${(facet.confidence || 0).toFixed(2)}</span>
+                    <span>${facet.accepted ? "Accepted" : "Pending"}</span>
                 </div>
             </div>
             <p class="facet-summary">${escapeHtml(findings.summary || "")}</p>
+            <div class="inline-actions">
+                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>Rerun This Facet</button>
+            </div>
             ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
             <div class="facet-grid">
                 <div>
-                    <h3>证据片段</h3>
-                    ${evidence || `<p class="muted">暂无证据。</p>`}
+                    <h3>Evidence</h3>
+                    ${evidence || `<p class="muted">No evidence captured yet.</p>`}
                 </div>
                 <div>
-                    <h3>冲突与备注</h3>
-                    ${conflicts || `<p class="muted">暂无冲突记录。</p>`}
+                    <h3>Notes</h3>
+                    ${conflicts || `<p class="muted">No conflicts recorded.</p>`}
                     ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
                     ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
+                    ${llmTrace}
                 </div>
             </div>
+            ${liveTrace}
         </article>
     `;
 }
@@ -233,12 +312,12 @@ function updateText(id, value) {
 
 function formatTime(value) {
     try {
-        return new Intl.DateTimeFormat("zh-Hant", {
+        return new Intl.DateTimeFormat("zh-CN", {
+            month: "2-digit",
+            day: "2-digit",
             hour: "2-digit",
             minute: "2-digit",
             second: "2-digit",
-            month: "2-digit",
-            day: "2-digit",
         }).format(new Date(value));
     } catch {
         return value;

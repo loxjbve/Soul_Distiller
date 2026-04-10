@@ -154,7 +154,35 @@ def test_analysis_llm_parse_failure_is_logged_and_visible(client, app, monkeypat
             "response_text": json.dumps(api_payload, ensure_ascii=False),
         }
 
+    def fake_post_stream_text_with_meta(self, path, payload, *, timeout, stream_handler, event_parser):
+        del timeout, event_parser
+        content = "this is not valid json, but it is the real model text"
+        stream_handler(content)
+        self._append_log(
+            {
+                "timestamp": "2026-04-10T00:00:00Z",
+                "method": "POST",
+                "url": f"https://example.com/v1{path}",
+                "provider_kind": self.config.provider_kind,
+                "api_mode": self.config.api_mode,
+                "request_body": payload,
+                "response_text": content,
+                "raw_stream": content,
+                "ok": True,
+                "stream": True,
+            }
+        )
+        return {
+            "url": f"https://example.com/v1{path}",
+            "response_text": content,
+            "raw_stream": content,
+            "content": content,
+            "response_id": "resp_debug",
+            "usage": {"input_tokens": 10, "output_tokens": 8, "total_tokens": 18},
+        }
+
     monkeypatch.setattr(OpenAICompatibleClient, "_post_json_with_meta", fake_post_json_with_meta)
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_stream_text_with_meta", fake_post_stream_text_with_meta)
 
     analyze_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -191,6 +219,53 @@ def test_document_delete_removes_record(client, app):
 
     with app.state.db.session() as session:
         assert repository.get_document(session, document_id) is None
+
+
+def test_analysis_stream_and_rerun_api(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Stream Debug"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Persona notes with repeated habits and boundaries."), "text/plain")},
+    )
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Stream the run state."},
+    )
+    run_id = analyze_response.json()["id"]
+
+    stream_response = client.get(f"/api/projects/{project_id}/analysis/stream", params={"run_id": run_id})
+    assert stream_response.status_code == 200
+    assert "event: snapshot" in stream_response.text
+
+    rerun_response = client.post(f"/api/projects/{project_id}/analysis/personality/rerun")
+    assert rerun_response.status_code == 200
+    rerun_payload = rerun_response.json()
+    assert rerun_payload["id"] == run_id
+    assert len(rerun_payload["facets"]) == 10
+
+
+def test_project_delete_cascades_records_and_files(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Delete Me"}).json()
+    project_id = project_payload["id"]
+    upload_response = client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("note.txt", io.BytesIO(b"Delete test content."), "text/plain")},
+    )
+    document_id = upload_response.json()["documents"][0]["id"]
+
+    delete_response = client.delete(f"/api/projects/{project_id}")
+    assert delete_response.status_code == 200
+    assert delete_response.json()["ok"] is True
+
+    with app.state.db.session() as session:
+        assert repository.get_project(session, project_id) is None
+        assert repository.get_document(session, document_id) is None
+
+    assert not (app.state.config.upload_dir / project_id).exists()
+    assert not (app.state.config.assets_dir / project_id).exists()
+    assert not (app.state.config.output_dir / project_id).exists()
 
 
 def test_settings_accept_official_provider_without_base_url(client, app):
