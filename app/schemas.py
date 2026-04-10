@@ -10,6 +10,7 @@ class ServiceConfig:
     api_key: str
     model: str | None = None
     provider_kind: str = "openai-compatible"
+    api_mode: str = "responses"
 
 
 @dataclass(slots=True)
@@ -79,3 +80,20 @@ class ChatCompletionResult:
     content: str
     model: str
     usage: dict[str, int]
+
+
+@dataclass(slots=True)
+class LLMToolCall:
+    id: str
+    name: str
+    arguments_json: str
+    arguments: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ToolRoundResult:
+    content: str
+    model: str
+    usage: dict[str, int]
+    tool_calls: list[LLMToolCall] = field(default_factory=list)
+    provider_response_id: str | None = None

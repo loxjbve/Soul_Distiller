@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS
-from app.llm.client import OpenAICompatibleClient, normalize_provider_kind
-from app.models import AnalysisFacet, AnalysisRun, DocumentRecord
+from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
+from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact
 from app.schemas import ServiceConfig
 from app.storage import repository
 
@@ -24,6 +24,10 @@ PROVIDER_OPTIONS = (
     {"value": "xai", "label": "xAI 官方"},
     {"value": "gemini", "label": "Gemini 官方"},
     {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
+)
+API_MODE_OPTIONS = (
+    {"value": "responses", "label": "Responses API"},
+    {"value": "chat_completions", "label": "Chat Completions API"},
 )
 
 
@@ -46,6 +50,18 @@ class DocumentUpdatePayload(BaseModel):
     title: str | None = None
     source_type: str | None = None
     user_note: str | None = None
+
+
+class PreprocessSessionCreatePayload(BaseModel):
+    title: str | None = None
+
+
+class PreprocessSessionUpdatePayload(BaseModel):
+    title: str | None = None
+
+
+class PreprocessMessagePayload(BaseModel):
+    message: str
 
 
 def get_session(request: Request):
@@ -116,13 +132,7 @@ def update_document_form(
     user_note: Annotated[str | None, Form()] = None,
 ):
     document = _get_project_document(session, project_id, document_id)
-    repository.update_document(
-        session,
-        document,
-        title=title,
-        source_type=source_type,
-        user_note=user_note,
-    )
+    repository.update_document(session, document, title=title, source_type=source_type, user_note=user_note)
     return RedirectResponse(url=f"/projects/{project_id}#document-{document_id}", status_code=303)
 
 
@@ -239,14 +249,7 @@ def save_skill_draft_form(
     draft.json_payload = json.loads(json_payload)
     draft.system_prompt = system_prompt
     draft.notes = notes
-    _persist_skill_files(
-        request,
-        project_id,
-        f"draft_{draft.id}",
-        draft.markdown_text,
-        draft.json_payload,
-        draft.system_prompt,
-    )
+    _persist_skill_files(request, project_id, f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
     return RedirectResponse(url=f"/projects/{project_id}/skill", status_code=303)
 
 
@@ -271,7 +274,7 @@ def publish_skill_form(request: Request, project_id: str, draft_id: str, session
 def playground_page(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     version = repository.get_latest_skill_version(session, project_id)
-    chat_session = repository.get_or_create_chat_session(session, project_id) if version else None
+    chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground") if version else None
     turns = sorted(chat_session.turns, key=lambda item: item.created_at) if chat_session else []
     return templates.TemplateResponse(
         request=request,
@@ -296,6 +299,48 @@ def playground_chat_form(
     return RedirectResponse(url=f"/projects/{project_id}/playground#turn-{payload['assistant_turn_id']}", status_code=303)
 
 
+@router.get("/projects/{project_id}/preprocess", response_class=HTMLResponse)
+def preprocess_page(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    session_id: str | None = Query(default=None),
+    mention: str | None = Query(default=None),
+):
+    context = _project_context(session, project_id)
+    sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
+    if not sessions:
+        sessions = [
+            repository.create_chat_session(
+                session,
+                project_id=project_id,
+                session_kind="preprocess",
+                title="New Preprocess Session",
+            )
+        ]
+    selected_session = sessions[0]
+    if session_id:
+        explicit = repository.get_chat_session(session, session_id, session_kind="preprocess")
+        if explicit and explicit.project_id == project_id:
+            selected_session = explicit
+    bootstrap = {
+        "project": {"id": context["project"].id, "name": context["project"].name},
+        "sessions": [_serialize_chat_session(item) for item in sessions],
+        "selected_session_id": selected_session.id,
+        "selected_session": _serialize_preprocess_session_detail(selected_session),
+        "documents": [_serialize_document(item) for item in context["documents"]],
+        "initial_mention": mention or "",
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="preprocess.html",
+        context={
+            "project": context["project"],
+            "bootstrap": json.dumps(bootstrap, ensure_ascii=False),
+        },
+    )
+
+
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, session: SessionDep):
     chat_setting = repository.get_setting(session, "chat_service")
@@ -310,6 +355,7 @@ def settings_page(request: Request, session: SessionDep):
                 default_provider="openai",
             ),
             "provider_options": PROVIDER_OPTIONS,
+            "api_mode_options": API_MODE_OPTIONS,
         },
     )
 
@@ -318,10 +364,11 @@ def settings_page(request: Request, session: SessionDep):
 def save_service_settings(
     service_name: str,
     session: SessionDep,
-    base_url: Annotated[str | None, Form()] = None,
     api_key: Annotated[str, Form(...)],
+    base_url: Annotated[str | None, Form()] = None,
     model: Annotated[str | None, Form()] = None,
     provider_kind: Annotated[str, Form()] = "openai",
+    api_mode: Annotated[str | None, Form()] = None,
 ):
     if service_name not in {"chat", "embedding"}:
         raise HTTPException(status_code=404, detail="Unknown service.")
@@ -337,6 +384,7 @@ def save_service_settings(
             "api_key": api_key.strip(),
             "model": (model or "").strip(),
             "provider_kind": normalized_provider,
+            "api_mode": normalize_api_mode(api_mode if service_name == "chat" else "responses"),
         },
     )
     return RedirectResponse(url="/settings", status_code=303)
@@ -379,13 +427,7 @@ def update_document_api(
     session: SessionDep,
 ):
     document = _get_project_document(session, project_id, document_id)
-    repository.update_document(
-        session,
-        document,
-        title=payload.title,
-        source_type=payload.source_type,
-        user_note=payload.user_note,
-    )
+    repository.update_document(session, document, title=payload.title, source_type=payload.source_type, user_note=payload.user_note)
     return _serialize_document(document)
 
 
@@ -395,6 +437,19 @@ def delete_document_api(project_id: str, document_id: str, session: SessionDep):
     _delete_document_with_file(document)
     repository.delete_document(session, document)
     return {"ok": True, "document_id": document_id}
+
+
+@router.get("/api/projects/{project_id}/documents/mentions")
+def list_document_mentions_api(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    q: str = Query(default=""),
+):
+    _ensure_project(session, project_id)
+    return {
+        "items": request.app.state.preprocess_service.list_mentions(session, project_id, q, limit=8),
+    }
 
 
 @router.post("/api/projects/{project_id}/analyze")
@@ -458,6 +513,99 @@ def playground_chat_api(request: Request, project_id: str, payload: ChatPayload,
     return _chat_with_persona(request, session, project_id, payload.message, payload.session_id)
 
 
+@router.get("/api/projects/{project_id}/preprocess/sessions")
+def list_preprocess_sessions_api(project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
+    return {"sessions": [_serialize_chat_session(item) for item in sessions]}
+
+
+@router.post("/api/projects/{project_id}/preprocess/sessions")
+def create_preprocess_session_api(project_id: str, payload: PreprocessSessionCreatePayload, session: SessionDep):
+    _ensure_project(session, project_id)
+    chat_session = repository.create_chat_session(
+        session,
+        project_id=project_id,
+        session_kind="preprocess",
+        title=payload.title or "New Preprocess Session",
+    )
+    return _serialize_chat_session(chat_session)
+
+
+@router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}")
+def get_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
+    chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Preprocess session not found.")
+    return _serialize_preprocess_session_detail(chat_session)
+
+
+@router.patch("/api/projects/{project_id}/preprocess/sessions/{session_id}")
+def update_preprocess_session_api(
+    project_id: str,
+    session_id: str,
+    payload: PreprocessSessionUpdatePayload,
+    session: SessionDep,
+):
+    chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Preprocess session not found.")
+    repository.rename_chat_session(session, chat_session, title=payload.title)
+    return _serialize_chat_session(chat_session)
+
+
+@router.delete("/api/projects/{project_id}/preprocess/sessions/{session_id}")
+def delete_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
+    chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Preprocess session not found.")
+    repository.delete_chat_session(session, chat_session)
+    return {"ok": True, "session_id": session_id}
+
+
+@router.post("/api/projects/{project_id}/preprocess/sessions/{session_id}/messages")
+def create_preprocess_message_api(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    payload: PreprocessMessagePayload,
+):
+    try:
+        result = request.app.state.preprocess_service.start_stream(
+            project_id=project_id,
+            session_id=session_id,
+            message=payload.message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
+
+
+@router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
+def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str):
+    del project_id, session_id
+    try:
+        generator = request.app.state.preprocess_service.stream_events(stream_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Stream not found.") from exc
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
+@router.get("/api/projects/{project_id}/preprocess/artifacts/{artifact_id}/download")
+def download_preprocess_artifact_api(project_id: str, artifact_id: str, session: SessionDep):
+    artifact = repository.get_generated_artifact(session, artifact_id)
+    if not artifact or artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    path = Path(artifact.storage_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact file not found.")
+    return FileResponse(path, media_type=artifact.mime_type or "application/octet-stream", filename=artifact.filename)
+
+
 @router.get("/api/settings/models")
 def list_models_api(
     service: Annotated[str, Query(pattern="^(chat|embedding)$")],
@@ -482,12 +630,14 @@ def _project_context(session: Session, project_id: str) -> dict[str, Any]:
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     ready_count = sum(1 for document in documents if document.ingest_status == "ready")
     failed_count = sum(1 for document in documents if document.ingest_status == "failed")
+    preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     return {
         "project": project,
         "documents": documents,
         "latest_run": latest_run,
         "latest_draft": latest_draft,
         "latest_version": latest_version,
+        "preprocess_sessions": preprocess_sessions,
         "stats": {
             "document_count": len(documents),
             "ready_count": ready_count,
@@ -565,14 +715,7 @@ def _generate_skill_draft(request: Request, session: Session, project_id: str):
         system_prompt=bundle.system_prompt,
         notes="Auto-generated draft. Review before publishing.",
     )
-    _persist_skill_files(
-        request,
-        project_id,
-        f"draft_{draft.id}",
-        draft.markdown_text,
-        draft.json_payload,
-        draft.system_prompt,
-    )
+    _persist_skill_files(request, project_id, f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
     return draft
 
 
@@ -589,11 +732,11 @@ def _chat_with_persona(
     chat_config = repository.get_service_config(session, "chat_service")
     embedding_config = repository.get_service_config(session, "embedding_service")
     if session_id:
-        chat_session = repository.get_chat_session(session, session_id)
+        chat_session = repository.get_chat_session(session, session_id, session_kind="playground")
         if not chat_session:
             raise HTTPException(status_code=404, detail="Chat session not found.")
     else:
-        chat_session = repository.get_or_create_chat_session(session, project_id)
+        chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
     history = sorted(chat_session.turns, key=lambda item: item.created_at)
     repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
     hits, retrieval_mode = request.app.state.retrieval.search(
@@ -608,7 +751,7 @@ def _chat_with_persona(
         for hit in hits
     )
     prompt_excerpt = f"SKILL:\n{version.system_prompt[:600]}\n\nEVIDENCE:\n{evidence_block[:1200]}"
-    assistant_reply = _generate_chat_reply(chat_config, version.system_prompt, history, message, evidence_block)
+    assistant_reply, llm_meta = _generate_chat_reply(chat_config, version.system_prompt, history, message, evidence_block)
     trace = {
         "skill_version_id": version.id,
         "skill_version_number": version.version_number,
@@ -625,6 +768,7 @@ def _chat_with_persona(
             for hit in hits
         ],
         "prompt_excerpt": prompt_excerpt,
+        "llm": llm_meta,
     }
     assistant_turn = repository.add_chat_turn(
         session,
@@ -647,33 +791,40 @@ def _generate_chat_reply(
     history: list[Any],
     message: str,
     evidence_block: str,
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     if not config:
         prefix = "当前为无外部 LLM 降级模式。"
         evidence_lines = [line for line in evidence_block.splitlines() if line.strip()]
         evidence_hint = evidence_lines[1] if len(evidence_lines) > 1 else "暂无命中证据。"
         return (
-            f"{prefix}\n\n"
-            f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n"
-            f"本轮检索提示：{evidence_hint}\n\n"
-            f"你刚刚说的是：{message}"
+            (
+                f"{prefix}\n\n"
+                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n"
+                f"本轮检索提示：{evidence_hint}\n\n"
+                f"你刚刚说的是：{message}"
+            ),
+            {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
         )
     client = OpenAICompatibleClient(config)
     messages = [{"role": "system", "content": system_prompt}]
     if evidence_block:
-        messages.append(
-            {
-                "role": "system",
-                "content": f"Retrieved evidence from source documents:\n{evidence_block}",
-            }
-        )
+        messages.append({"role": "system", "content": f"Retrieved evidence from source documents:\n{evidence_block}"})
     for turn in history[-8:]:
         messages.append({"role": turn.role, "content": turn.content})
     messages.append({"role": "user", "content": message})
     try:
-        return client.chat_completion(messages, model=config.model, temperature=0.7, max_tokens=900)
+        result = client.chat_completion_result(messages, model=config.model, temperature=0.7, max_tokens=900)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Chat completion failed: {exc}") from exc
+    return (
+        result.content,
+        {
+            "provider_kind": config.provider_kind,
+            "api_mode": config.api_mode,
+            "model": result.model,
+            "usage": result.usage,
+        },
+    )
 
 
 def _persist_skill_files(
@@ -687,20 +838,13 @@ def _persist_skill_files(
     skill_dir = request.app.state.config.skill_dir / project_id
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / f"{base_name}.md").write_text(markdown_text, encoding="utf-8")
-    (skill_dir / f"{base_name}.json").write_text(
-        json.dumps(json_payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    (skill_dir / f"{base_name}.json").write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (skill_dir / f"{base_name}.prompt.txt").write_text(system_prompt, encoding="utf-8")
 
 
 def _ordered_facets(facets: list[AnalysisFacet]) -> list[AnalysisFacet]:
     order = {facet.key: index for index, facet in enumerate(FACETS)}
     return sorted(facets, key=lambda item: order.get(item.facet_key, 999))
-
-
-def _ordered_events(events: list[Any]) -> list[Any]:
-    return sorted(events, key=lambda item: item.created_at, reverse=True)
 
 
 def _ensure_project(session: Session, project_id: str):
@@ -728,7 +872,7 @@ def _serialize_document(document: DocumentRecord) -> dict[str, Any]:
     return {
         "id": document.id,
         "filename": document.filename,
-        "title": document.title,
+        "title": document.title or document.filename,
         "source_type": document.source_type,
         "status": document.ingest_status,
         "error_message": document.error_message,
@@ -752,7 +896,7 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
                 "payload": event.payload_json or {},
                 "created_at": event.created_at.isoformat(),
             }
-            for event in _ordered_events(run.events)
+            for event in sorted(run.events, key=lambda item: item.created_at, reverse=True)
         ],
         "facets": [
             {
@@ -781,6 +925,49 @@ def _serialize_draft(draft) -> dict[str, Any]:
     }
 
 
+def _serialize_chat_session(chat_session) -> dict[str, Any]:
+    turns = sorted(chat_session.turns, key=lambda item: item.created_at) if getattr(chat_session, "turns", None) else []
+    return {
+        "id": chat_session.id,
+        "session_kind": chat_session.session_kind,
+        "title": chat_session.title or "Untitled Session",
+        "created_at": chat_session.created_at.isoformat() if chat_session.created_at else None,
+        "last_active_at": chat_session.last_active_at.isoformat() if chat_session.last_active_at else None,
+        "turn_count": len(turns),
+    }
+
+
+def _serialize_artifact(artifact: GeneratedArtifact) -> dict[str, Any]:
+    return {
+        "id": artifact.id,
+        "filename": artifact.filename,
+        "summary": artifact.summary,
+        "mime_type": artifact.mime_type,
+        "created_at": artifact.created_at.isoformat(),
+        "download_url": f"/api/projects/{artifact.project_id}/preprocess/artifacts/{artifact.id}/download",
+    }
+
+
+def _serialize_chat_turn(turn) -> dict[str, Any]:
+    return {
+        "id": turn.id,
+        "role": turn.role,
+        "content": turn.content,
+        "trace": turn.trace_json or {},
+        "created_at": turn.created_at.isoformat(),
+    }
+
+
+def _serialize_preprocess_session_detail(chat_session) -> dict[str, Any]:
+    turns = sorted(chat_session.turns, key=lambda item: item.created_at)
+    artifacts = sorted(chat_session.artifacts, key=lambda item: item.created_at, reverse=True)
+    return {
+        **_serialize_chat_session(chat_session),
+        "turns": [_serialize_chat_turn(turn) for turn in turns],
+        "artifacts": [_serialize_artifact(artifact) for artifact in artifacts],
+    }
+
+
 def _settings_payload(payload: dict[str, Any], *, default_provider: str) -> dict[str, Any]:
     normalized = dict(payload)
     provider_kind = normalize_provider_kind(
@@ -790,4 +977,5 @@ def _settings_payload(payload: dict[str, Any], *, default_provider: str) -> dict
     normalized["base_url"] = normalized.get("base_url", "")
     normalized["api_key"] = normalized.get("api_key", "")
     normalized["model"] = normalized.get("model", "")
+    normalized["api_mode"] = normalize_api_mode(normalized.get("api_mode"))
     return normalized

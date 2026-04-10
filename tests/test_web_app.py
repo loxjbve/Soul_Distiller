@@ -25,7 +25,7 @@ def test_end_to_end_project_flow(client, app):
         json={
             "title": "Travel diary",
             "source_type": "journal",
-            "user_note": "这是一组第一人称日记，要优先模拟作者本人。",
+            "user_note": "These entries are written in first person and should imitate the author.",
         },
     )
     assert update_doc_response.status_code == 200
@@ -36,7 +36,7 @@ def test_end_to_end_project_flow(client, app):
         f"/api/projects/{project_id}/analyze",
         json={
             "target_role": "Alice 本人",
-            "analysis_context": "这些文档主要是她的私密日记和旅行随笔，重点模仿第一人称表达。",
+            "analysis_context": "These notes are private journals and travel drafts. Focus on first-person expression.",
         },
     )
     assert analyze_response.status_code == 200
@@ -49,8 +49,7 @@ def test_end_to_end_project_flow(client, app):
     assert analysis_payload["status"] in {"completed", "partial_failed"}
     assert len(analysis_payload["facets"]) == 6
     assert analysis_payload["summary"]["target_role"] == "Alice 本人"
-    assert "第一人称表达" in analysis_payload["summary"]["analysis_context"]
-    assert "events" in analysis_payload
+    assert "first-person" in analysis_payload["summary"]["analysis_context"]
     assert analysis_payload["events"]
 
     skill_response = client.post(f"/api/projects/{project_id}/skills/generate")
@@ -104,6 +103,7 @@ def test_settings_accept_official_provider_without_base_url(client, app):
             "base_url": "",
             "api_key": "sk-test",
             "model": "gpt-4.1-mini",
+            "api_mode": "responses",
         },
         follow_redirects=False,
     )
@@ -115,6 +115,7 @@ def test_settings_accept_official_provider_without_base_url(client, app):
         assert config.provider_kind == "openai"
         assert config.base_url is None
         assert config.model == "gpt-4.1-mini"
+        assert config.api_mode == "responses"
 
 
 def test_custom_provider_requires_base_url(client):
@@ -125,6 +126,7 @@ def test_custom_provider_requires_base_url(client):
             "base_url": "",
             "api_key": "sk-test",
             "model": "demo-model",
+            "api_mode": "chat_completions",
         },
         follow_redirects=False,
     )

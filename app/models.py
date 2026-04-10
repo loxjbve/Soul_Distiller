@@ -37,6 +37,7 @@ class Project(Base, TimestampMixin):
     skill_drafts: Mapped[list["SkillDraft"]] = relationship(back_populates="project")
     skill_versions: Mapped[list["SkillVersion"]] = relationship(back_populates="project")
     chat_sessions: Mapped[list["ChatSession"]] = relationship(back_populates="project")
+    generated_artifacts: Mapped[list["GeneratedArtifact"]] = relationship(back_populates="project")
 
 
 class DocumentRecord(Base, TimestampMixin):
@@ -168,10 +169,14 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    session_kind: Mapped[str] = mapped_column(String(32), default="playground", index=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_active_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     project: Mapped[Project] = relationship(back_populates="chat_sessions")
     turns: Mapped[list["ChatTurn"]] = relationship(back_populates="session")
+    artifacts: Mapped[list["GeneratedArtifact"]] = relationship(back_populates="session")
 
 
 class ChatTurn(Base):
@@ -185,6 +190,25 @@ class ChatTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     session: Mapped[ChatSession] = relationship(back_populates="turns")
+    artifacts: Mapped[list["GeneratedArtifact"]] = relationship(back_populates="turn")
+
+
+class GeneratedArtifact(Base):
+    __tablename__ = "generated_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("chat_sessions.id"), index=True)
+    turn_id: Mapped[str | None] = mapped_column(ForeignKey("chat_turns.id"), index=True, nullable=True)
+    filename: Mapped[str] = mapped_column(String(512))
+    mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    storage_path: Mapped[str] = mapped_column(String(1024))
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    project: Mapped[Project] = relationship(back_populates="generated_artifacts")
+    session: Mapped[ChatSession] = relationship(back_populates="artifacts")
+    turn: Mapped[ChatTurn | None] = relationship(back_populates="artifacts")
 
 
 class AppSetting(Base, TimestampMixin):

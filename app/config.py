@@ -21,6 +21,10 @@ class AppConfig:
         return self.data_dir / "skills"
 
     @property
+    def output_dir(self) -> Path:
+        return self.data_dir / "outputs"
+
+    @property
     def db_path(self) -> Path:
         return self.data_dir / "app.db"
 
@@ -32,6 +36,7 @@ class AppConfig:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.skill_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
 
 def default_config() -> AppConfig:

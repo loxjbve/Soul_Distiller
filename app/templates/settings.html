@@ -6,8 +6,8 @@
         <p class="eyebrow">Settings</p>
         <h1>LLM 与 Embedding 服务</h1>
         <p class="hero-note">
-            支持 `OpenAI`、`xAI`、`Gemini` 官方入口，也支持自定义 OpenAI Compatible 服务。
-            选择官方 provider 时，留空 `Base URL` 即会自动使用官方地址。
+            支持 OpenAI、xAI、Gemini 官方入口，也支持自定义 OpenAI Compatible 服务。
+            Chat LLM 额外支持选择 `Responses` 或 `Chat Completions` 作为调用模式。
         </p>
     </div>
 </section>
@@ -26,6 +26,14 @@
                 <select name="provider_kind" data-provider-select>
                     {% for option in provider_options %}
                         <option value="{{ option.value }}" {% if chat_setting.get('provider_kind') == option.value %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>API Mode</span>
+                <select name="api_mode">
+                    {% for option in api_mode_options %}
+                        <option value="{{ option.value }}" {% if chat_setting.get('api_mode') == option.value %}selected{% endif %}>{{ option.label }}</option>
                     {% endfor %}
                 </select>
             </label>
@@ -96,57 +104,59 @@
                 <button type="button" class="secondary-button" onclick="discoverModels('embedding', 'embedding-models')">发现模型</button>
             </div>
         </form>
-        <pre class="trace-box" id="embedding-models">不配置 embedding 时，系统会自动降级为词法检索。</pre>
+        <pre class="trace-box" id="embedding-models">未配置 embedding 时，系统会自动降级为词法检索。</pre>
     </article>
 </section>
+{% endblock %}
 
+{% block extra_scripts %}
 <script>
 const PROVIDER_PRESETS = {
     openai: {
         requiresBaseUrl: false,
-        hint: '将自动使用 https://api.openai.com/v1',
-        placeholder: '留空则自动使用 OpenAI 官方入口',
+        hint: "将自动使用 https://api.openai.com/v1",
+        placeholder: "留空则自动使用 OpenAI 官方入口",
     },
     xai: {
         requiresBaseUrl: false,
-        hint: '将自动使用 https://api.x.ai/v1',
-        placeholder: '留空则自动使用 xAI 官方入口',
+        hint: "将自动使用 https://api.x.ai/v1",
+        placeholder: "留空则自动使用 xAI 官方入口",
     },
     gemini: {
         requiresBaseUrl: false,
-        hint: '将自动使用 https://generativelanguage.googleapis.com/v1beta/openai',
-        placeholder: '留空则自动使用 Gemini 官方 OpenAI 兼容入口',
+        hint: "将自动使用 https://generativelanguage.googleapis.com/v1beta/openai",
+        placeholder: "留空则自动使用 Gemini 官方 OpenAI 兼容入口",
     },
-    'openai-compatible': {
+    "openai-compatible": {
         requiresBaseUrl: true,
-        hint: '自定义 OpenAI Compatible 服务必须填写 Base URL。',
-        placeholder: '例如 https://api.example.com/v1',
+        hint: "自定义 OpenAI Compatible 服务必须填写 Base URL。",
+        placeholder: "例如 https://api.example.com/v1",
     },
 };
 
 function applyProviderPreset(form) {
-    const select = form.querySelector('[data-provider-select]');
-    const baseUrlInput = form.querySelector('[data-base-url]');
-    const hint = form.querySelector('[data-base-hint]');
-    const preset = PROVIDER_PRESETS[select.value] || PROVIDER_PRESETS['openai-compatible'];
+    const select = form.querySelector("[data-provider-select]");
+    const baseUrlInput = form.querySelector("[data-base-url]");
+    const hint = form.querySelector("[data-base-hint]");
+    const preset = PROVIDER_PRESETS[select.value] || PROVIDER_PRESETS["openai-compatible"];
     baseUrlInput.required = preset.requiresBaseUrl;
     baseUrlInput.placeholder = preset.placeholder;
     hint.textContent = preset.hint;
 }
 
-document.querySelectorAll('[data-provider-form]').forEach((form) => {
-    const select = form.querySelector('[data-provider-select]');
-    select.addEventListener('change', () => applyProviderPreset(form));
+document.querySelectorAll("[data-provider-form]").forEach((form) => {
+    const select = form.querySelector("[data-provider-select]");
+    select.addEventListener("change", () => applyProviderPreset(form));
     applyProviderPreset(form);
 });
 
 async function discoverModels(service, targetId) {
     const target = document.getElementById(targetId);
-    target.textContent = 'Loading...';
+    target.textContent = "Loading...";
     const response = await fetch(`/api/settings/models?service=${service}`);
     const payload = await response.json();
     if (!response.ok) {
-        target.textContent = payload.detail || 'Request failed';
+        target.textContent = payload.detail || "Request failed";
         return;
     }
     target.textContent = JSON.stringify(payload.models, null, 2);

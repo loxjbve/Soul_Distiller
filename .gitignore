@@ -1,4 +1,7 @@
 .pytest_cache/
+.pytest-tmp/
+.test-workspaces/
+pytest-cache-files-*/
 .venv/
 __pycache__/
 *.pyc

@@ -19,12 +19,14 @@
             {% else %}
                 <span>未发布</span>
             {% endif %}
+            <span>{{ preprocess_sessions|length }} 个预分析会话</span>
         </div>
     </div>
     <div class="project-hero-actions">
         <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">分析结果</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/skill">Skill 草稿</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/preprocess">预分析工作区</a>
     </div>
 </section>
 
@@ -104,6 +106,10 @@
                 <span>Skill 草稿</span>
                 <strong>{{ "已生成" if latest_draft else "无" }}</strong>
             </div>
+            <div class="status-row">
+                <span>预分析会话</span>
+                <strong>{{ preprocess_sessions|length }}</strong>
+            </div>
         </div>
     </aside>
 </section>
@@ -136,6 +142,9 @@
                     {% endif %}
 
                     <p class="muted">{{ (document.metadata_json or {}).get("user_note", "尚未添加备注") }}</p>
+                    <div class="inline-actions top-gap">
+                        <a class="secondary-button" href="/projects/{{ project.id }}/preprocess?mention=@&quot;{{ document.filename }}&quot;">在预分析里打开</a>
+                    </div>
 
                     <details class="document-editor">
                         <summary>管理这份文档</summary>

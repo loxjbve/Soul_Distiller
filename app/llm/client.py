@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from app.schemas import ChatCompletionResult, ServiceConfig
+from app.schemas import ChatCompletionResult, LLMToolCall, ServiceConfig, ToolRoundResult
 from app.utils.text import token_count
 
 OFFICIAL_PROVIDER_BASE_URLS = {
@@ -29,18 +29,29 @@ def normalize_provider_kind(provider_kind: str | None) -> str:
     return aliases.get(provider, provider)
 
 
+def normalize_api_mode(api_mode: str | None) -> str:
+    mode = (api_mode or "responses").strip().lower()
+    aliases = {
+        "response": "responses",
+        "response_api": "responses",
+        "chat": "chat_completions",
+        "chat_completion": "chat_completions",
+        "chat-completions": "chat_completions",
+    }
+    normalized = aliases.get(mode, mode)
+    if normalized not in {"responses", "chat_completions"}:
+        return "responses"
+    return normalized
+
+
 class OpenAICompatibleClient:
     def __init__(self, config: ServiceConfig) -> None:
         self.config = config
 
     def list_models(self) -> list[str]:
-        with httpx.Client(timeout=20.0) as client:
-            response = client.get(self._url("/models"), headers=self._headers())
-            response.raise_for_status()
-            payload = response.json()
+        payload = self._get_json("/models", timeout=20.0)
         data = payload.get("data", [])
         return [item["id"] for item in data if item.get("id")]
-
 
     def resolve_model(self) -> str:
         if self.config.model:
@@ -49,7 +60,6 @@ class OpenAICompatibleClient:
         if not models:
             raise LLMError("No models discovered from the configured service.")
         return models[0]
-
 
     def chat_completion(
         self,
@@ -78,63 +88,108 @@ class OpenAICompatibleClient:
         max_tokens: int = 1400,
     ) -> ChatCompletionResult:
         resolved_model = model or self.resolve_model()
-        payload: dict[str, Any] = {
-            "model": resolved_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if response_format:
-            payload["response_format"] = response_format
-        with httpx.Client(timeout=90.0) as client:
-            response = client.post(
-                self._url("/chat/completions"),
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-        try:
-            content = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError("Invalid chat completion response structure.") from exc
-        usage = data.get("usage") or {}
-        if not usage:
-            prompt_text = "\n".join(str(message.get("content", "")) for message in messages)
-            prompt_tokens = token_count(prompt_text)
-            completion_tokens = token_count(content)
-            usage = {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
+        if normalize_api_mode(self.config.api_mode) == "responses":
+            payload: dict[str, Any] = {
+                "model": resolved_model,
+                "input": self._messages_to_responses_input(messages),
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
             }
+            if response_format:
+                payload["text"] = {"format": response_format}
+            data = self._post_json("/responses", payload)
+            content = self._extract_responses_text(data)
+        else:
+            payload = {
+                "model": resolved_model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if response_format:
+                payload["response_format"] = response_format
+            data = self._post_json("/chat/completions", payload)
+            try:
+                content = str(data["choices"][0]["message"]["content"] or "")
+            except (KeyError, IndexError, TypeError) as exc:
+                raise LLMError("Invalid chat completion response structure.") from exc
+        usage = self._extract_usage(data, messages, content)
         return ChatCompletionResult(
             content=content,
             model=str(data.get("model") or resolved_model),
-            usage={
-                "prompt_tokens": int(usage.get("prompt_tokens", 0)),
-                "completion_tokens": int(usage.get("completion_tokens", 0)),
-                "total_tokens": int(usage.get("total_tokens", 0)),
-            },
+            usage=usage,
         )
 
+    def tool_round(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1400,
+    ) -> ToolRoundResult:
+        resolved_model = model or self.resolve_model()
+        if normalize_api_mode(self.config.api_mode) == "responses":
+            payload = {
+                "model": resolved_model,
+                "input": self._messages_to_responses_input(messages),
+                "tools": [self._chat_tool_to_responses_tool(tool) for tool in tools],
+                "tool_choice": "auto",
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            data = self._post_json("/responses", payload)
+            tool_calls = self._extract_responses_tool_calls(data)
+            content = self._extract_responses_text(data)
+            usage = self._extract_usage(data, messages, content)
+            return ToolRoundResult(
+                content=content,
+                model=str(data.get("model") or resolved_model),
+                usage=usage,
+                tool_calls=tool_calls,
+                provider_response_id=data.get("id"),
+            )
+        payload = {
+            "model": resolved_model,
+            "messages": self._messages_to_chat_completions(messages),
+            "tools": tools,
+            "tool_choice": "auto",
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = self._post_json("/chat/completions", payload)
+        try:
+            message = data["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError("Invalid tool completion response structure.") from exc
+        tool_calls = [
+            LLMToolCall(
+                id=str(item.get("id") or ""),
+                name=str(item.get("function", {}).get("name") or ""),
+                arguments_json=str(item.get("function", {}).get("arguments") or "{}"),
+                arguments=parse_json_response(str(item.get("function", {}).get("arguments") or "{}")),
+            )
+            for item in (message.get("tool_calls") or [])
+        ]
+        content = str(message.get("content") or "")
+        usage = self._extract_usage(data, messages, content)
+        return ToolRoundResult(
+            content=content,
+            model=str(data.get("model") or resolved_model),
+            usage=usage,
+            tool_calls=tool_calls,
+            provider_response_id=data.get("id"),
+        )
 
     def embeddings(self, inputs: list[str], *, model: str | None = None) -> list[list[float]]:
         payload = {"model": model or self.resolve_model(), "input": inputs}
-        with httpx.Client(timeout=90.0) as client:
-            response = client.post(
-                self._url("/embeddings"),
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = self._post_json("/embeddings", payload)
         try:
             ordered = sorted(data["data"], key=lambda item: item["index"])
             return [list(item["embedding"]) for item in ordered]
         except (KeyError, TypeError) as exc:
             raise LLMError("Invalid embeddings response structure.") from exc
-
 
     def validate(self) -> dict[str, Any]:
         try:
@@ -143,6 +198,129 @@ class OpenAICompatibleClient:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    def _messages_to_responses_input(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "user")
+            tool_calls = list(message.get("tool_calls") or [])
+            content = message.get("content")
+            if role == "tool":
+                items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(message.get("tool_call_id") or ""),
+                        "output": str(content or ""),
+                    }
+                )
+                continue
+            if content:
+                items.append({"role": role, "content": str(content)})
+            for tool_call in tool_calls:
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": str(tool_call.get("id") or ""),
+                        "name": str(tool_call.get("name") or ""),
+                        "arguments": str(tool_call.get("arguments_json") or "{}"),
+                    }
+                )
+        return items
+
+    def _messages_to_chat_completions(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "user")
+            if role == "tool":
+                normalized.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(message.get("tool_call_id") or ""),
+                        "content": str(message.get("content") or ""),
+                    }
+                )
+                continue
+            item: dict[str, Any] = {
+                "role": role,
+                "content": str(message.get("content") or ""),
+            }
+            tool_calls = list(message.get("tool_calls") or [])
+            if tool_calls:
+                item["tool_calls"] = [
+                    {
+                        "id": str(tool_call.get("id") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": str(tool_call.get("name") or ""),
+                            "arguments": str(tool_call.get("arguments_json") or "{}"),
+                        },
+                    }
+                    for tool_call in tool_calls
+                ]
+            normalized.append(item)
+        return normalized
+
+    @staticmethod
+    def _chat_tool_to_responses_tool(tool: dict[str, Any]) -> dict[str, Any]:
+        function = dict(tool.get("function") or {})
+        return {
+            "type": "function",
+            "name": function.get("name"),
+            "description": function.get("description"),
+            "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+        }
+
+    @staticmethod
+    def _extract_responses_text(data: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for item in data.get("output", []):
+            if item.get("type") != "message":
+                continue
+            for content_item in item.get("content", []):
+                if content_item.get("type") == "output_text":
+                    parts.append(str(content_item.get("text") or ""))
+        return "".join(parts).strip()
+
+    @staticmethod
+    def _extract_responses_tool_calls(data: dict[str, Any]) -> list[LLMToolCall]:
+        tool_calls: list[LLMToolCall] = []
+        for item in data.get("output", []):
+            if item.get("type") != "function_call":
+                continue
+            arguments_json = str(item.get("arguments") or "{}")
+            tool_calls.append(
+                LLMToolCall(
+                    id=str(item.get("call_id") or item.get("id") or ""),
+                    name=str(item.get("name") or ""),
+                    arguments_json=arguments_json,
+                    arguments=parse_json_response(arguments_json),
+                )
+            )
+        return tool_calls
+
+    @staticmethod
+    def _extract_usage(
+        data: dict[str, Any],
+        messages: list[dict[str, Any]],
+        content: str,
+    ) -> dict[str, int]:
+        usage = data.get("usage") or {}
+        input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+        output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+        total_tokens = usage.get("total_tokens", 0)
+        if input_tokens or output_tokens or total_tokens:
+            return {
+                "prompt_tokens": int(input_tokens),
+                "completion_tokens": int(output_tokens),
+                "total_tokens": int(total_tokens or (int(input_tokens) + int(output_tokens))),
+            }
+        prompt_text = "\n".join(str(message.get("content", "")) for message in messages)
+        prompt_tokens = token_count(prompt_text)
+        completion_tokens = token_count(content)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }
 
     def _url(self, path: str) -> str:
         base = self._resolve_base_url().rstrip("/") + "/"
@@ -156,12 +334,33 @@ class OpenAICompatibleClient:
             return OFFICIAL_PROVIDER_BASE_URLS[provider]
         raise LLMError("Base URL is required for custom OpenAI-compatible providers.")
 
-
     def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
+
+    def _post_json(self, path: str, payload: dict[str, Any], *, timeout: float = 90.0) -> dict[str, Any]:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(
+                self._url(path),
+                headers=self._headers(),
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+        if not isinstance(data, dict):
+            raise LLMError("Invalid JSON response from remote service.")
+        return data
+
+    def _get_json(self, path: str, *, timeout: float = 20.0) -> dict[str, Any]:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(self._url(path), headers=self._headers())
+            response.raise_for_status()
+            data = response.json()
+        if not isinstance(data, dict):
+            raise LLMError("Invalid JSON response from remote service.")
+        return data
 
 
 def parse_json_response(text: str) -> dict[str, Any]:

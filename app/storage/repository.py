@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.llm.client import normalize_provider_kind
+from app.llm.client import normalize_api_mode, normalize_provider_kind
 from app.models import (
     AnalysisFacet,
     AnalysisEvent,
@@ -14,10 +14,12 @@ from app.models import (
     ChatSession,
     ChatTurn,
     DocumentRecord,
+    GeneratedArtifact,
     Project,
     SkillDraft,
     SkillVersion,
     TextChunk,
+    utcnow,
 )
 from app.schemas import ServiceConfig
 
@@ -66,6 +68,41 @@ def list_project_documents(session: Session, project_id: str) -> list[DocumentRe
         select(DocumentRecord)
         .where(DocumentRecord.project_id == project_id)
         .order_by(desc(DocumentRecord.created_at))
+    )
+    return list(session.scalars(stmt))
+
+
+def list_project_documents_by_ids(
+    session: Session,
+    project_id: str,
+    document_ids: list[str],
+) -> list[DocumentRecord]:
+    if not document_ids:
+        return []
+    stmt = (
+        select(DocumentRecord)
+        .where(
+            DocumentRecord.project_id == project_id,
+            DocumentRecord.id.in_(document_ids),
+        )
+        .order_by(desc(DocumentRecord.created_at))
+    )
+    return list(session.scalars(stmt))
+
+
+def search_project_documents(session: Session, project_id: str, query: str, *, limit: int = 8) -> list[DocumentRecord]:
+    needle = f"%{query.strip()}%"
+    stmt = (
+        select(DocumentRecord)
+        .where(
+            DocumentRecord.project_id == project_id,
+            or_(
+                DocumentRecord.filename.ilike(needle),
+                DocumentRecord.title.ilike(needle),
+            ),
+        )
+        .order_by(desc(DocumentRecord.created_at))
+        .limit(limit)
     )
     return list(session.scalars(stmt))
 
@@ -153,10 +190,7 @@ def list_analysis_runs(session: Session, project_id: str) -> list[AnalysisRun]:
 
 
 def get_facet(session: Session, run_id: str, facet_key: str) -> AnalysisFacet | None:
-    stmt = (
-        select(AnalysisFacet)
-        .where(AnalysisFacet.run_id == run_id, AnalysisFacet.facet_key == facet_key)
-    )
+    stmt = select(AnalysisFacet).where(AnalysisFacet.run_id == run_id, AnalysisFacet.facet_key == facet_key)
     return session.scalar(stmt)
 
 
@@ -231,11 +265,7 @@ def create_skill_draft(
 
 
 def get_latest_skill_draft(session: Session, project_id: str) -> SkillDraft | None:
-    stmt = (
-        select(SkillDraft)
-        .where(SkillDraft.project_id == project_id)
-        .order_by(desc(SkillDraft.created_at))
-    )
+    stmt = select(SkillDraft).where(SkillDraft.project_id == project_id).order_by(desc(SkillDraft.created_at))
     return session.scalars(stmt).first()
 
 
@@ -278,20 +308,67 @@ def publish_skill_draft(session: Session, project_id: str, draft: SkillDraft) ->
     return version
 
 
-def get_or_create_chat_session(session: Session, project_id: str) -> ChatSession:
+def create_chat_session(
+    session: Session,
+    *,
+    project_id: str,
+    session_kind: str,
+    title: str | None = None,
+) -> ChatSession:
+    chat_session = ChatSession(
+        project_id=project_id,
+        session_kind=session_kind,
+        title=(title or "").strip() or None,
+        last_active_at=utcnow(),
+    )
+    session.add(chat_session)
+    session.flush()
+    return chat_session
+
+
+def list_chat_sessions(session: Session, project_id: str, *, session_kind: str) -> list[ChatSession]:
     stmt = (
         select(ChatSession)
-        .where(ChatSession.project_id == project_id)
-        .options(selectinload(ChatSession.turns))
-        .order_by(desc(ChatSession.created_at))
+        .where(ChatSession.project_id == project_id, ChatSession.session_kind == session_kind)
+        .order_by(desc(ChatSession.last_active_at), desc(ChatSession.created_at))
+    )
+    return list(session.scalars(stmt))
+
+
+def get_or_create_chat_session(session: Session, project_id: str, *, session_kind: str = "playground") -> ChatSession:
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.project_id == project_id, ChatSession.session_kind == session_kind)
+        .options(selectinload(ChatSession.turns), selectinload(ChatSession.artifacts))
+        .order_by(desc(ChatSession.last_active_at), desc(ChatSession.created_at))
     )
     chat_session = session.scalars(stmt).first()
     if chat_session:
         return chat_session
-    chat_session = ChatSession(project_id=project_id)
-    session.add(chat_session)
+    return create_chat_session(session, project_id=project_id, session_kind=session_kind)
+
+
+def get_chat_session(session: Session, session_id: str, *, session_kind: str | None = None) -> ChatSession | None:
+    stmt = (
+        select(ChatSession)
+        .where(ChatSession.id == session_id)
+        .options(selectinload(ChatSession.turns), selectinload(ChatSession.artifacts))
+    )
+    if session_kind:
+        stmt = stmt.where(ChatSession.session_kind == session_kind)
+    return session.scalar(stmt)
+
+
+def rename_chat_session(session: Session, chat_session: ChatSession, *, title: str | None) -> ChatSession:
+    chat_session.title = (title or "").strip() or None
     session.flush()
     return chat_session
+
+
+def delete_chat_session(session: Session, chat_session: ChatSession) -> None:
+    session.execute(delete(GeneratedArtifact).where(GeneratedArtifact.session_id == chat_session.id))
+    session.execute(delete(ChatTurn).where(ChatTurn.session_id == chat_session.id))
+    session.execute(delete(ChatSession).where(ChatSession.id == chat_session.id))
 
 
 def add_chat_turn(
@@ -302,19 +379,70 @@ def add_chat_turn(
     content: str,
     trace_json: dict[str, Any] | None = None,
 ) -> ChatTurn:
+    chat_session = get_chat_session(session, session_id)
+    if chat_session:
+        chat_session.last_active_at = utcnow()
     turn = ChatTurn(session_id=session_id, role=role, content=content, trace_json=trace_json)
     session.add(turn)
     session.flush()
     return turn
 
 
-def get_chat_session(session: Session, session_id: str) -> ChatSession | None:
-    stmt = (
-        select(ChatSession)
-        .where(ChatSession.id == session_id)
-        .options(selectinload(ChatSession.turns))
+def list_chat_turns(session: Session, session_id: str) -> list[ChatTurn]:
+    stmt = select(ChatTurn).where(ChatTurn.session_id == session_id).order_by(ChatTurn.created_at)
+    return list(session.scalars(stmt))
+
+
+def create_generated_artifact(
+    session: Session,
+    *,
+    project_id: str,
+    session_id: str,
+    turn_id: str | None,
+    filename: str,
+    mime_type: str | None,
+    storage_path: str,
+    summary: str | None = None,
+) -> GeneratedArtifact:
+    artifact = GeneratedArtifact(
+        project_id=project_id,
+        session_id=session_id,
+        turn_id=turn_id,
+        filename=filename,
+        mime_type=mime_type,
+        storage_path=storage_path,
+        summary=summary,
     )
+    session.add(artifact)
+    session.flush()
+    return artifact
+
+
+def list_session_artifacts(session: Session, session_id: str, *, limit: int | None = None) -> list[GeneratedArtifact]:
+    stmt = (
+        select(GeneratedArtifact)
+        .where(GeneratedArtifact.session_id == session_id)
+        .order_by(desc(GeneratedArtifact.created_at))
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_generated_artifact(session: Session, artifact_id: str) -> GeneratedArtifact | None:
+    stmt = select(GeneratedArtifact).where(GeneratedArtifact.id == artifact_id)
     return session.scalar(stmt)
+
+
+def attach_artifacts_to_turn(session: Session, artifact_ids: list[str], *, turn_id: str) -> None:
+    if not artifact_ids:
+        return
+    artifacts = list(
+        session.scalars(select(GeneratedArtifact).where(GeneratedArtifact.id.in_(artifact_ids)))
+    )
+    for artifact in artifacts:
+        artifact.turn_id = turn_id
+    session.flush()
 
 
 def upsert_setting(session: Session, key: str, value_json: dict[str, Any]) -> AppSetting:
@@ -349,6 +477,7 @@ def get_service_config(session: Session, key: str) -> ServiceConfig | None:
     return ServiceConfig(
         base_url=base_url,
         api_key=api_key,
-        model=payload.get("model") or None,
+        model=(payload.get("model") or "").strip() or None,
         provider_kind=provider_kind,
+        api_mode=normalize_api_mode(payload.get("api_mode")),
     )
