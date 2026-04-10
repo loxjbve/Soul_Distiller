@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
+from threading import BoundedSemaphore, Lock
 from typing import Any
 from urllib.parse import urljoin
 
@@ -14,10 +17,26 @@ OFFICIAL_PROVIDER_BASE_URLS = {
     "xai": "https://api.x.ai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
 }
+MAX_CONCURRENT_LLM_REQUESTS = 4
+_LLM_REQUEST_SEMAPHORE = BoundedSemaphore(MAX_CONCURRENT_LLM_REQUESTS)
+_LLM_LOG_LOCK = Lock()
 
 
 class LLMError(Exception):
     """Raised when the remote LLM service returns an invalid response."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_text: str | None = None,
+        request_url: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+        self.request_url = request_url
+        self.status_code = status_code
 
 
 def normalize_provider_kind(provider_kind: str | None) -> str:
@@ -45,8 +64,9 @@ def normalize_api_mode(api_mode: str | None) -> str:
 
 
 class OpenAICompatibleClient:
-    def __init__(self, config: ServiceConfig) -> None:
+    def __init__(self, config: ServiceConfig, *, log_path: str | None = None) -> None:
         self.config = config
+        self.log_path = Path(log_path) if log_path else None
 
     def list_models(self) -> list[str]:
         payload = self._get_json("/models", timeout=20.0)
@@ -60,6 +80,9 @@ class OpenAICompatibleClient:
         if not models:
             raise LLMError("No models discovered from the configured service.")
         return models[0]
+
+    def endpoint_url(self, path: str) -> str:
+        return self._url(path)
 
     def chat_completion(
         self,
@@ -97,7 +120,7 @@ class OpenAICompatibleClient:
             }
             if response_format:
                 payload["text"] = {"format": response_format}
-            data = self._post_json("/responses", payload)
+            data, meta = self._post_json_with_meta("/responses", payload)
             content = self._extract_responses_text(data)
         else:
             payload = {
@@ -108,16 +131,25 @@ class OpenAICompatibleClient:
             }
             if response_format:
                 payload["response_format"] = response_format
-            data = self._post_json("/chat/completions", payload)
+            data, meta = self._post_json_with_meta("/chat/completions", payload)
             try:
                 content = str(data["choices"][0]["message"]["content"] or "")
             except (KeyError, IndexError, TypeError) as exc:
-                raise LLMError("Invalid chat completion response structure.") from exc
+                raise LLMError(
+                    "Invalid chat completion response structure.",
+                    raw_text=meta["response_text"],
+                    request_url=meta["url"],
+                    status_code=meta["status_code"],
+                ) from exc
         usage = self._extract_usage(data, messages, content)
         return ChatCompletionResult(
             content=content,
             model=str(data.get("model") or resolved_model),
             usage=usage,
+            request_url=meta["url"],
+            request_payload=payload,
+            raw_response_text=meta["response_text"],
+            response_id=str(data.get("id") or "") or None,
         )
 
     def tool_round(
@@ -139,7 +171,7 @@ class OpenAICompatibleClient:
                 "temperature": temperature,
                 "max_output_tokens": max_tokens,
             }
-            data = self._post_json("/responses", payload)
+            data, _meta = self._post_json_with_meta("/responses", payload)
             tool_calls = self._extract_responses_tool_calls(data)
             content = self._extract_responses_text(data)
             usage = self._extract_usage(data, messages, content)
@@ -158,11 +190,16 @@ class OpenAICompatibleClient:
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        data = self._post_json("/chat/completions", payload)
+        data, meta = self._post_json_with_meta("/chat/completions", payload)
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMError("Invalid tool completion response structure.") from exc
+            raise LLMError(
+                "Invalid tool completion response structure.",
+                raw_text=meta["response_text"],
+                request_url=meta["url"],
+                status_code=meta["status_code"],
+            ) from exc
         tool_calls = [
             LLMToolCall(
                 id=str(item.get("id") or ""),
@@ -341,26 +378,231 @@ class OpenAICompatibleClient:
         }
 
     def _post_json(self, path: str, payload: dict[str, Any], *, timeout: float = 90.0) -> dict[str, Any]:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.post(
-                self._url(path),
-                headers=self._headers(),
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-        if not isinstance(data, dict):
-            raise LLMError("Invalid JSON response from remote service.")
+        data, _meta = self._post_json_with_meta(path, payload, timeout=timeout)
         return data
 
     def _get_json(self, path: str, *, timeout: float = 20.0) -> dict[str, Any]:
-        with httpx.Client(timeout=timeout) as client:
-            response = client.get(self._url(path), headers=self._headers())
-            response.raise_for_status()
-            data = response.json()
-        if not isinstance(data, dict):
-            raise LLMError("Invalid JSON response from remote service.")
+        data, _meta = self._get_json_with_meta(path, timeout=timeout)
         return data
+
+    def _post_json_with_meta(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float = 90.0,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        url = self._url(path)
+        try:
+            with _LLM_REQUEST_SEMAPHORE:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(url, headers=self._headers(), json=payload)
+                    response_text = response.text
+        except Exception as exc:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            raise LLMError(f"Request failed: {exc}", request_url=url) from exc
+
+        if response.is_error:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": f"HTTP {response.status_code}",
+                }
+            )
+            raise LLMError(
+                f"Remote service returned HTTP {response.status_code}.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            )
+
+        try:
+            data = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": f"JSON decode failed: {exc}",
+                }
+            )
+            raise LLMError(
+                "Invalid JSON response from remote service.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            ) from exc
+
+        if not isinstance(data, dict):
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": "Top-level response JSON was not an object.",
+                }
+            )
+            raise LLMError(
+                "Invalid JSON response from remote service.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            )
+
+        self._append_log(
+            {
+                "timestamp": _utcnow_iso(),
+                "method": "POST",
+                "url": url,
+                "provider_kind": self.config.provider_kind,
+                "api_mode": normalize_api_mode(self.config.api_mode),
+                "request_body": payload,
+                "status_code": response.status_code,
+                "response_text": response_text,
+                "ok": True,
+            }
+        )
+        return data, {"url": url, "status_code": response.status_code, "response_text": response_text}
+
+    def _get_json_with_meta(self, path: str, *, timeout: float = 20.0) -> tuple[dict[str, Any], dict[str, Any]]:
+        url = self._url(path)
+        try:
+            with _LLM_REQUEST_SEMAPHORE:
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.get(url, headers=self._headers())
+                    response_text = response.text
+        except Exception as exc:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "GET",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
+            raise LLMError(f"Request failed: {exc}", request_url=url) from exc
+
+        if response.is_error:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "GET",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": f"HTTP {response.status_code}",
+                }
+            )
+            raise LLMError(
+                f"Remote service returned HTTP {response.status_code}.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            )
+
+        try:
+            data = json.loads(response_text)
+        except json.JSONDecodeError as exc:
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "GET",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": f"JSON decode failed: {exc}",
+                }
+            )
+            raise LLMError(
+                "Invalid JSON response from remote service.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            ) from exc
+
+        if not isinstance(data, dict):
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "GET",
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "status_code": response.status_code,
+                    "response_text": response_text,
+                    "ok": False,
+                    "error": "Top-level response JSON was not an object.",
+                }
+            )
+            raise LLMError(
+                "Invalid JSON response from remote service.",
+                raw_text=response_text,
+                request_url=url,
+                status_code=response.status_code,
+            )
+
+        self._append_log(
+            {
+                "timestamp": _utcnow_iso(),
+                "method": "GET",
+                "url": url,
+                "provider_kind": self.config.provider_kind,
+                "api_mode": normalize_api_mode(self.config.api_mode),
+                "status_code": response.status_code,
+                "response_text": response_text,
+                "ok": True,
+            }
+        )
+        return data, {"url": url, "status_code": response.status_code, "response_text": response_text}
+
+    def _append_log(self, record: dict[str, Any]) -> None:
+        if not self.log_path:
+            return
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with _LLM_LOG_LOCK:
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def parse_json_response(text: str) -> dict[str, Any]:
@@ -374,5 +616,12 @@ def parse_json_response(text: str) -> dict[str, Any]:
         start = body.find("{")
         end = body.rfind("}")
         if start == -1 or end == -1 or end <= start:
-            raise LLMError("Model did not return valid JSON.")
-        return json.loads(body[start : end + 1])
+            raise LLMError("Model did not return valid JSON.", raw_text=body)
+        try:
+            return json.loads(body[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise LLMError("Model did not return valid JSON.", raw_text=body) from exc
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

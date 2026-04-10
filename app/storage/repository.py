@@ -241,6 +241,31 @@ def upsert_facet(
     return facet
 
 
+def create_asset_draft(
+    session: Session,
+    *,
+    project_id: str,
+    run_id: str | None,
+    asset_kind: str,
+    markdown_text: str,
+    json_payload: dict[str, Any],
+    prompt_text: str,
+    notes: str | None = None,
+) -> SkillDraft:
+    draft = SkillDraft(
+        project_id=project_id,
+        run_id=run_id,
+        asset_kind=asset_kind,
+        markdown_text=markdown_text,
+        json_payload=json_payload,
+        system_prompt=prompt_text,
+        notes=notes,
+    )
+    session.add(draft)
+    session.flush()
+    return draft
+
+
 def create_skill_draft(
     session: Session,
     *,
@@ -251,53 +276,75 @@ def create_skill_draft(
     system_prompt: str,
     notes: str | None = None,
 ) -> SkillDraft:
-    draft = SkillDraft(
+    return create_asset_draft(
+        session,
         project_id=project_id,
         run_id=run_id,
+        asset_kind="skill",
         markdown_text=markdown_text,
         json_payload=json_payload,
-        system_prompt=system_prompt,
+        prompt_text=system_prompt,
         notes=notes,
     )
-    session.add(draft)
-    session.flush()
-    return draft
 
 
-def get_latest_skill_draft(session: Session, project_id: str) -> SkillDraft | None:
-    stmt = select(SkillDraft).where(SkillDraft.project_id == project_id).order_by(desc(SkillDraft.created_at))
+def get_latest_asset_draft(session: Session, project_id: str, *, asset_kind: str) -> SkillDraft | None:
+    stmt = (
+        select(SkillDraft)
+        .where(SkillDraft.project_id == project_id, SkillDraft.asset_kind == asset_kind)
+        .order_by(desc(SkillDraft.created_at))
+    )
     return session.scalars(stmt).first()
 
 
-def get_skill_draft(session: Session, draft_id: str) -> SkillDraft | None:
+def get_latest_skill_draft(session: Session, project_id: str) -> SkillDraft | None:
+    return get_latest_asset_draft(session, project_id, asset_kind="skill")
+
+
+def get_asset_draft(session: Session, draft_id: str, *, asset_kind: str | None = None) -> SkillDraft | None:
     stmt = select(SkillDraft).where(SkillDraft.id == draft_id)
+    if asset_kind:
+        stmt = stmt.where(SkillDraft.asset_kind == asset_kind)
     return session.scalar(stmt)
 
 
-def list_skill_versions(session: Session, project_id: str) -> list[SkillVersion]:
+def get_skill_draft(session: Session, draft_id: str) -> SkillDraft | None:
+    return get_asset_draft(session, draft_id, asset_kind="skill")
+
+
+def list_asset_versions(session: Session, project_id: str, *, asset_kind: str) -> list[SkillVersion]:
     stmt = (
         select(SkillVersion)
-        .where(SkillVersion.project_id == project_id)
+        .where(SkillVersion.project_id == project_id, SkillVersion.asset_kind == asset_kind)
         .order_by(desc(SkillVersion.version_number))
     )
     return list(session.scalars(stmt))
 
 
-def get_latest_skill_version(session: Session, project_id: str) -> SkillVersion | None:
+def list_skill_versions(session: Session, project_id: str) -> list[SkillVersion]:
+    return list_asset_versions(session, project_id, asset_kind="skill")
+
+
+def get_latest_asset_version(session: Session, project_id: str, *, asset_kind: str) -> SkillVersion | None:
     stmt = (
         select(SkillVersion)
-        .where(SkillVersion.project_id == project_id)
+        .where(SkillVersion.project_id == project_id, SkillVersion.asset_kind == asset_kind)
         .order_by(desc(SkillVersion.version_number))
     )
     return session.scalars(stmt).first()
 
 
-def publish_skill_draft(session: Session, project_id: str, draft: SkillDraft) -> SkillVersion:
-    latest = get_latest_skill_version(session, project_id)
+def get_latest_skill_version(session: Session, project_id: str) -> SkillVersion | None:
+    return get_latest_asset_version(session, project_id, asset_kind="skill")
+
+
+def publish_asset_draft(session: Session, project_id: str, draft: SkillDraft) -> SkillVersion:
+    latest = get_latest_asset_version(session, project_id, asset_kind=draft.asset_kind)
     next_version = (latest.version_number if latest else 0) + 1
     version = SkillVersion(
         project_id=project_id,
         draft_id=draft.id,
+        asset_kind=draft.asset_kind,
         version_number=next_version,
         markdown_text=draft.markdown_text,
         json_payload=draft.json_payload,
@@ -306,6 +353,12 @@ def publish_skill_draft(session: Session, project_id: str, draft: SkillDraft) ->
     session.add(version)
     session.flush()
     return version
+
+
+def publish_skill_draft(session: Session, project_id: str, draft: SkillDraft) -> SkillVersion:
+    if draft.asset_kind != "skill":
+        raise ValueError("Draft is not a skill asset.")
+    return publish_asset_draft(session, project_id, draft)
 
 
 def create_chat_session(

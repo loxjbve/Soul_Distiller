@@ -22,9 +22,10 @@ class EmbeddingRetriever:
         project_id: str,
         query: str,
         config: ServiceConfig,
+        log_path: str | None = None,
         limit: int = 8,
         filters: RetrievalFilters | None = None,
-    ) -> list[RetrievedChunk]:
+    ) -> tuple[list[RetrievedChunk], dict[str, object]]:
         lexical_hits = self.lexical.search(
             session,
             project_id=project_id,
@@ -32,9 +33,16 @@ class EmbeddingRetriever:
             limit=max(limit * 3, 12),
             filters=filters,
         )
+        trace: dict[str, object] = {
+            "embedding_attempted": True,
+            "embedding_url": None,
+            "lexical_candidate_count": len(lexical_hits),
+            "new_chunk_embeddings": 0,
+        }
         if not lexical_hits:
-            return []
-        client = OpenAICompatibleClient(config)
+            return [], trace
+        client = OpenAICompatibleClient(config, log_path=log_path)
+        trace["embedding_url"] = client.endpoint_url("/embeddings")
         query_vector = client.embeddings([query], model=config.model)[0]
         hits_by_id = {hit.chunk_id: hit for hit in lexical_hits}
         chunks = list(session.scalars(select(TextChunk).where(TextChunk.id.in_(list(hits_by_id)))))
@@ -45,6 +53,7 @@ class EmbeddingRetriever:
                 chunk.embedding_vector = vector
                 chunk.embedding_model = config.model
             session.flush()
+            trace["new_chunk_embeddings"] = len(missing)
         chunk_map = {chunk.id: chunk for chunk in chunks}
         combined: list[RetrievedChunk] = []
         for hit in lexical_hits:
@@ -53,4 +62,4 @@ class EmbeddingRetriever:
             hit.score = round((hit.score * 0.45) + (max(vector_score, 0.0) * 6.0), 4)
             combined.append(hit)
         combined.sort(key=lambda item: item.score, reverse=True)
-        return combined[:limit]
+        return combined[:limit], trace

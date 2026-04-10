@@ -14,7 +14,7 @@ class AnalysisTaskRunner:
         db: Database,
         engine: AnalysisEngine,
         *,
-        max_workers: int = 2,
+        max_workers: int = 4,
         run_inline: bool = False,
     ) -> None:
         self.db = db

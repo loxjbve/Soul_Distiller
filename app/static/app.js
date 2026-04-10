@@ -151,6 +151,10 @@ function renderFacetStatusCard(facet) {
 }
 
 function renderEventItem(event) {
+    const payload = event.payload || {};
+    const payloadHtml = Object.keys(payload).length
+        ? `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
+        : "";
     return `
         <article class="event-item level-${escapeHtml(event.level || "info")}">
             <div class="event-item-head">
@@ -158,6 +162,7 @@ function renderEventItem(event) {
                 <span>${formatTime(event.created_at)}</span>
             </div>
             <p>${escapeHtml(event.message)}</p>
+            ${payloadHtml}
         </article>
     `;
 }

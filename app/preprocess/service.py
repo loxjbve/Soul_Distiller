@@ -55,7 +55,7 @@ class PreprocessAgentService:
         config,
         retrieval,
         *,
-        max_workers: int = 2,
+        max_workers: int = 4,
         run_inline: bool = False,
     ) -> None:
         self.db = db
@@ -247,7 +247,7 @@ class PreprocessAgentService:
             self._stream_assistant(state, assistant_text, assistant_turn.id)
             return
 
-        client = OpenAICompatibleClient(config)
+        client = OpenAICompatibleClient(config, log_path=str(self.config.llm_log_path))
         messages = self._build_messages(turns[:-1], state.message, project.name, mentions.documents)
         usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         provider_response_id: str | None = None
@@ -498,16 +498,18 @@ class PreprocessAgentService:
                 return {"hits": []}
             allowed_ids = {str(item) for item in args.get("document_ids", []) if str(item).strip()}
             limit = max(1, min(int(args.get("limit", 6)), 20))
-            hits, retrieval_mode = self.retrieval.search(
+            hits, retrieval_mode, retrieval_trace = self.retrieval.search(
                 session,
                 project_id=project_id,
                 query=query,
                 embedding_config=embedding_config,
+                log_path=str(self.config.llm_log_path),
                 limit=max(limit * 3, 8),
             )
             filtered_hits = [hit for hit in hits if not allowed_ids or hit.document_id in allowed_ids][:limit]
             return {
                 "retrieval_mode": retrieval_mode,
+                "retrieval_trace": retrieval_trace,
                 "hits": [
                     {
                         "document_id": hit.document_id,

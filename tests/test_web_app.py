@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import io
+import json
 import time
 
+from app.llm.client import OpenAICompatibleClient
 from app.storage import repository
+
+
+def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float = 5.0) -> dict:
+    deadline = time.time() + timeout_s
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    while payload["status"] in {"queued", "running"} and time.time() < deadline:
+        time.sleep(0.05)
+        payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    return payload
 
 
 def test_end_to_end_project_flow(client, app):
@@ -40,28 +51,44 @@ def test_end_to_end_project_flow(client, app):
         },
     )
     assert analyze_response.status_code == 200
-    analysis_payload = analyze_response.json()
-    run_id = analysis_payload["id"]
-    deadline = time.time() + 5
-    while analysis_payload["status"] in {"queued", "running"} and time.time() < deadline:
-        time.sleep(0.05)
-        analysis_payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    analysis_payload = _wait_for_analysis(client, project_id, analyze_response.json()["id"])
     assert analysis_payload["status"] in {"completed", "partial_failed"}
-    assert len(analysis_payload["facets"]) == 6
+    assert len(analysis_payload["facets"]) == 10
     assert analysis_payload["summary"]["target_role"] == "Alice 本人"
     assert "first-person" in analysis_payload["summary"]["analysis_context"]
     assert analysis_payload["events"]
 
-    skill_response = client.post(f"/api/projects/{project_id}/skills/generate")
+    skill_response = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "skill"},
+    )
     assert skill_response.status_code == 200
-    draft_payload = skill_response.json()
-    draft_id = draft_payload["id"]
-    assert "Skill" in draft_payload["markdown_text"]
-    assert "Alice 本人" in draft_payload["markdown_text"]
+    skill_draft = skill_response.json()
+    assert skill_draft["asset_kind"] == "skill"
+    assert "System Role" in skill_draft["markdown_text"]
+    assert "Alice 本人" in skill_draft["markdown_text"]
 
-    publish_response = client.post(f"/api/projects/{project_id}/skills/{draft_id}/publish")
+    report_response = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "profile_report"},
+    )
+    assert report_response.status_code == 200
+    report_draft = report_response.json()
+    assert report_draft["asset_kind"] == "profile_report"
+    assert "全景侧写" in report_draft["markdown_text"]
+
+    publish_response = client.post(f"/api/projects/{project_id}/skills/{skill_draft['id']}/publish")
     assert publish_response.status_code == 200
+    assert publish_response.json()["asset_kind"] == "skill"
     assert publish_response.json()["version_number"] == 1
+
+    publish_report_response = client.post(
+        f"/api/projects/{project_id}/assets/{report_draft['id']}/publish",
+        json={"asset_kind": "profile_report"},
+    )
+    assert publish_report_response.status_code == 200
+    assert publish_report_response.json()["asset_kind"] == "profile_report"
+    assert publish_report_response.json()["version_number"] == 1
 
     chat_response = client.post(
         f"/api/projects/{project_id}/playground/chat",
@@ -71,11 +98,82 @@ def test_end_to_end_project_flow(client, app):
     chat_payload = chat_response.json()
     assert chat_payload["trace"]["skill_version_number"] == 1
     assert chat_payload["trace"]["retrieval_mode"] == "lexical"
+    assert chat_payload["trace"]["retrieval_trace"]["embedding_configured"] is False
     assert chat_payload["response"]
 
     with app.state.db.session() as session:
-        version = repository.get_latest_skill_version(session, project_id)
-        assert version is not None
+        skill_version = repository.get_latest_skill_version(session, project_id)
+        report_version = repository.get_latest_asset_version(session, project_id, asset_kind="profile_report")
+        assert skill_version is not None
+        assert report_version is not None
+
+
+def test_analysis_llm_parse_failure_is_logged_and_visible(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Debug"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Debug profile with sharp language and strong opinions."), "text/plain")},
+    )
+    client.post(
+        "/settings/chat",
+        data={
+            "provider_kind": "openai-compatible",
+            "base_url": "https://example.com/v1",
+            "api_key": "sk-test",
+            "model": "demo-model",
+            "api_mode": "responses",
+        },
+        follow_redirects=False,
+    )
+
+    def fake_post_json_with_meta(self, path, payload, *, timeout=90.0):
+        content = "this is not valid json, but it is the real model text"
+        api_payload = {
+            "id": "resp_debug",
+            "model": "demo-model",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": content}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 8, "total_tokens": 18},
+        }
+        self._append_log(
+            {
+                "timestamp": "2026-04-10T00:00:00Z",
+                "method": "POST",
+                "url": f"https://example.com/v1{path}",
+                "provider_kind": self.config.provider_kind,
+                "api_mode": self.config.api_mode,
+                "request_body": payload,
+                "status_code": 200,
+                "response_text": json.dumps(api_payload, ensure_ascii=False),
+                "ok": True,
+            }
+        )
+        return api_payload, {
+            "url": f"https://example.com/v1{path}",
+            "status_code": 200,
+            "response_text": json.dumps(api_payload, ensure_ascii=False),
+        }
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_json_with_meta", fake_post_json_with_meta)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Debug 本人", "analysis_context": "Check logging and parse fallback."},
+    )
+    analysis_payload = _wait_for_analysis(client, project_id, analyze_response.json()["id"])
+    assert analysis_payload["status"] == "completed"
+    assert analysis_payload["summary"]["llm_failures"] == 10
+    assert all(facet["status"] == "completed" for facet in analysis_payload["facets"])
+    assert any(event["event_type"] == "llm_response" for event in analysis_payload["events"])
+    assert any(
+        "this is not valid json" in json.dumps(event["payload"], ensure_ascii=False)
+        for event in analysis_payload["events"]
+        if event["event_type"] == "llm_response"
+    )
+
+    log_text = app.state.config.llm_log_path.read_text(encoding="utf-8")
+    assert "https://example.com/v1/responses" in log_text
+    assert "this is not valid json" in log_text
 
 
 def test_document_delete_removes_record(client, app):

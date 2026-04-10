@@ -157,17 +157,18 @@ def test_preprocess_tool_loop_can_generate_artifact(client, app, monkeypatch):
 def test_tool_round_uses_responses_payload(monkeypatch):
     captured = {}
 
-    def fake_post_json(self, path, payload, *, timeout=90.0):
+    def fake_post_json_with_meta(self, path, payload, *, timeout=90.0):
         captured["path"] = path
         captured["payload"] = payload
-        return {
+        data = {
             "id": "resp_1",
             "model": "demo-model",
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "ok"}]}],
             "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
         }
+        return data, {"url": "https://example.com/v1/responses", "status_code": 200, "response_text": json.dumps(data)}
 
-    monkeypatch.setattr(OpenAICompatibleClient, "_post_json", fake_post_json)
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_json_with_meta", fake_post_json_with_meta)
     client = OpenAICompatibleClient(
         ServiceConfig(base_url="https://example.com/v1", api_key="sk-test", model="demo-model", api_mode="responses")
     )
@@ -181,10 +182,10 @@ def test_tool_round_uses_responses_payload(monkeypatch):
 def test_tool_round_uses_chat_completions_payload(monkeypatch):
     captured = {}
 
-    def fake_post_json(self, path, payload, *, timeout=90.0):
+    def fake_post_json_with_meta(self, path, payload, *, timeout=90.0):
         captured["path"] = path
         captured["payload"] = payload
-        return {
+        data = {
             "id": "chatcmpl_1",
             "model": "demo-model",
             "choices": [
@@ -203,8 +204,9 @@ def test_tool_round_uses_chat_completions_payload(monkeypatch):
             ],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
         }
+        return data, {"url": "https://example.com/v1/chat/completions", "status_code": 200, "response_text": json.dumps(data)}
 
-    monkeypatch.setattr(OpenAICompatibleClient, "_post_json", fake_post_json)
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_json_with_meta", fake_post_json_with_meta)
     client = OpenAICompatibleClient(
         ServiceConfig(base_url="https://example.com/v1", api_key="sk-test", model="demo-model", api_mode="chat_completions")
     )

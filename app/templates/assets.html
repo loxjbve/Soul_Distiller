@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} Assets{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Assets</p>
+        <h1>{{ project.name }} 资产输出</h1>
+        <p class="hero-note">分析完成后，可以生成 Skill 或用户剖析报告，并分别编辑、保存和发布版本。</p>
+    </div>
+    <div class="project-hero-actions">
+        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">返回分析</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
+    </div>
+</section>
+
+<section class="workspace-panel">
+    <div class="inline-actions">
+        {% for option in asset_options %}
+            <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind={{ option.value }}">{{ option.label }}</a>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="workspace-panel">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Generate</p>
+            <h2>生成 {{ asset_label }}</h2>
+        </div>
+    </div>
+    <form method="post" action="/projects/{{ project.id }}/assets/generate">
+        <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+        <button type="submit">重新生成 {{ asset_label }}</button>
+    </form>
+</section>
+
+{% if draft %}
+    <section class="workspace-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Draft</p>
+                <h2>编辑 {{ asset_label }} 草稿</h2>
+            </div>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/assets/{{ draft.id }}/save" class="stack roomy">
+            <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+            <label>
+                <span>Markdown</span>
+                <textarea name="markdown_text" rows="20">{{ draft.markdown_text }}</textarea>
+            </label>
+            <label>
+                <span>JSON Payload</span>
+                <textarea name="json_payload" rows="20">{{ draft_json_pretty }}</textarea>
+            </label>
+            <label>
+                <span>Prompt Text</span>
+                <textarea name="prompt_text" rows="16">{{ draft.system_prompt }}</textarea>
+            </label>
+            <label>
+                <span>备注</span>
+                <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
+            </label>
+            <div class="inline-actions">
+                <button type="submit">保存草稿</button>
+                <button formaction="/projects/{{ project.id }}/assets/{{ draft.id }}/publish" type="submit">发布版本</button>
+            </div>
+        </form>
+    </section>
+{% else %}
+    <section class="workspace-panel">
+        <p class="muted">当前还没有 {{ asset_label }} 草稿。先完成分析，再生成一份资产。</p>
+    </section>
+{% endif %}
+
+<section class="workspace-panel">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Versions</p>
+            <h2>{{ asset_label }} 已发布版本</h2>
+        </div>
+    </div>
+    {% if versions %}
+        <div class="project-list">
+            {% for version in versions %}
+                <div class="project-row">
+                    <div>
+                        <strong>v{{ version.version_number }}</strong>
+                        <p>{{ version.published_at }}</p>
+                    </div>
+                    <span>{{ asset_label }}</span>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="muted">还没有已发布版本。</p>
+    {% endif %}
+</section>
+{% endblock %}

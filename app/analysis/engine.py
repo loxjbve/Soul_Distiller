@@ -7,6 +7,7 @@ from dataclasses import asdict
 from time import perf_counter
 from typing import Any
 
+from app.analysis.prompts import build_facet_analysis_messages
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ from app.storage import repository
 from app.utils.text import top_terms
 
 FACET_EVIDENCE_LIMIT = 50
+RAW_TEXT_PREVIEW_LIMIT = 6000
 
 
 def analyze_facet_worker(
@@ -26,19 +28,43 @@ def analyze_facet_worker(
     project_name: str,
     chunks: list[dict[str, Any]],
     llm_config: dict[str, Any] | None,
+    llm_log_path: str | None,
     target_role: str | None,
     analysis_context: str | None,
 ) -> dict[str, Any]:
     try:
         if llm_config:
-            payload = _analyze_with_llm(
-                facet,
-                project_name,
-                chunks,
-                llm_config,
-                target_role=target_role,
-                analysis_context=analysis_context,
-            )
+            try:
+                payload = _analyze_with_llm(
+                    facet,
+                    project_name,
+                    chunks,
+                    llm_config,
+                    llm_log_path=llm_log_path,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                )
+            except Exception as exc:
+                payload = _analyze_heuristically(
+                    facet,
+                    chunks,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                )
+                payload["_meta"] = {
+                    **dict(payload.get("_meta") or {}),
+                    "llm_called": True,
+                    "llm_success": False,
+                    "llm_attempts": 1,
+                    "llm_error": str(exc),
+                    "raw_text": getattr(exc, "raw_text", None),
+                    "request_url": getattr(exc, "request_url", None),
+                    "log_path": llm_log_path,
+                }
+                payload["notes"] = (
+                    f"{payload.get('notes') or ''}\n"
+                    f"LLM returned an unusable response, so the result was recovered with heuristic fallback: {exc}"
+                ).strip()
         else:
             payload = _analyze_heuristically(
                 facet,
@@ -87,8 +113,15 @@ def analyze_facet_worker(
 
 
 class AnalysisEngine:
-    def __init__(self, retrieval: RetrievalService | None = None, *, use_processes: bool = True) -> None:
+    def __init__(
+        self,
+        retrieval: RetrievalService | None = None,
+        *,
+        llm_log_path: str | None = None,
+        use_processes: bool = True,
+    ) -> None:
         self.retrieval = retrieval or RetrievalService()
+        self.llm_log_path = llm_log_path
         self.use_processes = use_processes
 
     def create_run(
@@ -253,7 +286,7 @@ class AnalysisEngine:
         summary = dict(run.summary_json or {})
         chat_config = repository.get_service_config(session, "chat_service")
         embedding_config = repository.get_service_config(session, "embedding_service")
-        hits, retrieval_mode = self._retrieve_hits(
+        hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
             session,
             run.project_id,
             facet_def,
@@ -276,11 +309,12 @@ class AnalysisEngine:
                 project.name,
                 [self._serialize_hit(hit) for hit in hits],
                 asdict(chat_config) if chat_config else None,
+                self.llm_log_path,
                 summary.get("target_role"),
                 summary.get("analysis_context"),
             )
         )
-        self._apply_facet_result(session, run, facet_def, retrieval_mode, len(hits), result)
+        self._apply_facet_result(session, run, facet_def, retrieval_mode, retrieval_trace, len(hits), result)
         repository.add_analysis_event(
             session,
             run.id,
@@ -301,10 +335,10 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
-        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, int]] = {}
+        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
         with ProcessPoolExecutor(max_workers=min(len(FACETS), 4)) as executor:
             for facet in FACETS:
-                hits, retrieval_mode = self._retrieve_hits(
+                hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
                     session,
                     run.project_id,
                     facet,
@@ -312,23 +346,24 @@ class AnalysisEngine:
                     target_role=(run.summary_json or {}).get("target_role"),
                     analysis_context=(run.summary_json or {}).get("analysis_context"),
                 )
-                self._mark_facet_started(session, run, facet, retrieval_mode, len(hits))
+                self._mark_facet_started(session, run, facet, retrieval_mode, retrieval_trace, len(hits))
                 future = executor.submit(
                     analyze_facet_worker,
                     facet,
                     project_name,
                     [self._serialize_hit(hit) for hit in hits],
                     llm_payload,
+                    self.llm_log_path,
                     (run.summary_json or {}).get("target_role"),
                     (run.summary_json or {}).get("analysis_context"),
                 )
-                future_map[future] = (facet, retrieval_mode, len(hits))
+                future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
 
             results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
             for future in as_completed(future_map):
-                facet, retrieval_mode, hit_count = future_map[future]
+                facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
                 result = FacetResult(**future.result())
-                self._apply_facet_result(session, run, facet, retrieval_mode, hit_count, result)
+                self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
                 results.append((facet, retrieval_mode, hit_count, result))
             return results
 
@@ -341,10 +376,10 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
-        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, int]] = {}
+        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
         with ThreadPoolExecutor(max_workers=min(len(FACETS), 4), thread_name_prefix="facet-thread") as executor:
             for facet in FACETS:
-                hits, retrieval_mode = self._retrieve_hits(
+                hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
                     session,
                     run.project_id,
                     facet,
@@ -352,23 +387,24 @@ class AnalysisEngine:
                     target_role=(run.summary_json or {}).get("target_role"),
                     analysis_context=(run.summary_json or {}).get("analysis_context"),
                 )
-                self._mark_facet_started(session, run, facet, retrieval_mode, len(hits))
+                self._mark_facet_started(session, run, facet, retrieval_mode, retrieval_trace, len(hits))
                 future = executor.submit(
                     analyze_facet_worker,
                     facet,
                     project_name,
                     [self._serialize_hit(hit) for hit in hits],
                     llm_payload,
+                    self.llm_log_path,
                     (run.summary_json or {}).get("target_role"),
                     (run.summary_json or {}).get("analysis_context"),
                 )
-                future_map[future] = (facet, retrieval_mode, len(hits))
+                future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
 
             results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
             for future in as_completed(future_map):
-                facet, retrieval_mode, hit_count = future_map[future]
+                facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
                 result = FacetResult(**future.result())
-                self._apply_facet_result(session, run, facet, retrieval_mode, hit_count, result)
+                self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
                 results.append((facet, retrieval_mode, hit_count, result))
             return results
 
@@ -378,6 +414,7 @@ class AnalysisEngine:
         run: AnalysisRun,
         facet: FacetDefinition,
         retrieval_mode: str,
+        retrieval_trace: dict[str, Any],
         hit_count: int,
     ) -> None:
         summary = dict(run.summary_json or {})
@@ -396,6 +433,7 @@ class AnalysisEngine:
                 "bullets": [],
                 "notes": None,
                 "retrieval_mode": retrieval_mode,
+                "retrieval_trace": retrieval_trace,
                 "hit_count": hit_count,
                 "target_role": summary.get("target_role"),
                 "analysis_context": summary.get("analysis_context"),
@@ -415,7 +453,12 @@ class AnalysisEngine:
             run.id,
             event_type="facet",
             message=f"{facet.label} 已启动，召回到 {hit_count} 个证据片段。",
-            payload_json={"facet_key": facet.key, "retrieval_mode": retrieval_mode, "hit_count": hit_count},
+            payload_json={
+                "facet_key": facet.key,
+                "retrieval_mode": retrieval_mode,
+                "retrieval_trace": retrieval_trace,
+                "hit_count": hit_count,
+            },
         )
         self._persist_progress(session)
 
@@ -425,6 +468,7 @@ class AnalysisEngine:
         run: AnalysisRun,
         facet: FacetDefinition,
         retrieval_mode: str,
+        retrieval_trace: dict[str, Any],
         hit_count: int,
         result: FacetResult,
     ) -> None:
@@ -435,6 +479,7 @@ class AnalysisEngine:
             "bullets": result.bullets,
             "notes": result.notes,
             "retrieval_mode": retrieval_mode,
+            "retrieval_trace": retrieval_trace,
             "hit_count": hit_count,
             "target_role": (run.summary_json or {}).get("target_role"),
             "analysis_context": (run.summary_json or {}).get("analysis_context"),
@@ -446,6 +491,10 @@ class AnalysisEngine:
             "completion_tokens": int(meta.get("completion_tokens", 0)),
             "total_tokens": int(meta.get("total_tokens", 0)),
             "duration_ms": int(meta.get("duration_ms", 0)),
+            "llm_request_url": meta.get("request_url"),
+            "llm_response_text": meta.get("raw_text"),
+            "llm_error": meta.get("llm_error"),
+            "llm_log_path": meta.get("log_path"),
         }
         repository.upsert_facet(
             session,
@@ -496,6 +545,35 @@ class AnalysisEngine:
                 "llm_success": findings_json["llm_success"],
             },
         )
+        if meta.get("llm_called"):
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="llm_request",
+                level="info",
+                message=f"{facet.label} 调用了 LLM 接口。",
+                payload_json={
+                    "facet_key": facet.key,
+                    "url": meta.get("request_url"),
+                    "model": meta.get("llm_model"),
+                    "log_path": meta.get("log_path"),
+                    "request_payload": meta.get("request_payload"),
+                },
+            )
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="llm_response",
+                level="success" if meta.get("llm_success") else "warning",
+                message=f"{facet.label} 收到了 LLM 返回。",
+                payload_json={
+                    "facet_key": facet.key,
+                    "success": meta.get("llm_success"),
+                    "error": meta.get("llm_error"),
+                    "response_text": meta.get("raw_text"),
+                    "log_path": meta.get("log_path"),
+                },
+            )
         self._persist_progress(session)
 
     def _retrieve_hits(
@@ -507,22 +585,23 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
         target_role: str | None,
         analysis_context: str | None,
-    ) -> tuple[list[RetrievedChunk], str]:
+    ) -> tuple[list[RetrievedChunk], str, dict[str, Any]]:
         query_parts = [facet.search_query]
         if target_role:
             query_parts.append(target_role)
         if analysis_context:
             query_parts.append(analysis_context)
-        hits, retrieval_mode = self.retrieval.search(
+        hits, retrieval_mode, retrieval_trace = self.retrieval.search(
             session,
             project_id=project_id,
             query=" ".join(query_parts),
             embedding_config=embedding_config,
+            log_path=self.llm_log_path,
             limit=FACET_EVIDENCE_LIMIT,
         )
         if not hits:
             hits = self._fallback_hits(session, project_id)
-        return hits, retrieval_mode
+        return hits, retrieval_mode, retrieval_trace
 
     def _build_initial_summary(
         self,
@@ -625,21 +704,16 @@ def _analyze_with_llm(
     chunks: list[dict[str, Any]],
     llm_config: dict[str, Any],
     *,
+    llm_log_path: str | None,
     target_role: str | None,
     analysis_context: str | None,
 ) -> dict[str, Any]:
     config = ServiceConfig(**llm_config)
-    client = OpenAICompatibleClient(config)
+    client = OpenAICompatibleClient(config, log_path=llm_log_path)
     excerpt_text = "\n\n".join(
         f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}\n{chunk['content'][:320]}"
         for chunk in chunks
     )
-    context_lines = []
-    if target_role:
-        context_lines.append(f"Target role: {target_role}")
-    if analysis_context:
-        context_lines.append(f"User context: {analysis_context}")
-    context_block = "\n".join(context_lines)
     started = perf_counter()
     last_error: Exception | None = None
     attempts = 0
@@ -647,32 +721,24 @@ def _analyze_with_llm(
         attempts += 1
         try:
             completion = client.chat_completion_result(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a persona distillation analyst. "
-                            "Reply with JSON only. Use the evidence exactly from the provided chunk ids."
-                        ),
-                    },
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Project: {project_name}\n"
-                            f"Facet: {facet.label} ({facet.key})\n"
-                            f"Goal: {facet.purpose}\n"
-                            f"{context_block}\n\n"
-                            "Return a JSON object with keys: summary, bullets, confidence, evidence, conflicts, notes.\n"
-                            "evidence must be a list of objects containing chunk_id, reason, quote.\n"
-                            "conflicts must be a list of objects containing title and detail.\n\n"
-                            f"Evidence excerpts:\n{excerpt_text}"
-                        ),
-                    },
-                ],
+                build_facet_analysis_messages(
+                    project_name,
+                    facet,
+                    excerpt_text,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                ),
                 model=config.model,
                 temperature=0.2,
             )
-            parsed = parse_json_response(completion.content)
+            try:
+                parsed = parse_json_response(completion.content)
+            except LLMError as exc:
+                raise LLMError(
+                    str(exc),
+                    raw_text=completion.content[:RAW_TEXT_PREVIEW_LIMIT],
+                    request_url=completion.request_url,
+                ) from exc
             normalized = _normalize_facet_payload(parsed, chunks)
             normalized["_meta"] = {
                 "llm_called": True,
@@ -683,11 +749,19 @@ def _analyze_with_llm(
                 "completion_tokens": completion.usage.get("completion_tokens", 0),
                 "total_tokens": completion.usage.get("total_tokens", 0),
                 "duration_ms": int((perf_counter() - started) * 1000),
+                "request_url": completion.request_url,
+                "request_payload": completion.request_payload,
+                "raw_text": completion.content[:RAW_TEXT_PREVIEW_LIMIT],
+                "log_path": llm_log_path,
             }
             return normalized
         except (LLMError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             last_error = exc
-    raise LLMError(str(last_error) if last_error else "Failed to analyze facet.")
+    raise LLMError(
+        str(last_error) if last_error else "Failed to analyze facet.",
+        raw_text=(getattr(last_error, "raw_text", None) or "")[:RAW_TEXT_PREVIEW_LIMIT] or None,
+        request_url=getattr(last_error, "request_url", None),
+    )
 
 
 def _analyze_heuristically(

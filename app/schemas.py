@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+ASSET_KINDS: tuple[str, str] = ("skill", "profile_report")
+
 
 @dataclass(slots=True)
 class ServiceConfig:
@@ -69,10 +71,18 @@ class FacetResult:
 
 
 @dataclass(slots=True)
-class SkillBundle:
+class AssetBundle:
+    asset_kind: str
     markdown_text: str
     json_payload: dict[str, Any]
-    system_prompt: str
+    prompt_text: str
+
+    @property
+    def system_prompt(self) -> str:
+        return self.prompt_text
+
+
+SkillBundle = AssetBundle
 
 
 @dataclass(slots=True)
@@ -80,6 +90,10 @@ class ChatCompletionResult:
     content: str
     model: str
     usage: dict[str, int]
+    request_url: str | None = None
+    request_payload: dict[str, Any] | None = None
+    raw_response_text: str | None = None
+    response_id: str | None = None
 
 
 @dataclass(slots=True)

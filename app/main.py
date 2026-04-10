@@ -16,7 +16,7 @@ if __package__ in {None, ""}:
 
 from app.analysis.engine import AnalysisEngine
 from app.analysis.runner import AnalysisTaskRunner
-from app.analysis.synthesizer import SkillSynthesizer
+from app.analysis.synthesizer import AssetSynthesizer
 from app.config import AppConfig, default_config
 from app.db import Database
 from app.pipeline.ingest import DocumentIngestService
@@ -31,11 +31,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     database = Database(config)
     database.create_all()
     retrieval = RetrievalService()
-    analysis_engine = AnalysisEngine(retrieval, use_processes=os.name != "nt")
-    analysis_runner = AnalysisTaskRunner(database, analysis_engine)
+    analysis_engine = AnalysisEngine(retrieval, llm_log_path=str(config.llm_log_path), use_processes=os.name != "nt")
+    analysis_runner = AnalysisTaskRunner(database, analysis_engine, max_workers=4)
     ingest_service = DocumentIngestService(config)
-    skill_synthesizer = SkillSynthesizer()
-    preprocess_service = PreprocessAgentService(database, config, retrieval)
+    asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
+    preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -53,7 +53,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.analysis_engine = analysis_engine
     app.state.analysis_runner = analysis_runner
     app.state.ingest_service = ingest_service
-    app.state.skill_synthesizer = skill_synthesizer
+    app.state.asset_synthesizer = asset_synthesizer
+    app.state.skill_synthesizer = asset_synthesizer
     app.state.preprocess_service = preprocess_service
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

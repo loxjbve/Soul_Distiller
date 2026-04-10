@@ -12,7 +12,7 @@
         {% endif %}
     </div>
     <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}/skill">返回 Skill</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">返回资产输出</a>
     </div>
 </section>
 
@@ -55,7 +55,7 @@
     </section>
 {% else %}
     <section class="workspace-panel">
-        <p class="muted">请先在 Skill 页面发布一个版本。</p>
+        <p class="muted">请先在资产输出页面发布一个 Skill 版本。</p>
     </section>
 {% endif %}
 {% endblock %}

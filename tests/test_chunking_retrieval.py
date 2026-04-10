@@ -64,7 +64,7 @@ def test_lexical_retrieval_returns_relevant_chunk(app):
             ],
         )
         retrieval = RetrievalService()
-        hits, mode = retrieval.search(
+        hits, mode, trace = retrieval.search(
             session,
             project_id=project.id,
             query="writing poetry",
@@ -72,6 +72,7 @@ def test_lexical_retrieval_returns_relevant_chunk(app):
             limit=3,
         )
         assert mode == "lexical"
+        assert trace["embedding_configured"] is False
         assert hits
         assert hits[0].filename == "memo.txt"
         assert "poetry" in hits[0].content

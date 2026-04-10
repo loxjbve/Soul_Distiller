@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.analysis.facets import FACETS
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact
-from app.schemas import ServiceConfig
+from app.schemas import ASSET_KINDS, ServiceConfig
 from app.storage import repository
 
 
@@ -28,6 +28,10 @@ PROVIDER_OPTIONS = (
 API_MODE_OPTIONS = (
     {"value": "responses", "label": "Responses API"},
     {"value": "chat_completions", "label": "Chat Completions API"},
+)
+ASSET_KIND_OPTIONS = (
+    {"value": "skill", "label": "Skill"},
+    {"value": "profile_report", "label": "用户剖析报告"},
 )
 
 
@@ -62,6 +66,18 @@ class PreprocessSessionUpdatePayload(BaseModel):
 
 class PreprocessMessagePayload(BaseModel):
     message: str
+
+
+class AssetGeneratePayload(BaseModel):
+    asset_kind: str = "skill"
+
+
+class AssetSavePayload(BaseModel):
+    asset_kind: str = "skill"
+    markdown_text: str
+    json_payload: dict[str, Any]
+    prompt_text: str
+    notes: str | None = None
 
 
 def get_session(request: Request):
@@ -206,17 +222,26 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
     return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={updated_run.id}", status_code=303)
 
 
-@router.get("/projects/{project_id}/skill", response_class=HTMLResponse)
-def skill_page(request: Request, project_id: str, session: SessionDep):
+@router.get("/projects/{project_id}/assets", response_class=HTMLResponse)
+def assets_page(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    kind: str = Query(default="skill"),
+):
     project = _ensure_project(session, project_id)
-    draft = repository.get_latest_skill_draft(session, project_id)
-    versions = repository.list_skill_versions(session, project_id)
+    asset_kind = _normalize_asset_kind(kind)
+    draft = repository.get_latest_asset_draft(session, project_id, asset_kind=asset_kind)
+    versions = repository.list_asset_versions(session, project_id, asset_kind=asset_kind)
     latest_run = repository.get_latest_analysis_run(session, project_id)
     return templates.TemplateResponse(
         request=request,
-        name="skill.html",
+        name="assets.html",
         context={
             "project": project,
+            "asset_kind": asset_kind,
+            "asset_label": _asset_label(asset_kind),
+            "asset_options": ASSET_KIND_OPTIONS,
             "draft": draft,
             "versions": versions,
             "latest_run": latest_run,
@@ -225,10 +250,86 @@ def skill_page(request: Request, project_id: str, session: SessionDep):
     )
 
 
+@router.get("/projects/{project_id}/skill", response_class=HTMLResponse)
+def skill_page(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill", status_code=303)
+
+
+@router.post("/projects/{project_id}/assets/generate")
+def generate_asset_form(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    asset_kind: Annotated[str, Form()] = "skill",
+):
+    normalized_kind = _normalize_asset_kind(asset_kind)
+    draft = _generate_asset_draft(request, session, project_id, asset_kind=normalized_kind)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind={normalized_kind}&draft={draft.id}", status_code=303)
+
+
+@router.post("/projects/{project_id}/assets/{draft_id}/save")
+def save_asset_draft_form(
+    request: Request,
+    project_id: str,
+    draft_id: str,
+    session: SessionDep,
+    asset_kind: Annotated[str, Form()] = "skill",
+    markdown_text: Annotated[str, Form(...)] = "",
+    json_payload: Annotated[str, Form(...)] = "{}",
+    prompt_text: Annotated[str | None, Form()] = None,
+    system_prompt: Annotated[str | None, Form()] = None,
+    notes: Annotated[str | None, Form()] = None,
+):
+    draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    draft.markdown_text = markdown_text
+    draft.json_payload = json.loads(json_payload)
+    draft.system_prompt = (prompt_text or system_prompt or "").strip()
+    draft.notes = notes
+    _persist_asset_files(
+        request,
+        project_id,
+        draft.asset_kind,
+        f"draft_{draft.id}",
+        draft.markdown_text,
+        draft.json_payload,
+        draft.system_prompt,
+    )
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind={draft.asset_kind}", status_code=303)
+
+
+@router.post("/projects/{project_id}/assets/{draft_id}/publish")
+def publish_asset_form(
+    request: Request,
+    project_id: str,
+    draft_id: str,
+    session: SessionDep,
+    asset_kind: Annotated[str, Form()] = "skill",
+):
+    draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    version = repository.publish_asset_draft(session, project_id, draft)
+    _persist_asset_files(
+        request,
+        project_id,
+        version.asset_kind,
+        f"published_v{version.version_number}",
+        version.markdown_text,
+        version.json_payload,
+        version.system_prompt,
+    )
+    if version.asset_kind == "skill":
+        return RedirectResponse(url=f"/projects/{project_id}/playground", status_code=303)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind={version.asset_kind}", status_code=303)
+
+
 @router.post("/projects/{project_id}/skills/generate")
 def generate_skill_form(request: Request, project_id: str, session: SessionDep):
-    draft = _generate_skill_draft(request, session, project_id)
-    return RedirectResponse(url=f"/projects/{project_id}/skill?draft={draft.id}", status_code=303)
+    draft = _generate_asset_draft(request, session, project_id, asset_kind="skill")
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill&draft={draft.id}", status_code=303)
 
 
 @router.post("/projects/{project_id}/skills/{draft_id}/save")
@@ -249,8 +350,8 @@ def save_skill_draft_form(
     draft.json_payload = json.loads(json_payload)
     draft.system_prompt = system_prompt
     draft.notes = notes
-    _persist_skill_files(request, project_id, f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
-    return RedirectResponse(url=f"/projects/{project_id}/skill", status_code=303)
+    _persist_asset_files(request, project_id, "skill", f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill", status_code=303)
 
 
 @router.post("/projects/{project_id}/skills/{draft_id}/publish")
@@ -259,9 +360,10 @@ def publish_skill_form(request: Request, project_id: str, draft_id: str, session
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
     version = repository.publish_skill_draft(session, project_id, draft)
-    _persist_skill_files(
+    _persist_asset_files(
         request,
         project_id,
+        "skill",
         f"published_v{version.version_number}",
         version.markdown_text,
         version.json_payload,
@@ -481,9 +583,71 @@ def get_analysis_api(
     return _serialize_analysis_run(run)
 
 
+@router.post("/api/projects/{project_id}/assets/generate")
+def generate_asset_api(request: Request, project_id: str, payload: AssetGeneratePayload, session: SessionDep):
+    draft = _generate_asset_draft(request, session, project_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
+    return _serialize_draft(draft)
+
+
+@router.post("/api/projects/{project_id}/assets/{draft_id}/save")
+def save_asset_api(
+    request: Request,
+    project_id: str,
+    draft_id: str,
+    payload: AssetSavePayload,
+    session: SessionDep,
+):
+    draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    draft.markdown_text = payload.markdown_text
+    draft.json_payload = payload.json_payload
+    draft.system_prompt = payload.prompt_text
+    draft.notes = payload.notes
+    _persist_asset_files(
+        request,
+        project_id,
+        draft.asset_kind,
+        f"draft_{draft.id}",
+        draft.markdown_text,
+        draft.json_payload,
+        draft.system_prompt,
+    )
+    return _serialize_draft(draft)
+
+
+@router.post("/api/projects/{project_id}/assets/{draft_id}/publish")
+def publish_asset_api(
+    request: Request,
+    project_id: str,
+    draft_id: str,
+    payload: AssetGeneratePayload,
+    session: SessionDep,
+):
+    draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    version = repository.publish_asset_draft(session, project_id, draft)
+    _persist_asset_files(
+        request,
+        project_id,
+        version.asset_kind,
+        f"published_v{version.version_number}",
+        version.markdown_text,
+        version.json_payload,
+        version.system_prompt,
+    )
+    return {
+        "id": version.id,
+        "asset_kind": version.asset_kind,
+        "version_number": version.version_number,
+        "published_at": version.published_at.isoformat(),
+    }
+
+
 @router.post("/api/projects/{project_id}/skills/generate")
 def generate_skill_api(request: Request, project_id: str, session: SessionDep):
-    draft = _generate_skill_draft(request, session, project_id)
+    draft = _generate_asset_draft(request, session, project_id, asset_kind="skill")
     return _serialize_draft(draft)
 
 
@@ -493,9 +657,10 @@ def publish_skill_api(request: Request, project_id: str, draft_id: str, session:
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found.")
     version = repository.publish_skill_draft(session, project_id, draft)
-    _persist_skill_files(
+    _persist_asset_files(
         request,
         project_id,
+        "skill",
         f"published_v{version.version_number}",
         version.markdown_text,
         version.json_payload,
@@ -503,6 +668,7 @@ def publish_skill_api(request: Request, project_id: str, draft_id: str, session:
     )
     return {
         "id": version.id,
+        "asset_kind": version.asset_kind,
         "version_number": version.version_number,
         "published_at": version.published_at.isoformat(),
     }
@@ -608,13 +774,14 @@ def download_preprocess_artifact_api(project_id: str, artifact_id: str, session:
 
 @router.get("/api/settings/models")
 def list_models_api(
+    request: Request,
     service: Annotated[str, Query(pattern="^(chat|embedding)$")],
     session: SessionDep,
 ):
     config = repository.get_service_config(session, f"{service}_service")
     if not config:
         raise HTTPException(status_code=400, detail=f"{service} service is not configured.")
-    client = OpenAICompatibleClient(config)
+    client = OpenAICompatibleClient(config, log_path=str(request.app.state.config.llm_log_path))
     try:
         return {"service": service, "models": client.list_models()}
     except Exception as exc:
@@ -687,11 +854,11 @@ def _resolve_run(session: Session, project_id: str, run_id: str | None) -> Analy
     return repository.get_latest_analysis_run(session, project_id)
 
 
-def _generate_skill_draft(request: Request, session: Session, project_id: str):
+def _generate_asset_draft(request: Request, session: Session, project_id: str, *, asset_kind: str):
     project = _ensure_project(session, project_id)
     run = repository.get_latest_analysis_run(session, project_id)
     if not run:
-        raise HTTPException(status_code=400, detail="Run analysis before generating a skill.")
+        raise HTTPException(status_code=400, detail="Run analysis before generating an asset.")
     if run.status in {"queued", "running"}:
         raise HTTPException(status_code=409, detail="Wait for the current analysis run to finish first.")
     facets = run.facets or []
@@ -699,23 +866,33 @@ def _generate_skill_draft(request: Request, session: Session, project_id: str):
         raise HTTPException(status_code=400, detail="Analysis has no facets to synthesize.")
     chat_config = repository.get_service_config(session, "chat_service")
     summary = run.summary_json or {}
-    bundle = request.app.state.skill_synthesizer.build(
+    bundle = request.app.state.asset_synthesizer.build(
+        asset_kind,
         project,
         facets,
         chat_config,
         target_role=summary.get("target_role"),
         analysis_context=summary.get("analysis_context"),
     )
-    draft = repository.create_skill_draft(
+    draft = repository.create_asset_draft(
         session,
         project_id=project_id,
         run_id=run.id,
+        asset_kind=bundle.asset_kind,
         markdown_text=bundle.markdown_text,
         json_payload=bundle.json_payload,
-        system_prompt=bundle.system_prompt,
+        prompt_text=bundle.prompt_text,
         notes="Auto-generated draft. Review before publishing.",
     )
-    _persist_skill_files(request, project_id, f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
+    _persist_asset_files(
+        request,
+        project_id,
+        draft.asset_kind,
+        f"draft_{draft.id}",
+        draft.markdown_text,
+        draft.json_payload,
+        draft.system_prompt,
+    )
     return draft
 
 
@@ -739,11 +916,12 @@ def _chat_with_persona(
         chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
     history = sorted(chat_session.turns, key=lambda item: item.created_at)
     repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
-    hits, retrieval_mode = request.app.state.retrieval.search(
+    hits, retrieval_mode, retrieval_trace = request.app.state.retrieval.search(
         session,
         project_id=project_id,
         query=message,
         embedding_config=embedding_config,
+        log_path=str(request.app.state.config.llm_log_path),
         limit=4,
     )
     evidence_block = "\n\n".join(
@@ -751,11 +929,19 @@ def _chat_with_persona(
         for hit in hits
     )
     prompt_excerpt = f"SKILL:\n{version.system_prompt[:600]}\n\nEVIDENCE:\n{evidence_block[:1200]}"
-    assistant_reply, llm_meta = _generate_chat_reply(chat_config, version.system_prompt, history, message, evidence_block)
+    assistant_reply, llm_meta = _generate_chat_reply(
+        chat_config,
+        version.system_prompt,
+        history,
+        message,
+        evidence_block,
+        log_path=str(request.app.state.config.llm_log_path),
+    )
     trace = {
         "skill_version_id": version.id,
         "skill_version_number": version.version_number,
         "retrieval_mode": retrieval_mode,
+        "retrieval_trace": retrieval_trace,
         "evidence": [
             {
                 "chunk_id": hit.chunk_id,
@@ -791,6 +977,8 @@ def _generate_chat_reply(
     history: list[Any],
     message: str,
     evidence_block: str,
+    *,
+    log_path: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if not config:
         prefix = "当前为无外部 LLM 降级模式。"
@@ -805,7 +993,7 @@ def _generate_chat_reply(
             ),
             {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
         )
-    client = OpenAICompatibleClient(config)
+    client = OpenAICompatibleClient(config, log_path=log_path)
     messages = [{"role": "system", "content": system_prompt}]
     if evidence_block:
         messages.append({"role": "system", "content": f"Retrieved evidence from source documents:\n{evidence_block}"})
@@ -823,23 +1011,25 @@ def _generate_chat_reply(
             "api_mode": config.api_mode,
             "model": result.model,
             "usage": result.usage,
+            "request_url": result.request_url,
         },
     )
 
 
-def _persist_skill_files(
+def _persist_asset_files(
     request: Request,
     project_id: str,
+    asset_kind: str,
     base_name: str,
     markdown_text: str,
     json_payload: dict[str, Any],
-    system_prompt: str,
+    prompt_text: str,
 ) -> None:
-    skill_dir = request.app.state.config.skill_dir / project_id
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / f"{base_name}.md").write_text(markdown_text, encoding="utf-8")
-    (skill_dir / f"{base_name}.json").write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    (skill_dir / f"{base_name}.prompt.txt").write_text(system_prompt, encoding="utf-8")
+    asset_dir = request.app.state.config.assets_dir / project_id / asset_kind
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    (asset_dir / f"{base_name}.md").write_text(markdown_text, encoding="utf-8")
+    (asset_dir / f"{base_name}.json").write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    (asset_dir / f"{base_name}.prompt.txt").write_text(prompt_text, encoding="utf-8")
 
 
 def _ordered_facets(facets: list[AnalysisFacet]) -> list[AnalysisFacet]:
@@ -917,9 +1107,11 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
 def _serialize_draft(draft) -> dict[str, Any]:
     return {
         "id": draft.id,
+        "asset_kind": getattr(draft, "asset_kind", "skill"),
         "status": draft.status,
         "markdown_text": draft.markdown_text,
         "json_payload": draft.json_payload,
+        "prompt_text": draft.system_prompt,
         "system_prompt": draft.system_prompt,
         "notes": draft.notes,
     }
@@ -979,3 +1171,12 @@ def _settings_payload(payload: dict[str, Any], *, default_provider: str) -> dict
     normalized["model"] = normalized.get("model", "")
     normalized["api_mode"] = normalize_api_mode(normalized.get("api_mode"))
     return normalized
+
+
+def _normalize_asset_kind(value: str | None) -> str:
+    candidate = (value or "skill").strip().lower()
+    return candidate if candidate in ASSET_KINDS else "skill"
+
+
+def _asset_label(asset_kind: str) -> str:
+    return "用户剖析报告" if asset_kind == "profile_report" else "Skill"

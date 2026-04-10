@@ -20,22 +20,41 @@ class RetrievalService:
         project_id: str,
         query: str,
         embedding_config: ServiceConfig | None,
+        log_path: str | None = None,
         limit: int = 8,
         filters: RetrievalFilters | None = None,
-    ) -> tuple[list[RetrievedChunk], str]:
+    ) -> tuple[list[RetrievedChunk], str, dict[str, object]]:
+        trace: dict[str, object] = {
+            "mode": "lexical",
+            "embedding_configured": bool(embedding_config),
+            "embedding_attempted": False,
+            "embedding_success": False,
+            "embedding_error": None,
+            "embedding_url": None,
+            "fallback_reason": "embedding_not_configured" if not embedding_config else None,
+        }
         if embedding_config:
+            trace["embedding_attempted"] = True
             try:
-                results = self.embedding.search(
+                results, embedding_trace = self.embedding.search(
                     session,
                     project_id=project_id,
                     query=query,
                     config=embedding_config,
+                    log_path=log_path,
                     limit=limit,
                     filters=filters,
                 )
+                trace.update(embedding_trace)
                 if results:
-                    return results, "hybrid"
-            except Exception:
+                    trace["mode"] = "hybrid"
+                    trace["embedding_success"] = True
+                    return results, "hybrid", trace
+                trace["embedding_success"] = True
+                trace["fallback_reason"] = "empty_hybrid_results"
+            except Exception as exc:
+                trace["embedding_error"] = str(exc)
+                trace["fallback_reason"] = "embedding_exception"
                 pass
         results = self.lexical.search(
             session,
@@ -44,4 +63,5 @@ class RetrievalService:
             limit=limit,
             filters=filters,
         )
-        return results, "lexical"
+        trace["mode"] = "lexical"
+        return results, "lexical", trace
