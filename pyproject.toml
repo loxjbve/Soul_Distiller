@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persona-distiller"
+version = "0.1.0"
+description = "Local web app for distilling document collections into persona imitation skills."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12.3",
+    "fastapi>=0.115.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.4",
+    "python-docx>=1.1.2",
+    "python-multipart>=0.0.9",
+    "pypdf>=5.0.0",
+    "sqlalchemy>=2.0.36",
+    "uvicorn[standard]>=0.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.3",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }}{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Project Workspace</p>
+        <h1>{{ project.name }}</h1>
+        <p class="hero-note">{{ project.description or "这个项目还没有补充说明。" }}</p>
+        <div class="hero-chips">
+            <span>{{ stats.document_count }} 份文档</span>
+            <span>{{ stats.ready_count }} 份可分析</span>
+            {% if latest_run %}
+                <span>最新分析 {{ latest_run.status }}</span>
+            {% else %}
+                <span>尚未分析</span>
+            {% endif %}
+            {% if latest_version %}
+                <span>已发布 v{{ latest_version.version_number }}</span>
+            {% else %}
+                <span>未发布</span>
+            {% endif %}
+        </div>
+    </div>
+    <div class="project-hero-actions">
+        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">分析结果</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/skill">Skill 草稿</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
+    </div>
+</section>
+
+<section class="studio-grid">
+    <article class="workspace-panel dark-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Ingest</p>
+                <h2>拖拽上传文档</h2>
+            </div>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/documents" enctype="multipart/form-data" class="stack" data-drop-upload>
+            <label class="dropzone" data-dropzone>
+                <input type="file" name="files" multiple required data-file-input>
+                <span class="dropzone-kicker">Drop files here</span>
+                <strong>拖拽或点击上传</strong>
+                <small>支持 html / json / docx / pdf / txt / md / log。扫描 PDF 当前不做 OCR。</small>
+                <em data-file-count>未选择文件</em>
+            </label>
+            <div class="file-pills" data-file-list></div>
+            <button type="submit">上传并抽取文本</button>
+        </form>
+    </article>
+
+    <article class="workspace-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Analysis Studio</p>
+                <h2>指定分析目标</h2>
+            </div>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/analyze" class="stack roomy">
+            <label>
+                <span>要分析和模拟的角色</span>
+                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="例如：作者本人、群聊管理员、小红本人">
+            </label>
+            <label>
+                <span>文档补充说明</span>
+                <textarea name="analysis_context" rows="7" placeholder="说明语料来源、可信度、谁在说话、你希望重点模仿什么">{{ analysis_defaults.analysis_context }}</textarea>
+            </label>
+            <p class="muted">
+                这些输入会进入分析提示词和 skill 合成流程，用来限定“在模仿谁”以及“如何理解这批语料”。
+            </p>
+            <button type="submit">后台启动分析</button>
+        </form>
+    </article>
+
+    <aside class="workspace-panel slim-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Status</p>
+                <h2>当前状态</h2>
+            </div>
+        </div>
+        <div class="status-stack">
+            <div class="status-row">
+                <span>文档</span>
+                <strong>{{ stats.document_count }}</strong>
+            </div>
+            <div class="status-row">
+                <span>可分析</span>
+                <strong>{{ stats.ready_count }}</strong>
+            </div>
+            <div class="status-row">
+                <span>失败</span>
+                <strong>{{ stats.failed_count }}</strong>
+            </div>
+            <div class="status-row">
+                <span>最新分析</span>
+                <strong>{{ latest_run.status if latest_run else "未运行" }}</strong>
+            </div>
+            <div class="status-row">
+                <span>分析进度</span>
+                <strong>{{ latest_run.summary_json.progress_percent if latest_run and latest_run.summary_json else 0 }}%</strong>
+            </div>
+            <div class="status-row">
+                <span>Skill 草稿</span>
+                <strong>{{ "已生成" if latest_draft else "无" }}</strong>
+            </div>
+        </div>
+    </aside>
+</section>
+
+<section class="workspace-panel">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Documents</p>
+            <h2>文档管理</h2>
+        </div>
+    </div>
+    {% if documents %}
+        <div class="document-stack">
+            {% for document in documents %}
+                <article class="document-card {% if document.ingest_status == 'failed' %}document-card-danger{% endif %}" id="document-{{ document.id }}">
+                    <div class="document-main">
+                        <div class="document-title-block">
+                            <strong>{{ document.title or document.filename }}</strong>
+                            <p>{{ document.filename }}</p>
+                        </div>
+                        <div class="hero-chips compact-chips">
+                            <span>{{ document.source_type }}</span>
+                            <span>{{ document.ingest_status }}</span>
+                            <span>{{ document.language or "unknown" }}</span>
+                        </div>
+                    </div>
+
+                    {% if document.error_message %}
+                        <p class="danger">{{ document.error_message }}</p>
+                    {% endif %}
+
+                    <p class="muted">{{ (document.metadata_json or {}).get("user_note", "尚未添加备注") }}</p>
+
+                    <details class="document-editor">
+                        <summary>管理这份文档</summary>
+                        <div class="document-editor-grid">
+                            <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/update" class="stack">
+                                <label>
+                                    <span>显示标题</span>
+                                    <input type="text" name="title" value="{{ document.title or document.filename }}">
+                                </label>
+                                <label>
+                                    <span>来源类型</span>
+                                    <input type="text" name="source_type" value="{{ document.source_type }}">
+                                </label>
+                                <label>
+                                    <span>备注</span>
+                                    <textarea name="user_note" rows="4">{{ (document.metadata_json or {}).get("user_note", "") }}</textarea>
+                                </label>
+                                <button type="submit">保存文档信息</button>
+                            </form>
+                            <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/delete" class="danger-zone" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
+                                <p>删除会移除原文件、抽取文本和检索索引。</p>
+                                <button type="submit" class="danger-button">删除文档</button>
+                            </form>
+                        </div>
+                    </details>
+                </article>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="muted">还没有上传文档。</p>
+    {% endif %}
+</section>
+{% endblock %}

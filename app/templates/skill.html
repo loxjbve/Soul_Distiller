@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} Skill{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Skill Review</p>
+        <h1>{{ project.name }} 的 Skill 草稿</h1>
+        <p class="hero-note">从最新分析生成草稿，编辑后再发布为正式版本。</p>
+    </div>
+    <div class="project-hero-actions">
+        <form method="post" action="/projects/{{ project.id }}/skills/generate">
+            <button type="submit">重新生成草稿</button>
+        </form>
+        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">返回分析</a>
+    </div>
+</section>
+
+{% if draft %}
+    <section class="workspace-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Draft</p>
+                <h2>编辑草稿</h2>
+            </div>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/skills/{{ draft.id }}/save" class="stack roomy">
+            <label>
+                <span>Markdown Skill</span>
+                <textarea name="markdown_text" rows="18">{{ draft.markdown_text }}</textarea>
+            </label>
+            <label>
+                <span>JSON Payload</span>
+                <textarea name="json_payload" rows="18">{{ draft_json_pretty }}</textarea>
+            </label>
+            <label>
+                <span>System Prompt</span>
+                <textarea name="system_prompt" rows="14">{{ draft.system_prompt }}</textarea>
+            </label>
+            <label>
+                <span>审核备注</span>
+                <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
+            </label>
+            <div class="inline-actions">
+                <button type="submit">保存草稿</button>
+                <button formaction="/projects/{{ project.id }}/skills/{{ draft.id }}/publish" type="submit">发布版本</button>
+            </div>
+        </form>
+    </section>
+{% else %}
+    <section class="workspace-panel">
+        <p class="muted">当前没有草稿。先等分析完成，再生成 Skill。</p>
+    </section>
+{% endif %}
+
+<section class="workspace-panel">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Versions</p>
+            <h2>已发布版本</h2>
+        </div>
+    </div>
+    {% if versions %}
+        <div class="project-list">
+            {% for version in versions %}
+                <div class="project-row">
+                    <div>
+                        <strong>v{{ version.version_number }}</strong>
+                        <p>{{ version.published_at }}</p>
+                    </div>
+                    <span>已发布</span>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="muted">暂无已发布版本。</p>
+    {% endif %}
+</section>
+{% endblock %}

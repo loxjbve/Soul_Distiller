@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} Analysis{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Analysis Monitor</p>
+        <h1>{{ project.name }} 分析进度</h1>
+        <p class="hero-note">
+            这个页面会自动轮询后台任务状态。即使离开页面或关闭浏览器，只要服务仍在运行，重新打开后也能看到同一个 run 的最新进度。
+        </p>
+    </div>
+    <div class="project-hero-actions">
+        <a class="secondary-button" href="/projects/{{ project.id }}">返回项目</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/skill">Skill 草稿</a>
+    </div>
+</section>
+
+{% if run %}
+    <section
+        class="workspace-panel analysis-dashboard"
+        data-analysis-monitor
+        data-project-id="{{ project.id }}"
+        data-run-id="{{ run_id }}"
+    >
+        <script type="application/json" id="analysis-bootstrap">{{ serialized_run | safe }}</script>
+
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Run</p>
+                <h2 id="analysis-run-title">分析运行 {{ run.id[:8] }}</h2>
+            </div>
+            <div class="facet-meta">
+                <span id="analysis-status-chip">{{ run.status }}</span>
+                <span id="analysis-role-chip">{{ (run.summary_json or {}).get('target_role') or "未指定角色" }}</span>
+            </div>
+        </div>
+
+        <section class="progress-shell">
+            <div class="progress-labels">
+                <strong id="analysis-stage">{{ (run.summary_json or {}).get("current_stage") or "排队中" }}</strong>
+                <span id="analysis-percent">{{ (run.summary_json or {}).get("progress_percent", 0) }}%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="analysis-progress-fill" style="width: {{ (run.summary_json or {}).get('progress_percent', 0) }}%"></div>
+            </div>
+        </section>
+
+        <section class="run-metric-grid">
+            <div class="metric-card">
+                <span>完成维度</span>
+                <strong id="metric-completed">{{ (run.summary_json or {}).get("completed_facets", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>失败维度</span>
+                <strong id="metric-failed">{{ (run.summary_json or {}).get("failed_facets", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>LLM 成功</span>
+                <strong id="metric-llm-success">{{ (run.summary_json or {}).get("llm_successes", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>LLM 失败</span>
+                <strong id="metric-llm-failure">{{ (run.summary_json or {}).get("llm_failures", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>总 tokens</span>
+                <strong id="metric-total-tokens">{{ (run.summary_json or {}).get("total_tokens", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>当前维度</span>
+                <strong id="metric-current-facet">{{ (run.summary_json or {}).get("current_facet") or "-" }}</strong>
+            </div>
+        </section>
+
+        <section class="analysis-layout">
+            <div>
+                <div class="section-head slim-head">
+                    <div>
+                        <p class="eyebrow">Facets</p>
+                        <h3>分维度进度</h3>
+                    </div>
+                </div>
+                <div id="facet-status-list" class="facet-status-grid"></div>
+            </div>
+
+            <div>
+                <div class="section-head slim-head">
+                    <div>
+                        <p class="eyebrow">Events</p>
+                        <h3>运行事件流</h3>
+                    </div>
+                </div>
+                <div id="analysis-events" class="event-stream"></div>
+            </div>
+        </section>
+
+        <section class="section-head slim-head top-gap">
+            <div>
+                <p class="eyebrow">Results</p>
+                <h3>分析结果</h3>
+            </div>
+        </section>
+        <div id="analysis-result-list" class="facet-stack"></div>
+    </section>
+{% else %}
+    <section class="workspace-panel">
+        <p class="muted">还没有分析记录。回到项目页启动一次分析即可。</p>
+    </section>
+{% endif %}
+{% endblock %}

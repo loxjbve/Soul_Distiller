@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} Playground{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Playground</p>
+        <h1>{{ project.name }} 的模仿试聊</h1>
+        {% if version %}
+            <p class="hero-note">当前使用版本：v{{ version.version_number }}</p>
+        {% else %}
+            <p class="hero-note">还没有已发布 skill，暂时无法试聊。</p>
+        {% endif %}
+    </div>
+    <div class="project-hero-actions">
+        <a class="secondary-button" href="/projects/{{ project.id }}/skill">返回 Skill</a>
+    </div>
+</section>
+
+{% if version %}
+    <section class="workspace-panel">
+        <form method="post" action="/projects/{{ project.id }}/playground/chat" class="stack roomy">
+            <label>
+                <span>用户输入</span>
+                <textarea name="message" rows="4" placeholder="输入一段话，让系统以该人物身份回应" required></textarea>
+            </label>
+            <button type="submit">发送</button>
+        </form>
+    </section>
+
+    <section class="document-stack">
+        {% for turn in turns %}
+            <article class="document-card" id="turn-{{ turn.id }}">
+                <div class="document-main">
+                    <div class="document-title-block">
+                        <strong>{{ "用户" if turn.role == "user" else "助手" }}</strong>
+                        <p>{{ turn.created_at }}</p>
+                    </div>
+                </div>
+                <p>{{ turn.content }}</p>
+                {% if turn.trace_json %}
+                    <div class="trace-box">
+                        <p class="muted">Skill 版本：v{{ turn.trace_json.skill_version_number }}</p>
+                        <p class="muted">检索模式：{{ turn.trace_json.retrieval_mode }}</p>
+                        {% for evidence in turn.trace_json.evidence %}
+                            <div class="evidence-block">
+                                <strong>{{ evidence.filename }}</strong>
+                                <p class="muted">score={{ evidence.score }}</p>
+                                <blockquote>{{ evidence.quote }}</blockquote>
+                            </div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </article>
+        {% endfor %}
+    </section>
+{% else %}
+    <section class="workspace-panel">
+        <p class="muted">请先在 Skill 页面发布一个版本。</p>
+    </section>
+{% endif %}
+{% endblock %}

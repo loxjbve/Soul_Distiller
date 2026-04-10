@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="project-hero">
+    <div class="project-hero-copy">
+        <p class="eyebrow">Settings</p>
+        <h1>LLM 与 Embedding 服务</h1>
+        <p class="hero-note">
+            支持 `OpenAI`、`xAI`、`Gemini` 官方入口，也支持自定义 OpenAI Compatible 服务。
+            选择官方 provider 时，留空 `Base URL` 即会自动使用官方地址。
+        </p>
+    </div>
+</section>
+
+<section class="workspace-grid">
+    <article class="workspace-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Chat</p>
+                <h2>Chat LLM</h2>
+            </div>
+        </div>
+        <form method="post" action="/settings/chat" class="stack roomy" data-provider-form>
+            <label>
+                <span>Provider</span>
+                <select name="provider_kind" data-provider-select>
+                    {% for option in provider_options %}
+                        <option value="{{ option.value }}" {% if chat_setting.get('provider_kind') == option.value %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>Base URL</span>
+                <input
+                    type="text"
+                    name="base_url"
+                    value="{{ chat_setting.get('base_url', '') }}"
+                    placeholder="留空则自动使用官方入口"
+                    data-base-url
+                >
+                <small class="muted" data-base-hint></small>
+            </label>
+            <label>
+                <span>API Key</span>
+                <input type="password" name="api_key" value="{{ chat_setting.get('api_key', '') }}" required>
+            </label>
+            <label>
+                <span>Model</span>
+                <input type="text" name="model" value="{{ chat_setting.get('model', '') }}" placeholder="可手动填写，留空时尝试自动发现">
+            </label>
+            <div class="inline-actions">
+                <button type="submit">保存 Chat 配置</button>
+                <button type="button" class="secondary-button" onclick="discoverModels('chat', 'chat-models')">发现模型</button>
+            </div>
+        </form>
+        <pre class="trace-box" id="chat-models">点击“发现模型”查看当前服务返回的模型列表。</pre>
+    </article>
+
+    <article class="workspace-panel">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Embedding</p>
+                <h2>Embedding</h2>
+            </div>
+        </div>
+        <form method="post" action="/settings/embedding" class="stack roomy" data-provider-form>
+            <label>
+                <span>Provider</span>
+                <select name="provider_kind" data-provider-select>
+                    {% for option in provider_options %}
+                        <option value="{{ option.value }}" {% if embedding_setting.get('provider_kind') == option.value %}selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>Base URL</span>
+                <input
+                    type="text"
+                    name="base_url"
+                    value="{{ embedding_setting.get('base_url', '') }}"
+                    placeholder="留空则自动使用官方入口"
+                    data-base-url
+                >
+                <small class="muted" data-base-hint></small>
+            </label>
+            <label>
+                <span>API Key</span>
+                <input type="password" name="api_key" value="{{ embedding_setting.get('api_key', '') }}" required>
+            </label>
+            <label>
+                <span>Model</span>
+                <input type="text" name="model" value="{{ embedding_setting.get('model', '') }}" placeholder="可手动填写 embedding 模型名称">
+            </label>
+            <div class="inline-actions">
+                <button type="submit">保存 Embedding 配置</button>
+                <button type="button" class="secondary-button" onclick="discoverModels('embedding', 'embedding-models')">发现模型</button>
+            </div>
+        </form>
+        <pre class="trace-box" id="embedding-models">不配置 embedding 时，系统会自动降级为词法检索。</pre>
+    </article>
+</section>
+
+<script>
+const PROVIDER_PRESETS = {
+    openai: {
+        requiresBaseUrl: false,
+        hint: '将自动使用 https://api.openai.com/v1',
+        placeholder: '留空则自动使用 OpenAI 官方入口',
+    },
+    xai: {
+        requiresBaseUrl: false,
+        hint: '将自动使用 https://api.x.ai/v1',
+        placeholder: '留空则自动使用 xAI 官方入口',
+    },
+    gemini: {
+        requiresBaseUrl: false,
+        hint: '将自动使用 https://generativelanguage.googleapis.com/v1beta/openai',
+        placeholder: '留空则自动使用 Gemini 官方 OpenAI 兼容入口',
+    },
+    'openai-compatible': {
+        requiresBaseUrl: true,
+        hint: '自定义 OpenAI Compatible 服务必须填写 Base URL。',
+        placeholder: '例如 https://api.example.com/v1',
+    },
+};
+
+function applyProviderPreset(form) {
+    const select = form.querySelector('[data-provider-select]');
+    const baseUrlInput = form.querySelector('[data-base-url]');
+    const hint = form.querySelector('[data-base-hint]');
+    const preset = PROVIDER_PRESETS[select.value] || PROVIDER_PRESETS['openai-compatible'];
+    baseUrlInput.required = preset.requiresBaseUrl;
+    baseUrlInput.placeholder = preset.placeholder;
+    hint.textContent = preset.hint;
+}
+
+document.querySelectorAll('[data-provider-form]').forEach((form) => {
+    const select = form.querySelector('[data-provider-select]');
+    select.addEventListener('change', () => applyProviderPreset(form));
+    applyProviderPreset(form);
+});
+
+async function discoverModels(service, targetId) {
+    const target = document.getElementById(targetId);
+    target.textContent = 'Loading...';
+    const response = await fetch(`/api/settings/models?service=${service}`);
+    const payload = await response.json();
+    if (!response.ok) {
+        target.textContent = payload.detail || 'Request failed';
+        return;
+    }
+    target.textContent = JSON.stringify(payload.models, null, 2);
+}
+</script>
+{% endblock %}
