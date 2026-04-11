@@ -7,8 +7,8 @@ from app.utils.text import token_count
 def chunk_segments(
     segments: list[ExtractedSegment],
     *,
-    chunk_size: int = 1800,
-    overlap: int = 300,
+    chunk_size: int = 4000,
+    overlap: int = 400,
 ) -> list[ChunkPayload]:
     # Merge segments with identical metadata to prevent excessive tiny chunks
     grouped_segments: list[dict] = []
@@ -48,7 +48,7 @@ def chunk_segments(
                         start_offset=global_offset + start,
                         end_offset=global_offset + end,
                         page_number=segment.metadata.get("page_number"),
-                        token_count=token_count(chunk_text),
+                        token_count=len(chunk_text) // 2,  # Use rough estimate for speed instead of full token_count
                         metadata=segment.metadata.copy(),
                     )
                 )
