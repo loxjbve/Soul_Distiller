@@ -15,6 +15,16 @@ from app.models import TextChunk
 from app.storage import repository
 
 
+
+def _wait_for_ready(client, project_id: str):
+    import time
+    for _ in range(20):
+        doc_res = client.get(f"/api/projects/{project_id}/documents")
+        docs = doc_res.json().get("documents", [])
+        if docs and docs[0].get("ingest_status") == "ready":
+            return
+        time.sleep(0.5)
+
 def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float = 5.0) -> dict:
     deadline = time.time() + timeout_s
     payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
@@ -42,22 +52,14 @@ def test_end_to_end_project_flow(client, app):
         f"/api/projects/{project_id}/documents",
         files={"files": ("memo.txt", io.BytesIO(b"Alice writes concise diary entries about travel and tea."), "text/plain")},
     )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
     assert upload_response.status_code == 200
     document_payload = upload_response.json()["documents"][0]
     assert document_payload["ingest_status"] == "pending"
-        document_id = document_payload["id"]
+    document_id = document_payload["id"]
 
-        process_response = client.post(f"/api/projects/{project_id}/documents/{document_id}/process")
-        assert process_response.status_code == 200
-
-        import time
-        for _ in range(20):
-            doc_res = client.get(f"/api/projects/{project_id}/documents")
-            if doc_res.json()["documents"][0]["ingest_status"] == "ready":
-                break
-            time.sleep(0.5)
-
-        update_doc_response = client.post(
+    update_doc_response = client.post(
         f"/api/projects/{project_id}/documents/{document_id}",
         json={
             "title": "Travel diary",
@@ -141,6 +143,8 @@ def test_analysis_llm_parse_failure_is_logged_and_visible(client, app, monkeypat
         f"/api/projects/{project_id}/documents",
         files={"files": ("memo.txt", io.BytesIO(b"Debug profile with sharp language and strong opinions."), "text/plain")},
     )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
     client.post(
         "/settings/chat",
         data={
@@ -255,6 +259,8 @@ def test_project_rechunk_task_rebuilds_chunks_and_embeddings(client, app, monkey
         f"/api/projects/{project_id}/documents",
         files={"files": ("memo.txt", io.BytesIO(text), "text/plain")},
     )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
     client.post(
         "/settings/embedding",
         data={
@@ -295,6 +301,8 @@ def test_analysis_stream_and_rerun_api(client, app):
         f"/api/projects/{project_id}/documents",
         files={"files": ("memo.txt", io.BytesIO(b"Persona notes with repeated habits and boundaries."), "text/plain")},
     )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
 
     analyze_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -320,6 +328,8 @@ def test_analysis_run_survives_single_facet_retrieval_failure(client, app, monke
         f"/api/projects/{project_id}/documents",
         files={"files": ("memo.txt", io.BytesIO(b"Persona notes with enough text for fallback evidence."), "text/plain")},
     )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
 
     engine = app.state.analysis_engine
     original = engine._retrieve_hits

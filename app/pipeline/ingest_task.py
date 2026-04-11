@@ -49,6 +49,7 @@ class IngestTask:
     started_at: str | None = None
     finished_at: str | None = None
     stages: dict[str, Any] = field(default_factory=dict)
+    is_cancelled: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +89,7 @@ class IngestTaskManager:
         self._tasks: dict[str, IngestTask] = {}
         self._tasks_by_project: dict[str, set[str]] = {}
         self._tasks_by_document: dict[str, str] = {}
+        self._futures = {}
         self._lock = Lock()
         self.llm_log_path = llm_log_path
         self._embedding_config: ServiceConfig | None = None
@@ -119,7 +121,8 @@ class IngestTaskManager:
             self._tasks[task_id] = task
             self._tasks_by_project.setdefault(project_id, set()).add(task_id)
             self._tasks_by_document[document_id] = task_id
-        self.executor.submit(self._run_task, task_id, content, mime_type)
+        future = self.executor.submit(self._run_task, task_id, content, mime_type)
+        self._futures[task_id] = future
         return task.to_dict()
 
     def get(self, task_id: str) -> dict[str, Any] | None:
@@ -135,6 +138,35 @@ class IngestTaskManager:
                 return deepcopy(task.to_dict()) if task else None
         return None
 
+    def stop_project_tasks(self, project_id: str) -> None:
+        with self._lock:
+            task_ids = list(self._tasks_by_project.get(project_id, set()))
+        for task_id in task_ids:
+            with self._lock:
+                task = self._tasks.get(task_id)
+                future = self._futures.get(task_id)
+            if not task or task.status in (TaskStage.COMPLETED, TaskStage.FAILED):
+                continue
+            task.is_cancelled = True
+            if future:
+                future.cancel()
+            
+            with self.db.session() as session:
+                doc = repository.get_document(session, task.document_id)
+                if doc and doc.ingest_status in ("pending", "processing", "queued"):
+                    doc.ingest_status = "pending"
+                    session.commit()
+            
+            with self._lock:
+                if task_id in self._tasks:
+                    del self._tasks[task_id]
+                if task_id in self._futures:
+                    del self._futures[task_id]
+                if task.document_id in self._tasks_by_document:
+                    del self._tasks_by_document[task.document_id]
+                if project_id in self._tasks_by_project and task_id in self._tasks_by_project[project_id]:
+                    self._tasks_by_project[project_id].remove(task_id)
+
     def get_by_project(self, project_id: str) -> list[dict[str, Any]]:
         with self._lock:
             task_ids = self._tasks_by_project.get(project_id, set())
@@ -146,10 +178,11 @@ class IngestTaskManager:
 
     def _run_task(self, task_id: str, content: bytes, mime_type: str | None) -> None:
         task = self._tasks.get(task_id)
-        if not task:
+        if not task or task.is_cancelled:
             return
         self._update_task(task, status=TaskStage.PARSING, progress_percent=5, started_at=utcnow().isoformat())
         try:
+            if task.is_cancelled: return
             text = content.decode("utf-8", errors="ignore")
             result = ExtractionResult(
                 raw_text=text,
@@ -162,10 +195,13 @@ class IngestTaskManager:
                 segments=[ExtractedSegment(text=text, metadata={})]
             )
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
+            if task.is_cancelled: return
             self._process_chunks(task, result)
             self._update_task(task, status=TaskStage.EMBEDDING, progress_percent=70)
+            if task.is_cancelled: return
             self._process_embeddings_concurrent(task)
             self._update_task(task, status=TaskStage.STORING, progress_percent=90)
+            if task.is_cancelled: return
             self._store_to_vector_db(task)
             self._finalize_document(task)
             self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
@@ -293,6 +329,12 @@ class IngestTaskManager:
                     pass
 
     def _finalize_document(self, task: IngestTask) -> None:
+        with self._lock:
+            if task.task_id in self._tasks: del self._tasks[task.task_id]
+            if task.task_id in self._futures: del self._futures[task.task_id]
+            if task.document_id in self._tasks_by_document: del self._tasks_by_document[task.document_id]
+            if task.project_id in self._tasks_by_project and task.task_id in self._tasks_by_project[task.project_id]:
+                self._tasks_by_project[task.project_id].remove(task.task_id)
         with self.db.session() as session:
             document = repository.get_document(session, task.document_id)
             if document:
@@ -300,6 +342,12 @@ class IngestTaskManager:
                 session.commit()
 
     def _mark_document_failed(self, task: IngestTask, error_message: str) -> None:
+        with self._lock:
+            if task.task_id in self._tasks: del self._tasks[task.task_id]
+            if task.task_id in self._futures: del self._futures[task.task_id]
+            if task.document_id in self._tasks_by_document: del self._tasks_by_document[task.document_id]
+            if task.project_id in self._tasks_by_project and task.task_id in self._tasks_by_project[task.project_id]:
+                self._tasks_by_project[task.project_id].remove(task.task_id)
         with self.db.session() as session:
             document = repository.get_document(session, task.document_id)
             if document:
