@@ -300,15 +300,19 @@ class IngestTaskManager:
                         if idx < len(vectors):
                             chunk_id_to_vector[id_] = vectors[idx]
                 
-                # Update DB for this batch
-                all_batch_ids = [str(row.id) for row in rows]
-                with self.db.session() as update_session:
-                    chunks = update_session.scalars(select(TextChunk).where(TextChunk.id.in_(all_batch_ids))).all()
-                    for chunk in chunks:
-                        if str(chunk.id) in chunk_id_to_vector:
-                            chunk.embedding_vector = chunk_id_to_vector[str(chunk.id)]
-                            chunk.embedding_model = resolved_model
-                    update_session.commit()
+                # Update DB for this batch using ultra-fast bulk_update_mappings
+                mappings = [
+                    {
+                        "id": id_,
+                        "embedding_vector": vector,
+                        "embedding_model": resolved_model
+                    }
+                    for id_, vector in chunk_id_to_vector.items()
+                ]
+                if mappings:
+                    with self.db.session() as update_session:
+                        update_session.bulk_update_mappings(TextChunk, mappings)
+                        update_session.commit()
                 
                 offset += batch_size
                 self._update_task(task, stages={"embedding_processed": offset})
@@ -328,7 +332,14 @@ class IngestTaskManager:
                     {"content": c.content, "filename": task.filename, "chunk_index": c.chunk_index}
                     for c in valid_chunks
                 ]
-                store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
+                # Insert to vector db in safe batches to prevent payload limits / OOM
+                batch_size = 1000
+                for i in range(0, len(chunk_ids), batch_size):
+                    store.add(
+                        ids=chunk_ids[i:i + batch_size],
+                        vectors=vectors[i:i + batch_size],
+                        payloads=payloads[i:i + batch_size]
+                    )
                 store.save()
 
     def _finalize_document(self, task: IngestTask) -> None:
