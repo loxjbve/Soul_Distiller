@@ -29,8 +29,15 @@
         </div>
         <form method="post" action="/projects" class="stack roomy">
             <label>
-                <span>人物名称</span>
+                <span>人物名称 / 群聊名称</span>
                 <input type="text" name="name" placeholder="例如：张三 / Alice / 某群聊中的核心成员" required>
+            </label>
+            <label>
+                <span>工作区模式</span>
+                <select name="mode">
+                    <option value="group">基于群聊（分析多个人或整个群氛围）</option>
+                    <option value="single">基于单人（只分析一个特定的人）</option>
+                </select>
             </label>
             <label>
                 <span>项目说明</span>

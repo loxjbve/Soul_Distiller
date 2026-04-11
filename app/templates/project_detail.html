@@ -26,6 +26,7 @@
         <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/preprocess">预分析工作区</a>
+        <button type="button" class="secondary-button" onclick="document.getElementById('edit-project-modal-overlay').hidden = false">编辑项目</button>
         <form method="post" action="/projects/{{ project.id }}/delete" id="delete-project-form" onsubmit="return confirm('Delete this project and all related data?');">
             <button type="submit" class="danger-button" id="delete-project-btn">Delete Project</button>
         </form>
@@ -59,8 +60,8 @@
         </div>
         <form method="post" action="/projects/{{ project.id }}/analyze" class="stack roomy" id="analyze-form">
             <label>
-                <span>要分析和模拟的角色</span>
-                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="例如：作者本人、群聊管理员、小红本人" id="target-role-input">
+                <span>{% if project.mode == 'group' %}群聊名称或氛围描述{% else %}要分析和模拟的角色{% endif %}</span>
+                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="{% if project.mode == 'group' %}例如：一个活跃的吹水群、技术交流群等{% else %}例如：作者本人、群聊管理员、小红本人{% endif %}" id="target-role-input">
             </label>
             <label>
                 <span>文档补充说明</span>
@@ -134,6 +135,35 @@
         </div>
         <div class="modal-body" id="modal-body"></div>
         <div class="modal-footer" id="modal-footer"></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="edit-project-modal-overlay" hidden>
+    <div class="modal" id="edit-project-modal">
+        <div class="modal-header">
+            <h3>编辑项目信息</h3>
+            <button type="button" class="modal-close" onclick="document.getElementById('edit-project-modal-overlay').hidden = true">&times;</button>
+        </div>
+        <div class="modal-body">
+            <form method="post" action="/projects/{{ project.id }}/update" class="stack roomy" id="edit-project-form">
+                <label>
+                    <span>人物名称 / 群聊名称</span>
+                    <input type="text" name="name" value="{{ project.name }}" required>
+                </label>
+                <label>
+                    <span>项目说明</span>
+                    <textarea name="description" rows="5">{{ project.description or '' }}</textarea>
+                </label>
+                <label>
+                    <span>工作区模式</span>
+                    <select name="mode">
+                        <option value="group" {% if project.mode == 'group' %}selected{% endif %}>基于群聊（分析多个人或整个群氛围）</option>
+                        <option value="single" {% if project.mode == 'single' %}selected{% endif %}>基于单人（只分析一个特定的人）</option>
+                    </select>
+                </label>
+                <button type="submit" class="primary-button">保存修改</button>
+            </form>
+        </div>
     </div>
 </div>
 {% endblock %}

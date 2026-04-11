@@ -29,8 +29,8 @@ def list_projects(session: Session) -> list[Project]:
     return list(session.scalars(stmt))
 
 
-def create_project(session: Session, name: str, description: str | None = None) -> Project:
-    project = Project(name=name.strip(), description=(description or "").strip() or None)
+def create_project(session: Session, name: str, description: str | None = None, mode: str = "group") -> Project:
+    project = Project(name=name.strip(), description=(description or "").strip() or None, mode=mode)
     session.add(project)
     session.flush()
     return project
@@ -46,7 +46,7 @@ def clone_project(session: Session, project_id: str, new_name: str) -> Project |
     if not original_project:
         return None
 
-    new_project = create_project(session, new_name, original_project.description)
+    new_project = create_project(session, new_name, original_project.description, mode=original_project.mode)
 
     # Copy documents
     original_docs = session.scalars(select(DocumentRecord).where(DocumentRecord.project_id == project_id)).all()
