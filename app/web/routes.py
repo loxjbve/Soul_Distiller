@@ -612,7 +612,7 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
     documents = repository.list_project_documents(session, project_id)
     submitted = []
     for doc in documents:
-        if doc.ingest_status not in ("ready", "processing"):
+        if doc.ingest_status not in ("ready", "processing", "queued"):
             try:
                 with open(doc.storage_path, "rb") as f:
                     content = f.read()
@@ -626,8 +626,19 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
                 content=content,
                 mime_type=None,
             )
+            # update db status to queued to immediately reflect in UI
+            doc.ingest_status = "queued"
             submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
+    session.commit()
     return {"submitted": submitted}
+
+
+@router.post("/api/projects/{project_id}/stop-processing")
+def stop_processing_api(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.stop_project_tasks(project_id)
+    return {"status": "stopped"}
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}")

@@ -107,7 +107,7 @@
     <div class="section-head">
         <div>
             <p class="eyebrow">Documents</p>
-            <h2>文档管理</h2>
+            <h2>文档处理看板</h2>
         </div>
         <div class="section-actions">
             <button type="button" class="secondary-button" id="refresh-docs-btn">刷新</button>
@@ -115,11 +115,43 @@
                 <span class="btn-text">一键处理</span>
                 <span class="btn-loading" hidden>处理中...</span>
             </button>
+            <button type="button" class="danger-button" id="stop-processing-btn" onclick="stopProcessing()">
+                停止处理
+            </button>
         </div>
     </div>
     <div id="document-container">
-        <div class="document-grid" id="document-grid"></div>
         <p class="muted" id="no-docs-message" hidden>还没有上传文档。</p>
+        <div class="kanban-board" id="kanban-board">
+            <div class="kanban-column">
+                <div class="kanban-column-header">
+                    <h3>未处理</h3>
+                    <span class="kanban-count" id="count-unprocessed">0</span>
+                </div>
+                <div class="kanban-column-content" id="col-unprocessed"></div>
+            </div>
+            <div class="kanban-column">
+                <div class="kanban-column-header">
+                    <h3>队列中</h3>
+                    <span class="kanban-count" id="count-queued">0</span>
+                </div>
+                <div class="kanban-column-content" id="col-queued"></div>
+            </div>
+            <div class="kanban-column">
+                <div class="kanban-column-header">
+                    <h3>进行中</h3>
+                    <span class="kanban-count" id="count-processing">0</span>
+                </div>
+                <div class="kanban-column-content" id="col-processing"></div>
+            </div>
+            <div class="kanban-column">
+                <div class="kanban-column-header">
+                    <h3>已完成</h3>
+                    <span class="kanban-count" id="count-completed">0</span>
+                </div>
+                <div class="kanban-column-content" id="col-completed"></div>
+            </div>
+        </div>
     </div>
 </section>
 
@@ -214,25 +246,45 @@
     }
 
     function renderDocuments() {
-        const grid = document.getElementById('document-grid');
+        const kanbanBoard = document.getElementById('kanban-board');
         const noDocs = document.getElementById('no-docs-message');
 
         if (documents.length === 0) {
-            grid.innerHTML = '';
+            kanbanBoard.hidden = true;
             noDocs.hidden = false;
             return;
         }
 
+        kanbanBoard.hidden = false;
         noDocs.hidden = true;
-        grid.innerHTML = documents.map(doc => {
+
+        const cols = {
+            unprocessed: [],
+            queued: [],
+            processing: [],
+            completed: []
+        };
+
+        documents.forEach(doc => {
             const state = taskStates[doc.id] || getInitialState(doc);
+            const stage = state.task && state.task.status ? state.task.status : state.status;
+            
+            let col = 'unprocessed';
+            if (state.status === 'ready' || stage === 'completed') {
+                col = 'completed';
+            } else if (state.status === 'queued' || stage === 'queued') {
+                col = 'queued';
+            } else if (state.status === 'processing' || ['parsing', 'extracting', 'chunking', 'embedding', 'storing'].includes(stage)) {
+                col = 'processing';
+            }
+
             const statusClass = getStatusClass(state.status, state.task);
             const statusLabel = getStatusLabel(state.status, state.task);
-            const progressStyle = state.status === 'processing' ? `width: ${state.progress}%` : '';
+            const progressStyle = state.status === 'processing' || col === 'processing' ? `width: ${state.progress}%` : '';
             const progressText = getProgressText(state.task);
-            
+
             let indicatorTitle = statusLabel;
-            if (state.status === 'processing') {
+            if (col === 'processing' || col === 'queued') {
                 let details = [];
                 if (state.progress !== undefined) details.push(Math.round(state.progress) + '%');
                 if (progressText) details.push(progressText);
@@ -241,11 +293,11 @@
                 }
             }
 
-            return `
+            cols[col].push(`
                 <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
                     <div class="doc-card-inner">
                         <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}">
-                            ${state.status === 'processing' ? `<div class="doc-progress-ring"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
+                            ${(col === 'processing' || col === 'queued') ? `<div class="doc-progress-ring"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                         </div>
                         <div class="doc-info">
                             <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
@@ -253,8 +305,18 @@
                         </div>
                     </div>
                 </div>
-            `;
-        }).join('');
+            `);
+        });
+
+        document.getElementById('col-unprocessed').innerHTML = cols.unprocessed.join('');
+        document.getElementById('col-queued').innerHTML = cols.queued.join('');
+        document.getElementById('col-processing').innerHTML = cols.processing.join('');
+        document.getElementById('col-completed').innerHTML = cols.completed.join('');
+
+        document.getElementById('count-unprocessed').textContent = cols.unprocessed.length;
+        document.getElementById('count-queued').textContent = cols.queued.length;
+        document.getElementById('count-processing').textContent = cols.processing.length;
+        document.getElementById('count-completed').textContent = cols.completed.length;
     }
 
     function getStatusClass(status, task) {
@@ -262,7 +324,7 @@
         if (status === 'failed') return 'status-failed';
         
         const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'extracting' || stage === 'queued' || stage === 'processing') return 'status-extracting';
+        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return 'status-extracting';
         if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return 'status-indexing';
         
         return 'status-unprocessed';
@@ -273,7 +335,7 @@
         if (status === 'failed') return '失败';
         
         const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'extracting' || stage === 'queued' || stage === 'processing') return '抽取文本中';
+        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return '解析中';
         if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return '索引中';
         
         return '未处理';
@@ -282,8 +344,8 @@
     function getProgressText(task) {
         if (!task || !task.stages) return '';
         const stages = task.stages;
-        if (stages.extracting !== undefined && stages.chunking !== undefined) {
-            return `已抽取 ${stages.extracting}/${stages.total || '?'}`;
+        if (stages.chunk_count !== undefined) {
+            return `生成块数 ${stages.chunk_count}`;
         }
         if (stages.embedding_processed !== undefined) {
             return `已索引 ${stages.embedding_processed}/${stages.embedding_total || '?'}`;
@@ -373,7 +435,43 @@
         };
     }
 
-    function setupAnalyzeForm() {
+    function startProcessAll() {
+        const btn = document.getElementById('process-all-btn');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = '处理中...';
+        fetch(`/api/projects/${projectId}/process-all`, { method: 'POST' })
+            .then(r => r.json())
+            .then(() => {
+                btn.textContent = '一键处理';
+                btn.disabled = false;
+                loadDocuments();
+            })
+            .catch(err => {
+                console.error(err);
+                btn.textContent = '一键处理';
+                btn.disabled = false;
+            });
+    }
+
+    function stopProcessing() {
+        const btn = document.getElementById('stop-processing-btn');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = '停止中...';
+        fetch(`/api/projects/${projectId}/stop-processing`, { method: 'POST' })
+            .then(r => r.json())
+            .then(() => {
+                btn.textContent = '停止处理';
+                btn.disabled = false;
+                loadDocuments();
+            })
+            .catch(err => {
+                console.error(err);
+                btn.textContent = '停止处理';
+                btn.disabled = false;
+            });
+    }
         const form = document.getElementById('analyze-form');
         if (!form) return;
         form.addEventListener('submit', () => {
