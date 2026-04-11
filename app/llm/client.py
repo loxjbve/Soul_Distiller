@@ -290,9 +290,9 @@ class OpenAICompatibleClient:
             provider_response_id=data.get("id"),
         )
 
-    def embeddings(self, inputs: list[str], *, model: str | None = None) -> list[list[float]]:
+    def embeddings(self, inputs: list[str], *, model: str | None = None, timeout: float = 120.0) -> list[list[float]]:
         payload = {"model": model or self.resolve_model(), "input": inputs}
-        data = self._post_json("/embeddings", payload)
+        data = self._post_json("/embeddings", payload, timeout=timeout)
         try:
             ordered = sorted(data["data"], key=lambda item: item["index"])
             return [list(item["embedding"]) for item in ordered]
@@ -488,6 +488,7 @@ class OpenAICompatibleClient:
 
     def _post_json(self, path: str, payload: dict[str, Any], *, timeout: float = 90.0) -> dict[str, Any]:
         data, _meta = self._post_json_with_meta(path, payload, timeout=timeout)
+
         return data
 
     def _get_json(self, path: str, *, timeout: float = 20.0) -> dict[str, Any]:
