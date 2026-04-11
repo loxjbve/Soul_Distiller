@@ -297,12 +297,12 @@
                 <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
                     <div class="doc-card-inner">
                         <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}"></div>
-                        ${(col === 'processing' || col === 'queued') ? `<div class="doc-progress-bar-container"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                         <div class="doc-info">
                             <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
                             ${progressText ? `<div class="doc-progress-text">${progressText}</div>` : ''}
                             ${state.status === 'failed' && doc.error_message ? `<div class="doc-error-text" style="color: var(--danger); font-size: 0.65rem; margin-top: 2px;" title="${escapeHtml(doc.error_message)}">失败: ${escapeHtml(doc.error_message)}</div>` : ''}
                         </div>
+                        ${(col === 'processing') ? `<div class="doc-progress-bar-container"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                     </div>
                 </div>
             `);
@@ -344,11 +344,14 @@
     function getProgressText(task) {
         if (!task || !task.stages) return '';
         const stages = task.stages;
-        if (stages.chunk_count !== undefined) {
-            return `生成块数 ${stages.chunk_count}`;
-        }
         if (stages.embedding_processed !== undefined) {
             return `已索引 ${stages.embedding_processed}/${stages.embedding_total || '?'}`;
+        }
+        if (stages.extracting !== undefined && stages.chunking !== undefined) {
+            return `已抽取 ${stages.extracting}/${stages.total || '?'}`;
+        }
+        if (stages.chunk_count !== undefined) {
+            return `生成块数 ${stages.chunk_count}`;
         }
         return '';
     }

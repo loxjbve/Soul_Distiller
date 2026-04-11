@@ -429,6 +429,7 @@ button:hover::before { left: 150%; }
     transition: all 0.2s ease;
     position: relative;
     overflow: hidden;
+    flex-shrink: 0;
 }
 .doc-card::before {
     content: '';
