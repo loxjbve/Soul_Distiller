@@ -6,7 +6,8 @@ import time
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+import asyncio
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -1416,3 +1417,25 @@ def _normalize_asset_kind(value: str | None) -> str:
 
 def _asset_label(asset_kind: str) -> str:
     return "用户剖析报告" if asset_kind == "profile_report" else "Skill"
+
+
+@router.websocket("/api/projects/{project_id}/documents/ws")
+async def websocket_document_status(websocket: WebSocket, project_id: str):
+    await websocket.accept()
+    task_manager = websocket.app.state.ingest_task_manager
+    try:
+        while True:
+            with websocket.app.state.db.session() as session:
+                documents = repository.list_project_documents(session, project_id)
+                payload = []
+                for doc in documents:
+                    task = task_manager.get_by_document(doc.id)
+                    payload.append({
+                        "id": doc.id,
+                        "ingest_status": doc.ingest_status,
+                        "task": task
+                    })
+            await websocket.send_json({"documents": payload})
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        pass
