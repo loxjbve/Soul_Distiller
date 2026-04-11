@@ -24,6 +24,23 @@ FACET_EVIDENCE_LIMIT = 50
 RAW_TEXT_PREVIEW_LIMIT = 6000
 
 
+def _parse_confidence(val: Any, default: float) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if "high" in s:
+                return 0.8
+            if "medium" in s:
+                return 0.5
+            if "low" in s:
+                return 0.2
+        return default
+
+
 def analyze_facet_worker(
     facet: FacetDefinition,
     project_name: str,
@@ -82,7 +99,7 @@ def analyze_facet_worker(
             FacetResult(
                 facet_key=facet.key,
                 status="completed",
-                confidence=float(payload.get("confidence", 0.55)),
+                confidence=_parse_confidence(payload.get("confidence"), 0.55),
                 summary=payload.get("summary", ""),
                 bullets=list(payload.get("bullets", [])),
                 evidence=list(payload.get("evidence", [])),
@@ -1128,7 +1145,7 @@ def _analyze_with_llm(
             if callable(flush_remaining):
                 flush_remaining()
             try:
-                parsed = parse_json_response(completion.content)
+                parsed = parse_json_response(completion.content, fallback=True)
             except LLMError as exc:
                 raise LLMError(
                     str(exc),
@@ -1260,7 +1277,7 @@ def _normalize_facet_payload(payload: dict[str, Any], chunks: list[dict[str, Any
     return {
         "summary": str(payload.get("summary", "")),
         "bullets": [str(item) for item in payload.get("bullets", [])[:6]],
-        "confidence": float(payload.get("confidence", 0.65)),
+        "confidence": _parse_confidence(payload.get("confidence"), 0.65),
         "evidence": evidence,
         "conflicts": [
             {
