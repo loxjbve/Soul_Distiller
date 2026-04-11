@@ -115,6 +115,47 @@ def create_project_form(
     return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
+
+
+
+@router.post("/projects/{project_id}/clone")
+def clone_project_form(request: Request, project_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    new_name = f"{project.name} (Copy)"
+    
+    new_project = repository.clone_project(session, project_id, new_name)
+    if not new_project:
+        raise HTTPException(status_code=404, detail="Failed to clone project.")
+        
+    from app.models import TextChunk
+    store = request.app.state.vector_store_manager.get_store(new_project.id)
+    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
+    
+    chunk_ids = []
+    vectors = []
+    payloads = []
+    
+    for c in chunks:
+        if c.embedding_vector:
+            chunk_ids.append(c.id)
+            vectors.append(c.embedding_vector)
+            payloads.append({
+                "content": c.content,
+                "filename": c.document.filename if c.document else "",
+                "chunk_index": c.chunk_index
+            })
+            
+    if vectors and chunk_ids:
+        try:
+            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
+            store.save()
+        except Exception:
+            pass
+            
+    session.commit()
+    return RedirectResponse(url=f"/projects/{new_project.id}", status_code=303)
+
+
 @router.get("/projects/{project_id}", response_class=HTMLResponse)
 def project_detail(request: Request, project_id: str, session: SessionDep):
     context = _project_context(session, project_id)
@@ -567,6 +608,46 @@ async def upload_documents_api(
     return {"documents": created}
 
 
+@router.post("/api/projects/{project_id}/clone")
+def clone_project_api(request: Request, project_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    new_name = f"{project.name} (Copy)"
+    
+    new_project = repository.clone_project(session, project_id, new_name)
+    if not new_project:
+        raise HTTPException(status_code=404, detail="Failed to clone project.")
+        
+    # Migrate vector store
+    from app.models import TextChunk
+    store = request.app.state.vector_store_manager.get_store(new_project.id)
+    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
+    
+    chunk_ids = []
+    vectors = []
+    payloads = []
+    
+    for c in chunks:
+        if c.embedding_vector:
+            chunk_ids.append(c.id)
+            vectors.append(c.embedding_vector)
+            payloads.append({
+                "content": c.content,
+                "filename": c.document.filename if c.document else "",
+                "chunk_index": c.chunk_index
+            })
+            
+    if vectors and chunk_ids:
+        try:
+            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
+            store.save()
+        except Exception as e:
+            # We log but continue, user can re-embed if it fails
+            pass
+            
+    session.commit()
+    return {"id": new_project.id, "name": new_project.name, "description": new_project.description}
+
+
 @router.get("/api/projects/{project_id}/documents")
 def list_documents_api(project_id: str, session: SessionDep, offset: int = 0, limit: int = 20):
     _ensure_project(session, project_id)
@@ -793,6 +874,82 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
     if not task or task.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="Rechunk task not found.")
     return task
+
+
+@router.post("/api/projects/{project_id}/assets/generate/stream")
+def generate_asset_stream_api(request: Request, project_id: str, payload: AssetGeneratePayload):
+    from queue import Queue, Empty
+    from threading import Thread
+    
+    events: Queue[dict[str, Any] | None] = Queue()
+    
+    def worker():
+        try:
+            with request.app.state.db.session() as session:
+                project = _ensure_project(session, project_id)
+                run = repository.get_latest_analysis_run(session, project_id)
+                if not run or run.status in {"queued", "running"}:
+                    events.put({"type": "error", "message": "Analysis is not ready."})
+                    return
+                facets = run.facets or []
+                if not facets:
+                    events.put({"type": "error", "message": "No facets to synthesize."})
+                    return
+                chat_config = repository.get_service_config(session, "chat_service")
+                summary = run.summary_json or {}
+                
+                def stream_callback(chunk: str):
+                    events.put({"type": "delta", "chunk": chunk})
+                
+                bundle = request.app.state.asset_synthesizer.build(
+                    _normalize_asset_kind(payload.asset_kind),
+                    project,
+                    facets,
+                    chat_config,
+                    target_role=summary.get("target_role"),
+                    analysis_context=summary.get("analysis_context"),
+                    stream_callback=stream_callback,
+                )
+                
+                draft = repository.create_asset_draft(
+                    session,
+                    project_id=project_id,
+                    run_id=run.id,
+                    asset_kind=bundle.asset_kind,
+                    markdown_text=bundle.markdown_text,
+                    json_payload=bundle.json_payload,
+                    prompt_text=bundle.prompt_text,
+                    notes="Auto-generated draft. Review before publishing.",
+                )
+                _persist_asset_files(
+                    request,
+                    project_id,
+                    draft.asset_kind,
+                    f"draft_{draft.id}",
+                    draft.markdown_text,
+                    draft.json_payload,
+                    draft.system_prompt,
+                )
+                events.put({"type": "done", "draft_id": draft.id})
+        except Exception as e:
+            events.put({"type": "error", "message": str(e)})
+        finally:
+            events.put(None)
+            
+    Thread(target=worker, daemon=True).start()
+    
+    def generator():
+        while True:
+            item = events.get()
+            if item is None:
+                break
+            yield f"event: {item['type']}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+            
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+    )
 
 
 @router.post("/api/projects/{project_id}/assets/generate")
@@ -1304,11 +1461,13 @@ def _delete_document_with_file(document: DocumentRecord) -> None:
 def _delete_project_resources(request: Request, session: Session, project_id: str) -> None:
     repository.delete_project_cascade(session, project_id)
     config = request.app.state.config
+    request.app.state.vector_store_manager.delete_store(project_id)
     for directory in (
         config.upload_dir / project_id,
         config.assets_dir / project_id,
         config.output_dir / project_id,
         config.skill_dir / project_id,
+        config.data_dir / "vectors" / project_id,
     ):
         if directory.exists():
             shutil.rmtree(directory, ignore_errors=True)

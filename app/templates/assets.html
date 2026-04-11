@@ -28,11 +28,76 @@
             <h2>生成 {{ asset_label }}</h2>
         </div>
     </div>
-    <form method="post" action="/projects/{{ project.id }}/assets/generate">
+    <form id="generate-form" onsubmit="event.preventDefault(); startGeneration();">
         <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
-        <button type="submit">重新生成 {{ asset_label }}</button>
+        <button type="submit" id="generate-btn">重新生成 {{ asset_label }}</button>
     </form>
+    <div id="generation-output" style="display:none; white-space: pre-wrap; background: #f9fafb; padding: 1rem; margin-top: 1rem; max-height: 400px; overflow-y: auto; border-radius: 6px; font-family: monospace; font-size: 0.9em; line-height: 1.5; color: #374151;"></div>
 </section>
+
+<script>
+function startGeneration() {
+    const btn = document.getElementById('generate-btn');
+    const output = document.getElementById('generation-output');
+    btn.disabled = true;
+    output.style.display = 'block';
+    output.textContent = 'Generating...\n\n';
+    
+    fetch(`/api/projects/{{ project.id }}/assets/generate/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ asset_kind: "{{ asset_kind }}" })
+    }).then(async response => {
+        if (!response.ok) {
+            output.textContent += '\n\nError starting generation.';
+            btn.disabled = false;
+            return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let done = false;
+        
+        let buffer = "";
+        while (!done) {
+            const { value, done: readerDone } = await reader.read();
+            done = readerDone;
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
+                
+                let lines = buffer.split('\n\n');
+                buffer = lines.pop() || "";
+                
+                for (let block of lines) {
+                    if (!block.startsWith("event: ")) continue;
+                    const linesInBlock = block.split('\n');
+                    const eventType = linesInBlock[0].replace("event: ", "").trim();
+                    const dataLine = linesInBlock.find(l => l.startsWith("data: "));
+                    if (!dataLine) continue;
+                    
+                    const dataStr = dataLine.replace("data: ", "");
+                    try {
+                        const data = JSON.parse(dataStr);
+                        if (eventType === "delta") {
+                            output.textContent += data.chunk;
+                            output.scrollTop = output.scrollHeight;
+                        } else if (eventType === "error") {
+                            output.textContent += '\n\nError: ' + data.message;
+                        } else if (eventType === "done") {
+                            output.textContent += '\n\nCompleted! Reloading...';
+                            setTimeout(() => {
+                                window.location.href = `/projects/{{ project.id }}/assets?kind={{ asset_kind }}&draft=${data.draft_id}`;
+                            }, 1000);
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+    }).catch(err => {
+        output.textContent += '\n\nRequest failed: ' + err.message;
+        btn.disabled = false;
+    });
+}
+</script>
 
 {% if draft %}
     <section class="workspace-panel">
