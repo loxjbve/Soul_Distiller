@@ -1145,7 +1145,7 @@ def _analyze_with_llm(
             if callable(flush_remaining):
                 flush_remaining()
             try:
-                parsed = parse_json_response(completion.content)
+                parsed = parse_json_response(completion.content, fallback=True)
             except LLMError as exc:
                 raise LLMError(
                     str(exc),
