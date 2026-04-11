@@ -278,9 +278,23 @@
                 col = 'processing';
             }
 
+            let displayProgress = state.progress || 0;
+            if (state.task && state.task.stages) {
+                const st = state.task.stages;
+                if (st.embedding_total) {
+                    displayProgress = (st.embedding_processed || 0) / st.embedding_total * 100;
+                } else if (st.total) {
+                    displayProgress = (st.extracting || 0) / st.total * 100;
+                } else if (st.chunk_count) {
+                    displayProgress = 100;
+                }
+            }
+            if (displayProgress > 100) displayProgress = 100;
+            if (displayProgress < 0) displayProgress = 0;
+
             const statusClass = getStatusClass(state.status, state.task);
             const statusLabel = getStatusLabel(state.status, state.task);
-            const progressStyle = state.status === 'processing' || col === 'processing' ? `width: ${state.progress}%` : '';
+            const progressStyle = col === 'processing' ? `width: ${displayProgress}%` : '';
             const progressText = getProgressText(state.task);
 
             let indicatorTitle = statusLabel;
