@@ -10,10 +10,21 @@ def chunk_segments(
     chunk_size: int = 1800,
     overlap: int = 300,
 ) -> list[ChunkPayload]:
+    # Merge segments with identical metadata to prevent excessive tiny chunks
+    merged_segments: list[ExtractedSegment] = []
+    for segment in segments:
+        text = segment.text.strip()
+        if not text:
+            continue
+        if merged_segments and merged_segments[-1].metadata == segment.metadata:
+            merged_segments[-1].text += "\n\n" + text
+        else:
+            merged_segments.append(ExtractedSegment(text=text, metadata=segment.metadata.copy()))
+
     chunks: list[ChunkPayload] = []
     global_offset = 0
     chunk_index = 0
-    for segment in segments:
+    for segment in merged_segments:
         text = segment.text.strip()
         if not text:
             continue
