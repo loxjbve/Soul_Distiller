@@ -94,14 +94,16 @@ class RechunkTaskManager:
         )
         try:
             with self.db.session() as session:
-                documents = [
-                    document
-                    for document in repository.list_project_documents(session, project_id)
-                    if document.ingest_status == "ready"
-                ]
-                self._update(task_id, document_total=len(documents))
+                document_ids = session.scalars(
+                    select(DocumentRecord.id)
+                    .where(DocumentRecord.project_id == project_id, DocumentRecord.ingest_status == "ready")
+                ).all()
+                self._update(task_id, document_total=len(document_ids))
                 total_chunks = 0
-                for index, document in enumerate(documents, start=1):
+                for index, doc_id in enumerate(document_ids, start=1):
+                    document = session.get(DocumentRecord, doc_id)
+                    if not document:
+                        continue
                     chunks = self._build_document_chunks(document)
                     total_chunks += len(chunks)
                     repository.replace_document_chunks(
@@ -122,8 +124,8 @@ class RechunkTaskManager:
                         ],
                     )
                     progress = 10
-                    if documents:
-                        progress = min(60, 10 + int((index / len(documents)) * 50))
+                    if document_ids:
+                        progress = min(60, 10 + int((index / len(document_ids)) * 50))
                     self._update(
                         task_id,
                         document_processed=index,

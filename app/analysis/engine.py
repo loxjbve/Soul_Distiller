@@ -908,30 +908,33 @@ class AnalysisEngine:
     def _flush_stream_delta(self, run_id: str, facet: FacetDefinition, text: str, delta: str) -> bool:
         if not self.db or (not text and not delta):
             return True
-        try:
-            with self.db.session() as session:
-                run = repository.get_analysis_run(session, run_id)
-                if not run:
-                    return True
-                facet_record = repository.get_facet(session, run_id, facet.key)
-                if facet_record:
-                    findings = dict(facet_record.findings_json or {})
-                    findings["llm_live_text"] = text[:RAW_TEXT_PREVIEW_LIMIT]
-                    facet_record.findings_json = findings
-                repository.add_analysis_event(
-                    session,
-                    run_id,
-                    event_type="llm_delta",
-                    message=f"{facet.label} streaming response.",
-                    payload_json={
-                        "facet_key": facet.key,
-                        "delta": delta[-1200:],
-                        "text": text[:RAW_TEXT_PREVIEW_LIMIT],
-                    },
-                )
-            return True
-        except Exception:
-            return False
+        for _ in range(3):
+            try:
+                with self.db.session() as session:
+                    run = repository.get_analysis_run(session, run_id)
+                    if not run:
+                        return True
+                    facet_record = repository.get_facet(session, run_id, facet.key)
+                    if facet_record:
+                        findings = dict(facet_record.findings_json or {})
+                        findings["llm_live_text"] = text[:RAW_TEXT_PREVIEW_LIMIT]
+                        facet_record.findings_json = findings
+                    repository.add_analysis_event(
+                        session,
+                        run_id,
+                        event_type="llm_delta",
+                        message=f"{facet.label} streaming response.",
+                        payload_json={
+                            "facet_key": facet.key,
+                            "delta": delta[-1200:],
+                            "text": text[:RAW_TEXT_PREVIEW_LIMIT],
+                        },
+                    )
+                return True
+            except Exception:
+                import time
+                time.sleep(0.1)
+        return False
 
     def _retrieve_hits(
         self,
@@ -963,13 +966,9 @@ class AnalysisEngine:
         retrieval_trace["requested_limit"] = FACET_EVIDENCE_LIMIT
         retrieval_trace["result_count"] = len(hits)
         if not hits:
-            fallback_hits = self._fallback_hits(session, project_id)
-            retrieval_trace["fallback_used"] = bool(fallback_hits)
-            retrieval_trace["fallback_hit_count"] = len(fallback_hits)
-            if fallback_hits:
-                retrieval_trace["fallback_reason"] = retrieval_trace.get("fallback_reason") or "no_search_hits"
-                retrieval_mode = "fallback"
-                hits = fallback_hits
+            # Removed fallback hits as it pollutes LLM context
+            retrieval_trace["fallback_used"] = False
+            retrieval_trace["fallback_hit_count"] = 0
         retrieval_trace["result_count"] = len(hits)
         return hits, retrieval_mode, retrieval_trace
 

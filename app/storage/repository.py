@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import delete, desc, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.llm.client import normalize_api_mode, normalize_provider_kind
 from app.models import (
@@ -74,7 +74,6 @@ def replace_document_chunks(session: Session, document_id: str, chunks: list[dic
 
 
 def list_project_documents(session: Session, project_id: str, *, limit: int | None = None, offset: int = 0) -> list[DocumentRecord]:
-    from sqlalchemy.orm import defer
     stmt = (
         select(DocumentRecord)
         .where(DocumentRecord.project_id == project_id)

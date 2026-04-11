@@ -120,6 +120,11 @@ class FAISSVectorStore(VectorStore):
 
     def add(self, ids: list[str], vectors: list[list[float]], payloads: list[dict[str, Any]] | None = None) -> None:
         import faiss
+        import numpy as np
+        
+        vectors_arr = np.array(vectors, dtype=np.float32)
+        faiss.normalize_L2(vectors_arr)
+        
         with self._lock:
             start_idx = self._index.ntotal
             for i, id_ in enumerate(ids):
@@ -127,22 +132,29 @@ class FAISSVectorStore(VectorStore):
                 self._idx_to_id[start_idx + i] = id_
                 if payloads:
                     self._payloads[id_] = payloads[i]
-            vectors_arr = faiss.normalize_L2s(vectors)
             self._index.add(vectors_arr)
 
     def search(self, query_vector: list[float], top_k: int = 5) -> list[dict[str, Any]]:
         import faiss
+        import numpy as np
+        
+        q = np.array([query_vector], dtype=np.float32)
+        faiss.normalize_L2(q)
+        
         with self._lock:
-            q = faiss.normalize_L2s([query_vector])
-            distances, indices = self._index.search(q, min(top_k, self._index.ntotal))
-            results = []
-            for dist, idx in zip(distances[0], indices[0]):
-                if idx < 0:
-                    break
-                id_ = self._idx_to_id.get(int(idx))
-                if id_:
-                    payload = self._payloads.get(id_, {})
-                    results.append({"id": id_, "score": float(dist), **payload})
+            ntotal = self._index.ntotal
+            if ntotal == 0:
+                return []
+            distances, indices = self._index.search(q, min(top_k, ntotal))
+            
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx < 0:
+                break
+            id_ = self._idx_to_id.get(int(idx))
+            if id_:
+                payload = self._payloads.get(id_, {})
+                results.append({"id": id_, "score": float(dist), **payload})
         return results
 
     def delete(self, ids: list[str]) -> None:

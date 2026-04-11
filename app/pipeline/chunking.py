@@ -11,15 +11,20 @@ def chunk_segments(
     overlap: int = 300,
 ) -> list[ChunkPayload]:
     # Merge segments with identical metadata to prevent excessive tiny chunks
-    merged_segments: list[ExtractedSegment] = []
+    grouped_segments: list[dict] = []
     for segment in segments:
         text = segment.text.strip()
         if not text:
             continue
-        if merged_segments and merged_segments[-1].metadata == segment.metadata:
-            merged_segments[-1].text += "\n\n" + text
+        if grouped_segments and grouped_segments[-1]["metadata"] == segment.metadata:
+            grouped_segments[-1]["texts"].append(text)
         else:
-            merged_segments.append(ExtractedSegment(text=text, metadata=segment.metadata.copy()))
+            grouped_segments.append({"metadata": segment.metadata.copy(), "texts": [text]})
+
+    merged_segments: list[ExtractedSegment] = [
+        ExtractedSegment(text="\n\n".join(group["texts"]), metadata=group["metadata"])
+        for group in grouped_segments
+    ]
 
     chunks: list[ChunkPayload] = []
     global_offset = 0
