@@ -1,8 +1,21 @@
-from __future__ import annotations
+from app.schemas import ExtractedSegment, ChunkPayload
 
-from app.schemas import ChunkPayload, ExtractedSegment
-from app.utils.text import token_count
-
+def _find_boundary(text: str, start: int, hard_end: int, overlap: int) -> int:
+    if hard_end >= len(text):
+        return len(text)
+        
+    min_advance = max(50, (hard_end - start) // 10)
+    min_index = start + overlap + min_advance
+    
+    if min_index >= hard_end:
+        min_index = start + overlap
+        
+    for marker in ("\n\n", "\n", "。", ".", "!", "?", "！", "？", "；", ";", " "):
+        index = text.rfind(marker, min_index, hard_end)
+        if index != -1:
+            return index + len(marker)
+            
+    return hard_end
 
 def chunk_segments(
     segments: list[ExtractedSegment],
@@ -10,7 +23,6 @@ def chunk_segments(
     chunk_size: int = 1200,
     overlap: int = 200,
 ) -> list[ChunkPayload]:
-    # Merge segments with identical metadata to prevent excessive tiny chunks
     grouped_segments: list[dict] = []
     for segment in segments:
         text = segment.text.strip()
@@ -48,7 +60,7 @@ def chunk_segments(
                         start_offset=global_offset + start,
                         end_offset=global_offset + end,
                         page_number=segment.metadata.get("page_number"),
-                        token_count=len(chunk_text) // 2,  # Use rough estimate for speed instead of full token_count
+                        token_count=len(chunk_text) // 2,
                         metadata=segment.metadata.copy(),
                     )
                 )
@@ -59,28 +71,10 @@ def chunk_segments(
         global_offset += len(text) + 2
     return chunks
 
-
-def _find_boundary(text: str, start: int, hard_end: int, overlap: int) -> int:
-    if hard_end >= len(text):
-        return len(text)
-        
-    min_advance = max(50, (hard_end - start) // 10)
-    min_index = start + overlap + min_advance
-    
-    if min_index >= hard_end:
-        min_index = start + overlap
-        
-    # Phase 1: Try to find a marker in the preferred range
-    for marker in ("\n\n", "\n", "。", ".", "!", "?", "！", "？", "；", ";", " "):
-        index = text.rfind(marker, min_index, hard_end)
-        if index != -1:
-            return index + len(marker)
-            
-    # Phase 2: If no marker found in preferred range, try finding ANY marker > start + overlap
-    if min_index > start + overlap:
-        for marker in ("\n\n", "\n", "。", ".", "!", "?", "！", "？", "；", ";", " "):
-            index = text.rfind(marker, start + overlap, min_index)
-            if index != -1:
-                return index + len(marker)
-                
-    return hard_end
+text = "a" * 250 + "\n\n" + "b" * 2000
+segments = [ExtractedSegment(text=text, metadata={})]
+chunks = chunk_segments(segments, chunk_size=1800, overlap=300)
+print(f"Total chunks: {len(chunks)}")
+if len(chunks) > 0:
+    for i, c in enumerate(chunks):
+        print(f"Chunk {i}: {len(c.content)}")
