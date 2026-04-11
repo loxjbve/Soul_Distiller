@@ -230,11 +230,21 @@
             const statusLabel = getStatusLabel(state.status);
             const progressStyle = state.status === 'processing' ? `width: ${state.progress}%` : '';
             const progressText = getProgressText(state.task);
+            
+            let indicatorTitle = statusLabel;
+            if (state.status === 'processing') {
+                let details = [];
+                if (state.progress !== undefined) details.push(Math.round(state.progress) + '%');
+                if (progressText) details.push(progressText);
+                if (details.length > 0) {
+                    indicatorTitle += ' (' + details.join(', ') + ')';
+                }
+            }
 
             return `
                 <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
                     <div class="doc-card-inner">
-                        <div class="doc-status-indicator ${statusClass}" title="${statusLabel}">
+                        <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}">
                             ${state.status === 'processing' ? `<div class="doc-progress-ring"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                         </div>
                         <div class="doc-info">
