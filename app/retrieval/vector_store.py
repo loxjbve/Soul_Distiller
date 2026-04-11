@@ -123,9 +123,15 @@ class FAISSVectorStore(VectorStore):
         import numpy as np
         
         vectors_arr = np.array(vectors, dtype=np.float32)
-        faiss.normalize_L2(vectors_arr)
         
         with self._lock:
+            if self._index.ntotal == 0 and vectors_arr.shape[1] != self._index.d:
+                self.dimension = vectors_arr.shape[1]
+                self._index = faiss.IndexFlatIP(self.dimension)
+            elif vectors_arr.shape[1] != self._index.d:
+                raise ValueError(f"FAISS dimension mismatch: expected {self._index.d}, got {vectors_arr.shape[1]}")
+            
+            faiss.normalize_L2(vectors_arr)
             start_idx = self._index.ntotal
             for i, id_ in enumerate(ids):
                 self._id_to_idx[id_] = start_idx + i
