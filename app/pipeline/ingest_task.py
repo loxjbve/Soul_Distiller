@@ -263,69 +263,61 @@ class IngestTaskManager:
             self._update_task(task, stages={"embedding_total": total})
 
             query = select(TextChunk.id, TextChunk.content).where(TextChunk.document_id == task.document_id).order_by(TextChunk.chunk_index)
-            # Fetch in batches to prevent OOM
-            offset = 0
-            batch_size = 500
-            
-            while True:
-                if task.is_cancelled: return
-                rows = session.execute(query.offset(offset).limit(batch_size)).fetchall()
-                if not rows:
-                    break
-                
-                batch_ids = []
-                batch_texts = []
-                for i in range(0, len(rows), self.EMBEDDING_BATCH_SIZE):
-                    batch = rows[i:i + self.EMBEDDING_BATCH_SIZE]
-                    batch_ids.append([str(row.id) for row in batch])
-                    batch_texts.append([str(row.content or "") for row in batch])
-                
-                def _fetch_batch(texts: list[str]) -> list[list[float]]:
-                    if not texts or task.is_cancelled:
-                        return []
-                    import time
-                    for attempt in range(3):
-                        if task.is_cancelled:
-                            return []
-                        try:
-                            return client.embeddings(texts, model=resolved_model, timeout=180.0)
-                        except Exception as exc:
-                            if attempt == 2 or task.is_cancelled:
-                                raise
-                            time.sleep(2.0 * (attempt + 1))
+            # Load all chunks at once; 13MB is ~40MB in RAM which is perfectly safe
+            rows = session.execute(query).fetchall()
+
+            batch_ids = []
+            batch_texts = []
+            for i in range(0, len(rows), self.EMBEDDING_BATCH_SIZE):
+                batch = rows[i:i + self.EMBEDDING_BATCH_SIZE]
+                batch_ids.append([str(row.id) for row in batch])
+                batch_texts.append([str(row.content or "") for row in batch])
+
+            def _fetch_batch(texts: list[str]) -> list[list[float]]:
+                if not texts or task.is_cancelled:
                     return []
+                import time
+                for attempt in range(3):
+                    if task.is_cancelled:
+                        return []
+                    try:
+                        return client.embeddings(texts, model=resolved_model, timeout=180.0)
+                    except Exception as exc:
+                        if attempt == 2 or task.is_cancelled:
+                            raise
+                        time.sleep(2.0 * (attempt + 1))
+                return []
+
+            from concurrent.futures import as_completed
+            futures = []
+            for texts, ids in zip(batch_texts, batch_ids):
+                if texts:
+                    futures.append(self._embedding_executor.submit(_fetch_batch, texts))
+
+            future_to_ids = {future: ids for future, ids in zip(futures, batch_ids)}
+            processed_count = 0
+
+            for future in as_completed(futures):
+                if task.is_cancelled: return
+                ids = future_to_ids[future]
+                vectors = future.result()
                 
-                from concurrent.futures import as_completed
-                futures = []
-                for texts, ids in zip(batch_texts, batch_ids):
-                    if texts:
-                        futures.append(self._embedding_executor.submit(_fetch_batch, texts))
+                mappings = []
+                for idx, id_ in enumerate(ids):
+                    if idx < len(vectors):
+                        mappings.append({
+                            "id": id_,
+                            "embedding_vector": vectors[idx],
+                            "embedding_model": resolved_model
+                        })
                 
-                chunk_id_to_vector = {}
-                future_to_ids = {future: ids for future, ids in zip(futures, batch_ids)}
-                for future in as_completed(futures):
-                    ids = future_to_ids[future]
-                    vectors = future.result()
-                    for idx, id_ in enumerate(ids):
-                        if idx < len(vectors):
-                            chunk_id_to_vector[id_] = vectors[idx]
-                
-                # Update DB for this batch using ultra-fast bulk_update_mappings
-                mappings = [
-                    {
-                        "id": id_,
-                        "embedding_vector": vector,
-                        "embedding_model": resolved_model
-                    }
-                    for id_, vector in chunk_id_to_vector.items()
-                ]
                 if mappings:
                     with self.db.session() as update_session:
                         update_session.bulk_update_mappings(TextChunk, mappings)
                         update_session.commit()
                 
-                offset += batch_size
-                self._update_task(task, stages={"embedding_processed": offset})
+                processed_count += len(ids)
+                self._update_task(task, stages={"embedding_processed": processed_count})
 
     def _store_to_vector_db(self, task: IngestTask) -> None:
         store = self.vector_store_manager.get_store(task.project_id)

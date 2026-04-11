@@ -57,13 +57,21 @@
         {% if projects %}
             <div class="project-list">
                 {% for project in projects %}
-                    <a class="project-row" href="/projects/{{ project.id }}">
+                    <div class="project-row">
                         <div>
-                            <strong>{{ project.name }}</strong>
-                            <p>{{ project.description or "暂无说明" }}</p>
+                            <a class="strong-link" href="/projects/{{ project.id }}">{{ project.name }}</a>
+                            <p>{{ project.description or "无描述" }}</p>
+                            <p class="muted">最后更新：{{ project.updated_at }}</p>
                         </div>
-                        <span>进入工作台</span>
-                    </a>
+                        <div class="inline-actions">
+                            <form method="post" action="/projects/{{ project.id }}/clone">
+                                <button type="submit" class="ghost-button">克隆</button>
+                            </form>
+                            <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('确定删除项目及所有数据？');">
+                                <button type="submit" class="ghost-button destructive">删除</button>
+                            </form>
+                        </div>
+                    </div>
                 {% endfor %}
             </div>
         {% else %}

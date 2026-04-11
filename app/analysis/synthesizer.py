@@ -21,6 +21,7 @@ class AssetSynthesizer:
         *,
         target_role: str | None = None,
         analysis_context: str | None = None,
+        stream_callback: Any | None = None,
     ) -> AssetBundle:
         normalized_kind = asset_kind if asset_kind in ASSET_KINDS else "skill"
         structured = (
@@ -31,6 +32,7 @@ class AssetSynthesizer:
                 config,
                 target_role=target_role,
                 analysis_context=analysis_context,
+                stream_callback=stream_callback,
             )
             if config
             else self._heuristic(
@@ -63,6 +65,7 @@ class AssetSynthesizer:
         *,
         target_role: str | None,
         analysis_context: str | None,
+        stream_callback: Any | None = None,
     ) -> dict[str, Any]:
         if not config:
             return self._heuristic(
@@ -85,8 +88,15 @@ class AssetSynthesizer:
             analysis_context=analysis_context,
         )
         try:
-            response = client.chat_completion(messages, model=config.model, temperature=0.2)
-            parsed = parse_json_response(response)
+            response = client.chat_completion_result(
+                messages, model=config.model, temperature=0.2, stream_handler=stream_callback
+            )
+            
+            flush_remaining = getattr(stream_callback, "_flush_remaining", None)
+            if callable(flush_remaining):
+                flush_remaining()
+                
+            parsed = parse_json_response(response.content)
             if asset_kind == "skill":
                 return self._normalize_skill_payload(
                     parsed,

@@ -36,6 +36,77 @@ def create_project(session: Session, name: str, description: str | None = None) 
     return project
 
 
+def clone_project(session: Session, project_id: str, new_name: str) -> Project | None:
+    import shutil
+    from pathlib import Path
+    from uuid import uuid4
+    from app.models import DocumentRecord, TextChunk
+
+    original_project = get_project(session, project_id)
+    if not original_project:
+        return None
+
+    new_project = create_project(session, new_name, original_project.description)
+
+    # Copy documents
+    original_docs = session.scalars(select(DocumentRecord).where(DocumentRecord.project_id == project_id)).all()
+    for doc in original_docs:
+        new_doc_id = str(uuid4())
+        
+        # Copy physical file if exists
+        new_storage_path = None
+        if doc.storage_path and Path(doc.storage_path).exists():
+            orig_path = Path(doc.storage_path)
+            new_dir = orig_path.parent.parent / new_project.id
+            new_dir.mkdir(parents=True, exist_ok=True)
+            new_path = new_dir / f"{new_doc_id}{orig_path.suffix}"
+            shutil.copy2(orig_path, new_path)
+            new_storage_path = str(new_path)
+
+        new_doc = DocumentRecord(
+            id=new_doc_id,
+            project_id=new_project.id,
+            filename=doc.filename,
+            mime_type=doc.mime_type,
+            extension=doc.extension,
+            source_type=doc.source_type,
+            title=doc.title,
+            author_guess=doc.author_guess,
+            created_at_guess=doc.created_at_guess,
+            raw_text=doc.raw_text,
+            clean_text=doc.clean_text,
+            language=doc.language,
+            metadata_json=doc.metadata_json,
+            ingest_status=doc.ingest_status,
+            error_message=doc.error_message,
+            storage_path=new_storage_path,
+        )
+        session.add(new_doc)
+        session.flush()
+
+        # Copy chunks
+        original_chunks = session.scalars(select(TextChunk).where(TextChunk.document_id == doc.id)).all()
+        for chunk in original_chunks:
+            new_chunk = TextChunk(
+                id=str(uuid4()),
+                project_id=new_project.id,
+                document_id=new_doc.id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                start_offset=chunk.start_offset,
+                end_offset=chunk.end_offset,
+                page_number=chunk.page_number,
+                token_count=chunk.token_count,
+                metadata_json=chunk.metadata_json,
+                embedding_vector=chunk.embedding_vector,
+                embedding_model=chunk.embedding_model,
+            )
+            session.add(new_chunk)
+            
+    session.flush()
+    return new_project
+
+
 def get_project(session: Session, project_id: str) -> Project | None:
     stmt = select(Project).where(Project.id == project_id)
     return session.scalar(stmt)
