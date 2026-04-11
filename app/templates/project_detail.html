@@ -262,7 +262,7 @@
         if (status === 'failed') return 'status-failed';
         
         const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'extracting' || stage === 'queued' || stage === 'processing') return 'status-extracting';
+        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return 'status-extracting';
         if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return 'status-indexing';
         
         return 'status-unprocessed';
@@ -273,7 +273,7 @@
         if (status === 'failed') return '失败';
         
         const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'extracting' || stage === 'queued' || stage === 'processing') return '抽取文本中';
+        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return '解析中';
         if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return '索引中';
         
         return '未处理';
@@ -282,8 +282,8 @@
     function getProgressText(task) {
         if (!task || !task.stages) return '';
         const stages = task.stages;
-        if (stages.extracting !== undefined && stages.chunking !== undefined) {
-            return `已抽取 ${stages.extracting}/${stages.total || '?'}`;
+        if (stages.chunk_count !== undefined) {
+            return `生成块数 ${stages.chunk_count}`;
         }
         if (stages.embedding_processed !== undefined) {
             return `已索引 ${stages.embedding_processed}/${stages.embedding_total || '?'}`;

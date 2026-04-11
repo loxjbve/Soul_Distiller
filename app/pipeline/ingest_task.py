@@ -17,9 +17,8 @@ from app.db import Database
 from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk, utcnow
 from app.pipeline.chunking import chunk_segments
-from app.pipeline.extractors import ExtractionError, extract_text
 from app.retrieval.vector_store import VectorStoreManager
-from app.schemas import ServiceConfig
+from app.schemas import ServiceConfig, ExtractionResult, ExtractedSegment
 from app.storage import repository
 
 EMBEDDING_DIMENSION_DEFAULT = 1024
@@ -28,7 +27,6 @@ EMBEDDING_DIMENSION_DEFAULT = 1024
 class TaskStage(str, Enum):
     QUEUED = "queued"
     PARSING = "parsing"
-    EXTRACTING = "extracting"
     CHUNKING = "chunking"
     EMBEDDING = "embedding"
     STORING = "storing"
@@ -110,7 +108,7 @@ class IngestTaskManager:
             existing = self._tasks_by_document.get(document_id)
             if existing and existing in self._tasks:
                 task = self._tasks[existing]
-                if task.status in (TaskStage.QUEUED, TaskStage.PARSING, TaskStage.EXTRACTING, TaskStage.CHUNKING, TaskStage.EMBEDDING, TaskStage.STORING):
+                if task.status in (TaskStage.QUEUED, TaskStage.PARSING, TaskStage.CHUNKING, TaskStage.EMBEDDING, TaskStage.STORING):
                     return task.to_dict()
             task = IngestTask(
                 task_id=task_id,
@@ -152,34 +150,27 @@ class IngestTaskManager:
             return
         self._update_task(task, status=TaskStage.PARSING, progress_percent=5, started_at=utcnow().isoformat())
         try:
-            self._update_task(task, status=TaskStage.EXTRACTING, progress_percent=15)
-            result = self._extract_with_retry(task, content)
-            if result is None:
-                return
+            text = content.decode("utf-8", errors="ignore")
+            result = ExtractionResult(
+                raw_text=text,
+                clean_text=text,
+                title=task.filename,
+                author_guess=None,
+                created_at_guess=None,
+                language="unknown",
+                metadata={"format": "raw_text"},
+                segments=[ExtractedSegment(text=text, metadata={})]
+            )
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
             self._process_chunks(task, result)
             self._update_task(task, status=TaskStage.EMBEDDING, progress_percent=70)
             self._process_embeddings_concurrent(task)
             self._update_task(task, status=TaskStage.STORING, progress_percent=90)
             self._store_to_vector_db(task)
+            self._finalize_document(task)
             self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
         except Exception as exc:
             self._handle_failure(task, exc)
-
-    def _extract_with_retry(self, task: IngestTask, content: bytes) -> Any | None:
-        last_error: Exception | None = None
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                return extract_text(task.filename, content)
-            except ExtractionError as exc:
-                last_error = exc
-                if attempt < self.MAX_RETRIES - 1:
-                    self._update_task(task, status=TaskStage.RETRYING, retry_count=attempt + 1)
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
-        error_msg = f"Extraction failed after {self.MAX_RETRIES} attempts: {last_error}"
-        self._update_task(task, status=TaskStage.FAILED, error=error_msg, finished_at=utcnow().isoformat())
-        self._mark_document_failed(task, error_msg)
-        return None
 
     def _process_chunks(self, task: IngestTask, extraction_result: Any) -> None:
         chunks = chunk_segments(extraction_result.segments)

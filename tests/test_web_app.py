@@ -45,9 +45,19 @@ def test_end_to_end_project_flow(client, app):
     assert upload_response.status_code == 200
     document_payload = upload_response.json()["documents"][0]
     assert document_payload["ingest_status"] == "pending"
-    document_id = document_payload["id"]
+        document_id = document_payload["id"]
 
-    update_doc_response = client.post(
+        process_response = client.post(f"/api/projects/{project_id}/documents/{document_id}/process")
+        assert process_response.status_code == 200
+
+        import time
+        for _ in range(20):
+            doc_res = client.get(f"/api/projects/{project_id}/documents")
+            if doc_res.json()["documents"][0]["ingest_status"] == "ready":
+                break
+            time.sleep(0.5)
+
+        update_doc_response = client.post(
         f"/api/projects/{project_id}/documents/{document_id}",
         json={
             "title": "Travel diary",
