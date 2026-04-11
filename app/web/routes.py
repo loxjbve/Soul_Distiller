@@ -586,11 +586,17 @@ def process_document_api(request: Request, project_id: str, document_id: str, se
     embedding_config = repository.get_service_config(session, "embedding_service")
     task_manager = request.app.state.ingest_task_manager
     task_manager.set_embedding_config(embedding_config)
+    try:
+        with open(document.storage_path, "rb") as f:
+            content = f.read()
+    except Exception:
+        content = b""
+
     task = task_manager.submit(
         project_id=project_id,
         document_id=document_id,
         filename=document.filename,
-        content=document.file_path.encode() if document.file_path else b"",
+        content=content,
         mime_type=None,
     )
     return {"task": task}
@@ -606,11 +612,17 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
     submitted = []
     for doc in documents:
         if doc.ingest_status not in ("ready", "processing"):
+            try:
+                with open(doc.storage_path, "rb") as f:
+                    content = f.read()
+            except Exception:
+                content = b""
+
             task = task_manager.submit(
                 project_id=project_id,
                 document_id=doc.id,
                 filename=doc.filename,
-                content=doc.file_path.encode() if doc.file_path else b"",
+                content=content,
                 mime_type=None,
             )
             submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
