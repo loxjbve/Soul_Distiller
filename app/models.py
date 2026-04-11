@@ -31,6 +31,7 @@ class Project(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(32), default="group")
 
     documents: Mapped[list["DocumentRecord"]] = relationship(back_populates="project")
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(back_populates="project")

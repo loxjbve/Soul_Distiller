@@ -52,6 +52,14 @@ def upgrade_schema(engine) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     with engine.begin() as connection:
+        if "projects" in tables:
+            project_columns = {column["name"] for column in inspector.get_columns("projects")}
+            if "mode" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN mode VARCHAR(32) DEFAULT 'group'")
+            connection.exec_driver_sql(
+                "UPDATE projects SET mode = 'group' WHERE mode IS NULL OR mode = ''"
+            )
+
         if "chat_sessions" in tables:
             columns = {column["name"] for column in inspector.get_columns("chat_sessions")}
             if "session_kind" not in columns:

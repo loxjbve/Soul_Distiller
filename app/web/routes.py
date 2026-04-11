@@ -42,6 +42,7 @@ ASSET_KIND_OPTIONS = (
 class ProjectCreatePayload(BaseModel):
     name: str
     description: str | None = None
+    mode: str = "group"
 
 
 class ChatPayload(BaseModel):
@@ -110,8 +111,9 @@ def create_project_form(
     session: SessionDep,
     name: Annotated[str, Form(...)],
     description: Annotated[str | None, Form()] = None,
+    mode: Annotated[str, Form()] = "group",
 ):
-    project = repository.create_project(session, name=name, description=description)
+    project = repository.create_project(session, name=name, description=description, mode=mode)
     return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
@@ -160,6 +162,23 @@ def clone_project_form(request: Request, project_id: str, session: SessionDep):
 def project_detail(request: Request, project_id: str, session: SessionDep):
     context = _project_context(session, project_id)
     return templates.TemplateResponse(request=request, name="project_detail.html", context=context)
+
+
+@router.post("/projects/{project_id}/update")
+def update_project_form(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    name: Annotated[str, Form(...)],
+    description: Annotated[str | None, Form()] = None,
+    mode: Annotated[str, Form()] = "group",
+):
+    project = _ensure_project(session, project_id)
+    project.name = name.strip()
+    project.description = (description or "").strip() or None
+    project.mode = mode
+    session.commit()
+    return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
 @router.post("/projects/{project_id}/delete")
@@ -556,8 +575,8 @@ def save_service_settings(
 
 @router.post("/api/projects")
 def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
-    project = repository.create_project(session, payload.name, payload.description)
-    return {"id": project.id, "name": project.name, "description": project.description}
+    project = repository.create_project(session, payload.name, payload.description, mode=payload.mode)
+    return {"id": project.id, "name": project.name, "description": project.description, "mode": project.mode}
 
 
 @router.delete("/api/projects/{project_id}")
