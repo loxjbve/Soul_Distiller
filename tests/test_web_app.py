@@ -44,7 +44,7 @@ def test_end_to_end_project_flow(client, app):
     )
     assert upload_response.status_code == 200
     document_payload = upload_response.json()["documents"][0]
-    assert document_payload["status"] == "ready"
+    assert document_payload["ingest_status"] == "pending"
     document_id = document_payload["id"]
 
     update_doc_response = client.post(
