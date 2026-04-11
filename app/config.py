@@ -37,6 +37,10 @@ class AppConfig:
         return self.log_dir / "llm_requests.jsonl"
 
     @property
+    def analysis_error_log_path(self) -> Path:
+        return self.log_dir / "analysis_errors.jsonl"
+
+    @property
     def db_path(self) -> Path:
         return self.data_dir / "app.db"
 

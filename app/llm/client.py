@@ -483,6 +483,8 @@ class OpenAICompatibleClient:
         content_parts: list[str] = []
         response_id: str | None = None
         usage: dict[str, Any] = {}
+        stream_handler_disabled = False
+        stream_handler_error: str | None = None
         try:
             with _LLM_REQUEST_SEMAPHORE:
                 with httpx.Client(timeout=timeout) as client:
@@ -493,6 +495,7 @@ class OpenAICompatibleClient:
                                 {
                                     "timestamp": _utcnow_iso(),
                                     "method": "POST",
+                                    "path": path,
                                     "url": url,
                                     "provider_kind": self.config.provider_kind,
                                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -530,7 +533,33 @@ class OpenAICompatibleClient:
                             delta, next_response_id, next_usage = event_parser(event)
                             if delta:
                                 content_parts.append(delta)
-                                stream_handler(delta)
+                                if not stream_handler_disabled:
+                                    try:
+                                        stream_handler(delta)
+                                    except Exception as exc:
+                                        stream_handler_disabled = True
+                                        stream_handler_error = (
+                                            f"{exc.__class__.__name__}: {exc}"
+                                            if str(exc).strip()
+                                            else exc.__class__.__name__
+                                        )
+                                        self._append_log(
+                                            {
+                                                "timestamp": _utcnow_iso(),
+                                                "method": "POST",
+                                                "path": path,
+                                                "url": url,
+                                                "provider_kind": self.config.provider_kind,
+                                                "api_mode": normalize_api_mode(self.config.api_mode),
+                                                "request_body": payload,
+                                                "response_text": "".join(content_parts),
+                                                "raw_stream": "\n".join(raw_lines),
+                                                "ok": True,
+                                                "stream": True,
+                                                "warning": "stream_handler_failed",
+                                                "stream_handler_error": stream_handler_error,
+                                            }
+                                        )
                             if next_response_id:
                                 response_id = next_response_id
                             if next_usage:
@@ -543,6 +572,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "POST",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -566,6 +596,7 @@ class OpenAICompatibleClient:
             {
                 "timestamp": _utcnow_iso(),
                 "method": "POST",
+                "path": path,
                 "url": url,
                 "provider_kind": self.config.provider_kind,
                 "api_mode": normalize_api_mode(self.config.api_mode),
@@ -574,6 +605,7 @@ class OpenAICompatibleClient:
                 "raw_stream": "\n".join(raw_lines),
                 "ok": True,
                 "stream": True,
+                "stream_handler_error": stream_handler_error,
             }
         )
         return {
@@ -603,6 +635,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "POST",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -618,6 +651,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "POST",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -643,6 +677,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "POST",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -688,6 +723,7 @@ class OpenAICompatibleClient:
             {
                 "timestamp": _utcnow_iso(),
                 "method": "POST",
+                "path": path,
                 "url": url,
                 "provider_kind": self.config.provider_kind,
                 "api_mode": normalize_api_mode(self.config.api_mode),
@@ -711,6 +747,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "GET",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -725,6 +762,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "GET",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -748,6 +786,7 @@ class OpenAICompatibleClient:
                 {
                     "timestamp": _utcnow_iso(),
                     "method": "GET",
+                    "path": path,
                     "url": url,
                     "provider_kind": self.config.provider_kind,
                     "api_mode": normalize_api_mode(self.config.api_mode),
@@ -789,6 +828,7 @@ class OpenAICompatibleClient:
             {
                 "timestamp": _utcnow_iso(),
                 "method": "GET",
+                "path": path,
                 "url": url,
                 "provider_kind": self.config.provider_kind,
                 "api_mode": normalize_api_mode(self.config.api_mode),

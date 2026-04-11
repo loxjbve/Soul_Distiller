@@ -59,6 +59,8 @@ def analyze_facet_worker(
                     "llm_called": True,
                     "llm_success": False,
                     "llm_attempts": 1,
+                    "provider_kind": llm_config.get("provider_kind"),
+                    "api_mode": normalize_api_mode(llm_config.get("api_mode")),
                     "llm_error": str(exc),
                     "raw_text": getattr(exc, "raw_text", None),
                     "request_url": getattr(exc, "request_url", None),
@@ -294,14 +296,7 @@ class AnalysisEngine:
         summary = dict(run.summary_json or {})
         chat_config = repository.get_service_config(session, "chat_service")
         embedding_config = repository.get_service_config(session, "embedding_service")
-        hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
-            session,
-            run.project_id,
-            facet_def,
-            embedding_config=embedding_config,
-            target_role=summary.get("target_role"),
-            analysis_context=summary.get("analysis_context"),
-        )
+        llm_payload = asdict(chat_config) if chat_config else None
         repository.add_analysis_event(
             session,
             run.id,
@@ -309,6 +304,27 @@ class AnalysisEngine:
             message=f"重新执行 {facet_def.label}。",
             payload_json={"facet_key": facet_def.key},
         )
+        try:
+            hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
+                session,
+                run.project_id,
+                facet_def,
+                embedding_config=embedding_config,
+                target_role=summary.get("target_role"),
+                analysis_context=summary.get("analysis_context"),
+            )
+        except Exception as exc:
+            self._handle_facet_setup_error(
+                session,
+                run,
+                facet_def,
+                exc,
+                embedding_config=embedding_config,
+            )
+            run.finished_at = utcnow()
+            run.status = "completed" if int((run.summary_json or {}).get("failed_facets", 0)) == 0 else "partial_failed"
+            self._persist_progress(session)
+            return repository.get_analysis_run(session, run.id) or run
         run.status = "running"
         run.finished_at = None
         self._mark_facet_started(
@@ -318,7 +334,7 @@ class AnalysisEngine:
             retrieval_mode,
             retrieval_trace,
             len(hits),
-            llm_payload=asdict(chat_config) if chat_config else None,
+            llm_payload=llm_payload,
         )
         self._persist_progress(session)
 
@@ -327,7 +343,7 @@ class AnalysisEngine:
                 facet_def,
                 project.name,
                 [self._serialize_hit(hit) for hit in hits],
-                asdict(chat_config) if chat_config else None,
+                llm_payload,
                 self.llm_log_path,
                 summary.get("target_role"),
                 summary.get("analysis_context"),
@@ -360,23 +376,16 @@ class AnalysisEngine:
         future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
         with ProcessPoolExecutor(max_workers=min(len(FACETS), self.facet_max_workers if llm_payload else 4)) as executor:
             for facet in FACETS:
-                hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
-                    session,
-                    run.project_id,
-                    facet,
-                    embedding_config=embedding_config,
-                    target_role=(run.summary_json or {}).get("target_role"),
-                    analysis_context=(run.summary_json or {}).get("analysis_context"),
-                )
-                self._mark_facet_started(
+                prepared = self._prepare_facet_execution(
                     session,
                     run,
                     facet,
-                    retrieval_mode,
-                    retrieval_trace,
-                    len(hits),
+                    embedding_config=embedding_config,
                     llm_payload=llm_payload,
                 )
+                if not prepared:
+                    continue
+                hits, retrieval_mode, retrieval_trace = prepared
                 future = executor.submit(
                     analyze_facet_worker,
                     facet,
@@ -392,7 +401,10 @@ class AnalysisEngine:
             results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
             for future in as_completed(future_map):
                 facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
-                result = FacetResult(**future.result())
+                try:
+                    result = FacetResult(**future.result())
+                except Exception as exc:
+                    result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
                 self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
                 results.append((facet, retrieval_mode, hit_count, result))
             return results
@@ -412,23 +424,16 @@ class AnalysisEngine:
             thread_name_prefix="facet-thread",
         ) as executor:
             for facet in FACETS:
-                hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
-                    session,
-                    run.project_id,
-                    facet,
-                    embedding_config=embedding_config,
-                    target_role=(run.summary_json or {}).get("target_role"),
-                    analysis_context=(run.summary_json or {}).get("analysis_context"),
-                )
-                self._mark_facet_started(
+                prepared = self._prepare_facet_execution(
                     session,
                     run,
                     facet,
-                    retrieval_mode,
-                    retrieval_trace,
-                    len(hits),
+                    embedding_config=embedding_config,
                     llm_payload=llm_payload,
                 )
+                if not prepared:
+                    continue
+                hits, retrieval_mode, retrieval_trace = prepared
                 future = executor.submit(
                     analyze_facet_worker,
                     facet,
@@ -445,10 +450,184 @@ class AnalysisEngine:
             results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
             for future in as_completed(future_map):
                 facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
-                result = FacetResult(**future.result())
+                try:
+                    result = FacetResult(**future.result())
+                except Exception as exc:
+                    result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
                 self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
                 results.append((facet, retrieval_mode, hit_count, result))
             return results
+
+    def _prepare_facet_execution(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+        *,
+        embedding_config: ServiceConfig | None,
+        llm_payload: dict[str, Any] | None,
+    ) -> tuple[list[RetrievedChunk], str, dict[str, Any]] | None:
+        try:
+            hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
+                session,
+                run.project_id,
+                facet,
+                embedding_config=embedding_config,
+                target_role=(run.summary_json or {}).get("target_role"),
+                analysis_context=(run.summary_json or {}).get("analysis_context"),
+            )
+        except Exception as exc:
+            self._handle_facet_setup_error(
+                session,
+                run,
+                facet,
+                exc,
+                embedding_config=embedding_config,
+            )
+            return None
+        self._mark_facet_started(
+            session,
+            run,
+            facet,
+            retrieval_mode,
+            retrieval_trace,
+            len(hits),
+            llm_payload=llm_payload,
+        )
+        return hits, retrieval_mode, retrieval_trace
+
+    def _handle_facet_setup_error(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+        exc: Exception,
+        *,
+        embedding_config: ServiceConfig | None,
+    ) -> None:
+        retrieval_mode = "retrieval_failed"
+        retrieval_trace = self._build_retrieval_exception_trace(exc, embedding_config=embedding_config)
+        error_text = self._format_exception(exc)
+        self._record_retrieval_event(
+            session,
+            run.id,
+            facet,
+            retrieval_mode,
+            retrieval_trace,
+            0,
+            level="error",
+            message=f"{facet.label} 在检索阶段失败：{error_text}",
+        )
+        result = self._build_failed_facet_result(facet, exc, llm_called=False)
+        self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, 0, result)
+
+    def _build_retrieval_exception_trace(
+        self,
+        exc: Exception,
+        *,
+        embedding_config: ServiceConfig | None,
+    ) -> dict[str, Any]:
+        embedding_url = None
+        if embedding_config:
+            try:
+                embedding_url = OpenAICompatibleClient(
+                    embedding_config,
+                    log_path=self.llm_log_path,
+                ).endpoint_url("/embeddings")
+            except Exception:
+                embedding_url = None
+        return {
+            "mode": "retrieval_failed",
+            "embedding_configured": bool(embedding_config),
+            "embedding_attempted": False,
+            "embedding_api_called": False,
+            "embedding_success": False,
+            "embedding_error": None,
+            "embedding_url": embedding_url,
+            "embedding_skip_reason": None,
+            "fallback_reason": "retrieval_exception",
+            "error": self._format_exception(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+    def _record_retrieval_event(
+        self,
+        session: Session,
+        run_id: str,
+        facet: FacetDefinition,
+        retrieval_mode: str,
+        retrieval_trace: dict[str, Any],
+        hit_count: int,
+        *,
+        level: str = "info",
+        message: str | None = None,
+    ) -> None:
+        trace = dict(retrieval_trace or {})
+        if not message:
+            trace_error = str(trace.get("error") or "").strip()
+            if trace_error:
+                message = f"{facet.label} 在检索阶段失败：{trace_error}"
+            elif trace.get("embedding_api_called"):
+                message = f"{facet.label} 已检索到 {hit_count} 个证据片段，并实际调用了 embeddings。"
+            elif trace.get("embedding_configured") and trace.get("embedding_skip_reason"):
+                message = (
+                    f"{facet.label} 已检索到 {hit_count} 个证据片段，未调用 embeddings："
+                    f"{trace.get('embedding_skip_reason')}。"
+                )
+            else:
+                message = f"{facet.label} 已检索到 {hit_count} 个证据片段。"
+        repository.add_analysis_event(
+            session,
+            run_id,
+            event_type="retrieval",
+            level=level,
+            message=message,
+            payload_json={
+                "facet_key": facet.key,
+                "retrieval_mode": retrieval_mode,
+                "hit_count": hit_count,
+                "retrieval_trace": trace,
+            },
+        )
+
+    @staticmethod
+    def _build_failed_facet_result(
+        facet: FacetDefinition,
+        exc: Exception,
+        *,
+        llm_called: bool,
+    ) -> FacetResult:
+        error_text = AnalysisEngine._format_exception(exc)
+        return FacetResult(
+            facet_key=facet.key,
+            status="failed",
+            confidence=0.0,
+            summary="",
+            bullets=[],
+            evidence=[],
+            conflicts=[],
+            notes=error_text,
+            raw_payload={
+                "_meta": {
+                    "llm_called": llm_called,
+                    "llm_success": False,
+                    "llm_attempts": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "duration_ms": 0,
+                },
+                "error": error_text,
+                "traceback": traceback.format_exc(),
+            },
+        )
+
+    @staticmethod
+    def _format_exception(exc: Exception) -> str:
+        text = str(exc).strip()
+        if text:
+            return text
+        return exc.__class__.__name__
 
     def _mark_facet_started(
         self,
@@ -493,6 +672,14 @@ class AnalysisEngine:
             error_message=None,
         )
         self._recalculate_run_summary(session, run)
+        self._record_retrieval_event(
+            session,
+            run.id,
+            facet,
+            retrieval_mode,
+            retrieval_trace,
+            hit_count,
+        )
         repository.add_analysis_event(
             session,
             run.id,
@@ -517,6 +704,8 @@ class AnalysisEngine:
                     "facet_key": facet.key,
                     "url": OpenAICompatibleClient(config, log_path=self.llm_log_path).endpoint_url(endpoint_path),
                     "model": config.model,
+                    "provider_kind": config.provider_kind,
+                    "api_mode": normalize_api_mode(config.api_mode),
                     "log_path": self.llm_log_path,
                     "request_payload": None,
                 },
@@ -577,12 +766,22 @@ class AnalysisEngine:
 
         message = f"{facet.label} 完成。"
         summary["current_facet"] = facet.key
+        summary["current_stage"] = f"{facet.label} {'已完成' if result.status == 'completed' else '失败'}"
         run.summary_json = summary
         self._recalculate_run_summary(session, run)
 
         if findings_json["llm_called"]:
             llm_state = "成功" if findings_json["llm_success"] else "失败"
             message = f"{message} LLM {llm_state}，消耗 {findings_json['total_tokens']} tokens。"
+        message = (
+            f"{facet.label} {'完成' if result.status == 'completed' else '失败'}。"
+            if not findings_json["llm_called"]
+            else (
+                f"{facet.label} {'完成' if result.status == 'completed' else '失败'}。"
+                f" LLM {'成功' if findings_json['llm_success'] else '失败'}，"
+                f"消耗 {findings_json['total_tokens']} tokens。"
+            )
+        )
         repository.add_analysis_event(
             session,
             run.id,
@@ -607,6 +806,8 @@ class AnalysisEngine:
                     "facet_key": facet.key,
                     "url": meta.get("request_url"),
                     "model": meta.get("llm_model"),
+                    "provider_kind": meta.get("provider_kind"),
+                    "api_mode": meta.get("api_mode"),
                     "log_path": meta.get("log_path"),
                     "request_payload": meta.get("request_payload"),
                 },
@@ -621,6 +822,8 @@ class AnalysisEngine:
                     "facet_key": facet.key,
                     "success": meta.get("llm_success"),
                     "error": meta.get("llm_error"),
+                    "provider_kind": meta.get("provider_kind"),
+                    "api_mode": meta.get("api_mode"),
                     "response_text": meta.get("raw_text"),
                     "log_path": meta.get("log_path"),
                 },
@@ -669,44 +872,64 @@ class AnalysisEngine:
         if not self.db:
             return None
 
-        state = {"text": "", "event_text": ""}
+        state = {"text": "", "event_text": "", "stream_db_disabled": False}
 
         def callback(delta: str) -> None:
             if not delta:
                 return
-            state["text"] += delta
+            if len(state["text"]) < RAW_TEXT_PREVIEW_LIMIT:
+                remaining = RAW_TEXT_PREVIEW_LIMIT - len(state["text"])
+                state["text"] += delta[:remaining]
             state["event_text"] += delta
+            if state["stream_db_disabled"]:
+                return
             if len(state["event_text"]) < 80 and not delta.endswith(("\n", ".", "}", "]")):
                 return
-            self._flush_stream_delta(run_id, facet, state["text"], state["event_text"])
+            persisted = self._flush_stream_delta(run_id, facet, state["text"], state["event_text"])
+            if persisted:
+                state["event_text"] = ""
+                return
+            state["stream_db_disabled"] = True
             state["event_text"] = ""
 
-        setattr(callback, "_flush_remaining", lambda: self._flush_stream_delta(run_id, facet, state["text"], state["event_text"]))
+        def flush_remaining() -> None:
+            if state["stream_db_disabled"] or not state["event_text"]:
+                return
+            persisted = self._flush_stream_delta(run_id, facet, state["text"], state["event_text"])
+            if not persisted:
+                state["stream_db_disabled"] = True
+            state["event_text"] = ""
+
+        setattr(callback, "_flush_remaining", flush_remaining)
         return callback
 
-    def _flush_stream_delta(self, run_id: str, facet: FacetDefinition, text: str, delta: str) -> None:
+    def _flush_stream_delta(self, run_id: str, facet: FacetDefinition, text: str, delta: str) -> bool:
         if not self.db or (not text and not delta):
-            return
-        with self.db.session() as session:
-            run = repository.get_analysis_run(session, run_id)
-            if not run:
-                return
-            facet_record = repository.get_facet(session, run_id, facet.key)
-            if facet_record:
-                findings = dict(facet_record.findings_json or {})
-                findings["llm_live_text"] = text[:RAW_TEXT_PREVIEW_LIMIT]
-                facet_record.findings_json = findings
-            repository.add_analysis_event(
-                session,
-                run_id,
-                event_type="llm_delta",
-                message=f"{facet.label} streaming response.",
-                payload_json={
-                    "facet_key": facet.key,
-                    "delta": delta[-1200:],
-                    "text": text[:RAW_TEXT_PREVIEW_LIMIT],
-                },
-            )
+            return True
+        try:
+            with self.db.session() as session:
+                run = repository.get_analysis_run(session, run_id)
+                if not run:
+                    return True
+                facet_record = repository.get_facet(session, run_id, facet.key)
+                if facet_record:
+                    findings = dict(facet_record.findings_json or {})
+                    findings["llm_live_text"] = text[:RAW_TEXT_PREVIEW_LIMIT]
+                    facet_record.findings_json = findings
+                repository.add_analysis_event(
+                    session,
+                    run_id,
+                    event_type="llm_delta",
+                    message=f"{facet.label} streaming response.",
+                    payload_json={
+                        "facet_key": facet.key,
+                        "delta": delta[-1200:],
+                        "text": text[:RAW_TEXT_PREVIEW_LIMIT],
+                    },
+                )
+            return True
+        except Exception:
+            return False
 
     def _retrieve_hits(
         self,
@@ -723,16 +946,29 @@ class AnalysisEngine:
             query_parts.append(target_role)
         if analysis_context:
             query_parts.append(analysis_context)
+        query_text = " ".join(part for part in query_parts if part).strip()
         hits, retrieval_mode, retrieval_trace = self.retrieval.search(
             session,
             project_id=project_id,
-            query=" ".join(query_parts),
+            query=query_text,
             embedding_config=embedding_config,
             log_path=self.llm_log_path,
             limit=FACET_EVIDENCE_LIMIT,
         )
+        retrieval_trace = dict(retrieval_trace or {})
+        retrieval_trace["query"] = query_text
+        retrieval_trace["query_parts"] = [part for part in query_parts if part]
+        retrieval_trace["requested_limit"] = FACET_EVIDENCE_LIMIT
+        retrieval_trace["result_count"] = len(hits)
         if not hits:
-            hits = self._fallback_hits(session, project_id)
+            fallback_hits = self._fallback_hits(session, project_id)
+            retrieval_trace["fallback_used"] = bool(fallback_hits)
+            retrieval_trace["fallback_hit_count"] = len(fallback_hits)
+            if fallback_hits:
+                retrieval_trace["fallback_reason"] = retrieval_trace.get("fallback_reason") or "no_search_hits"
+                retrieval_mode = "fallback"
+                hits = fallback_hits
+        retrieval_trace["result_count"] = len(hits)
         return hits, retrieval_mode, retrieval_trace
 
     def _build_initial_summary(
@@ -890,6 +1126,8 @@ def _analyze_with_llm(
                 "llm_called": True,
                 "llm_success": True,
                 "llm_attempts": attempts,
+                "provider_kind": config.provider_kind,
+                "api_mode": normalize_api_mode(config.api_mode),
                 "llm_model": completion.model,
                 "prompt_tokens": completion.usage.get("prompt_tokens", 0),
                 "completion_tokens": completion.usage.get("completion_tokens", 0),

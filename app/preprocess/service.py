@@ -21,6 +21,7 @@ from app.db import Database
 from app.llm.client import LLMError, OpenAICompatibleClient
 from app.models import ChatTurn, DocumentRecord
 from app.preprocess.tools import build_tool_schemas
+from app.runtime_limits import background_task_slot
 from app.schemas import LLMToolCall, ServiceConfig
 from app.storage import repository
 
@@ -137,9 +138,11 @@ class PreprocessAgentService:
 
     def _execute(self, state: StreamState) -> None:
         try:
-            with self.db.session() as session:
-                self._run_turn(session, state)
+            with background_task_slot():
+                with self.db.session() as session:
+                    self._run_turn(session, state)
         except Exception as exc:
+            self._emit(state, "error", {"message": str(exc)})
             self._emit(state, "stream_error", {"message": str(exc)})
             with self.db.session() as session:
                 chat_session = repository.get_chat_session(session, state.session_id, session_kind="preprocess")

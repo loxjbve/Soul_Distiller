@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
-from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact
+from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact, utcnow
 from app.schemas import ASSET_KINDS, ServiceConfig
 from app.storage import repository
 
@@ -227,7 +227,13 @@ def accept_facet(project_id: str, facet_key: str, session: SessionDep):
 def rerun_facet(request: Request, project_id: str, facet_key: str, session: SessionDep):
     run = repository.get_active_analysis_run(session, project_id)
     if run:
-        raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+        if request.app.state.analysis_runner.is_tracking(run.id):
+            raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+        _mark_run_as_stale(
+            session,
+            run,
+            reason="Detected an unfinished run record without a live worker before facet rerun.",
+        )
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
         raise HTTPException(status_code=404, detail="No analysis run found.")
@@ -637,7 +643,13 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
 def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: SessionDep):
     run = repository.get_active_analysis_run(session, project_id)
     if run:
-        raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+        if request.app.state.analysis_runner.is_tracking(run.id):
+            raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+        _mark_run_as_stale(
+            session,
+            run,
+            reason="Detected an unfinished run record without a live worker before facet rerun API call.",
+        )
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
         raise HTTPException(status_code=404, detail="No analysis run found.")
@@ -896,7 +908,14 @@ def _enqueue_analysis(
         raise HTTPException(status_code=400, detail="Upload at least one successfully ingested document first.")
     existing_run = repository.get_active_analysis_run(session, project_id)
     if existing_run:
-        return existing_run
+        if request.app.state.analysis_runner.is_tracking(existing_run.id):
+            return existing_run
+        _mark_run_as_stale(
+            session,
+            existing_run,
+            reason="Detected an unfinished run record without a live worker. Marked as failed before starting a new run.",
+        )
+        session.flush()
     run = request.app.state.analysis_engine.create_run(
         session,
         project_id,
@@ -907,6 +926,24 @@ def _enqueue_analysis(
     request.app.state.analysis_runner.submit(run.id)
     session.expire_all()
     return repository.get_analysis_run(session, run.id) or run
+
+
+def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> None:
+    summary = dict(run.summary_json or {})
+    summary["current_stage"] = "检测到旧任务卡住，已重置为失败"
+    summary["current_facet"] = None
+    summary["finished_at"] = utcnow().isoformat()
+    run.summary_json = summary
+    run.status = "failed"
+    run.finished_at = utcnow()
+    repository.add_analysis_event(
+        session,
+        run.id,
+        event_type="lifecycle",
+        level="warning",
+        message="检测到旧的分析任务没有活跃 worker，已自动标记为失败。",
+        payload_json={"stale_recovered": True, "reason": reason},
+    )
 
 
 def _resolve_run(session: Session, project_id: str, run_id: str | None) -> AnalysisRun | None:

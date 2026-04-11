@@ -34,15 +34,19 @@ class EmbeddingRetriever:
             filters=filters,
         )
         trace: dict[str, object] = {
-            "embedding_attempted": True,
-            "embedding_url": None,
+            "embedding_attempted": False,
+            "embedding_api_called": False,
+            "embedding_url": OpenAICompatibleClient(config, log_path=log_path).endpoint_url("/embeddings"),
             "lexical_candidate_count": len(lexical_hits),
             "new_chunk_embeddings": 0,
+            "embedding_skip_reason": None,
         }
         if not lexical_hits:
+            trace["embedding_skip_reason"] = "no_lexical_candidates"
             return [], trace
         client = OpenAICompatibleClient(config, log_path=log_path)
-        trace["embedding_url"] = client.endpoint_url("/embeddings")
+        trace["embedding_attempted"] = True
+        trace["embedding_api_called"] = True
         query_vector = client.embeddings([query], model=config.model)[0]
         hits_by_id = {hit.chunk_id: hit for hit in lexical_hits}
         chunks = list(session.scalars(select(TextChunk).where(TextChunk.id.in_(list(hits_by_id)))))

@@ -3,8 +3,12 @@ from __future__ import annotations
 import io
 import json
 import time
+from pathlib import Path
+from uuid import uuid4
 
+from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
+from app.main import create_app
 from app.storage import repository
 
 
@@ -246,6 +250,40 @@ def test_analysis_stream_and_rerun_api(client, app):
     assert len(rerun_payload["facets"]) == 10
 
 
+def test_analysis_run_survives_single_facet_retrieval_failure(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Retrieval Failure"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Persona notes with enough text for fallback evidence."), "text/plain")},
+    )
+
+    engine = app.state.analysis_engine
+    original = engine._retrieve_hits
+
+    def flaky_retrieve(session, project_id, facet, **kwargs):
+        if facet.key == "personality":
+            raise RuntimeError("simulated retrieval failure")
+        return original(session, project_id, facet, **kwargs)
+
+    monkeypatch.setattr(engine, "_retrieve_hits", flaky_retrieve)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Keep going even if one facet retrieval fails."},
+    )
+    payload = _wait_for_analysis(client, project_id, analyze_response.json()["id"])
+
+    assert payload["status"] == "partial_failed"
+    personality = next(item for item in payload["facets"] if item["facet_key"] == "personality")
+    assert personality["status"] == "failed"
+    assert any(event["event_type"] == "retrieval" for event in payload["events"])
+    assert any(
+        event["event_type"] == "retrieval" and "simulated retrieval failure" in str(event["payload"])
+        for event in payload["events"]
+    )
+
+
 def test_project_delete_cascades_records_and_files(client, app):
     project_payload = client.post("/api/projects", json={"name": "Delete Me"}).json()
     project_id = project_payload["id"]
@@ -266,6 +304,47 @@ def test_project_delete_cascades_records_and_files(client, app):
     assert not (app.state.config.upload_dir / project_id).exists()
     assert not (app.state.config.assets_dir / project_id).exists()
     assert not (app.state.config.output_dir / project_id).exists()
+
+
+def test_create_app_recovers_stale_active_runs():
+    root_dir = Path(".test-workspaces") / f"stale-run-recovery-{uuid4().hex}"
+    root_dir.mkdir(parents=True, exist_ok=False)
+    config = AppConfig(root_dir=root_dir)
+    first_app = create_app(config)
+    try:
+        with first_app.state.db.session() as session:
+            project = repository.create_project(session, "Recover Me", "test")
+            run = repository.create_analysis_run(
+                session,
+                project_id=project.id,
+                status="running",
+                summary_json={"current_stage": "running", "current_facet": "personality"},
+            )
+            run_id = run.id
+    finally:
+        first_app.state.analysis_runner.shutdown()
+        first_app.state.preprocess_service.shutdown()
+        first_app.state.db.close()
+
+    second_app = create_app(config)
+    try:
+        with second_app.state.db.session() as session:
+            recovered = repository.get_analysis_run(session, run_id)
+            assert recovered is not None
+            assert recovered.status == "failed"
+            assert recovered.summary_json["current_stage"] == "服务重启，旧的后台任务已终止"
+            assert any(
+                event.event_type == "lifecycle" and event.payload_json.get("recovered_after_restart")
+                for event in recovered.events
+            )
+    finally:
+        second_app.state.analysis_runner.shutdown()
+        second_app.state.preprocess_service.shutdown()
+        second_app.state.db.close()
+        if root_dir.exists():
+            import shutil
+
+            shutil.rmtree(root_dir, ignore_errors=True)
 
 
 def test_settings_accept_official_provider_without_base_url(client, app):

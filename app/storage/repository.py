@@ -195,6 +195,16 @@ def get_active_analysis_run(session: Session, project_id: str) -> AnalysisRun | 
     return session.scalars(stmt).first()
 
 
+def list_active_analysis_runs(session: Session) -> list[AnalysisRun]:
+    stmt = (
+        select(AnalysisRun)
+        .where(AnalysisRun.status.in_(("queued", "running")))
+        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
+        .order_by(desc(AnalysisRun.created_at))
+    )
+    return list(session.scalars(stmt))
+
+
 def get_analysis_run(session: Session, run_id: str) -> AnalysisRun | None:
     stmt = (
         select(AnalysisRun)

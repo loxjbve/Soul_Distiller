@@ -69,7 +69,7 @@
         });
 
         elements.deleteSession.addEventListener("click", async () => {
-            if (!state.currentSessionId || !window.confirm("纭畾鍒犻櫎杩欎釜棰勫垎鏋愪細璇濆悧锛?)) {
+            if (!state.currentSessionId || !window.confirm("确定删除这个预分析会话吗？")) {
                 return;
             }
             await fetchJson(`/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}`, {
@@ -181,18 +181,27 @@
             closeStream();
             await loadSession(state.currentSessionId);
         });
-        source.addEventListener("stream_error", async (event) => {
+        const handleStreamFailure = async (event) => {
             closeStream();
             const payload = safeParseJson(event.data);
             appendLocalError(payload?.message || "Execution failed");
             addContextPill("execution failed");
             await loadSession(state.currentSessionId);
+        };
+        source.addEventListener("stream_error", handleStreamFailure);
+        source.addEventListener("error", async (event) => {
+            if (!event.data) {
+                return;
+            }
+            await handleStreamFailure(event);
         });
         source.onerror = () => {
             if (state.eventSource !== source) {
                 return;
             }
             addContextPill("connection interrupted");
+            state.isSending = false;
+            updateComposerState();
         };
     }
 
@@ -276,7 +285,7 @@
         if (block.type === "status") {
             const pill = document.createElement("div");
             pill.className = "turn-pill";
-            pill.textContent = block.label || block.message || "澶勭悊涓?;
+            pill.textContent = block.label || block.message || "处理中";
             return pill;
         }
         if (block.type === "artifact") {
@@ -323,7 +332,7 @@
         if (!artifacts.length) {
             const empty = document.createElement("p");
             empty.className = "muted";
-            empty.textContent = "褰撳墠浼氳瘽杩樻病鏈夌敓鎴愭枃浠躲€?;
+            empty.textContent = "当前会话还没有生成文件。";
             elements.artifactList.appendChild(empty);
             return;
         }

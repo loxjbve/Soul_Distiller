@@ -19,10 +19,33 @@ from app.analysis.runner import AnalysisTaskRunner
 from app.analysis.synthesizer import AssetSynthesizer
 from app.config import AppConfig, default_config
 from app.db import Database
+from app.models import utcnow
 from app.pipeline.ingest import DocumentIngestService
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
+from app.storage import repository
 from app.web.routes import router
+
+
+def _recover_interrupted_analysis_runs(database: Database) -> None:
+    with database.session() as session:
+        active_runs = repository.list_active_analysis_runs(session)
+        for run in active_runs:
+            summary = dict(run.summary_json or {})
+            summary["current_stage"] = "服务重启，旧的后台任务已终止"
+            summary["current_facet"] = None
+            summary["finished_at"] = utcnow().isoformat()
+            run.summary_json = summary
+            run.status = "failed"
+            run.finished_at = utcnow()
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="lifecycle",
+                level="warning",
+                message="检测到服务重启，之前未完成的分析任务已标记为失败。",
+                payload_json={"recovered_after_restart": True},
+            )
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -38,10 +61,16 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         use_processes=False,
         facet_max_workers=1,
     )
-    analysis_runner = AnalysisTaskRunner(database, analysis_engine, max_workers=4)
+    analysis_runner = AnalysisTaskRunner(
+        database,
+        analysis_engine,
+        max_workers=4,
+        error_log_path=str(config.analysis_error_log_path),
+    )
     ingest_service = DocumentIngestService(config)
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
+    _recover_interrupted_analysis_runs(database)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):

@@ -207,9 +207,30 @@ function renderFacetStatusCard(facet, runStatus) {
 
 function renderEventItem(event) {
     const payload = event.payload || {};
-    const payloadHtml = Object.keys(payload).length
-        ? `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`
-        : "";
+    let payloadHtml = "";
+    if (event.event_type === "llm_delta") {
+        payloadHtml = `<pre class="trace-box">${escapeHtml(payload.text || payload.delta || "")}</pre>`;
+    } else if (event.event_type === "llm_response" && payload.response_text) {
+        payloadHtml = `<pre class="trace-box">${escapeHtml(payload.response_text)}</pre>`;
+    } else if (event.event_type === "retrieval") {
+        const trace = payload.retrieval_trace || {};
+        const summary = [
+            payload.retrieval_mode ? `mode=${payload.retrieval_mode}` : "",
+            typeof payload.hit_count === "number" ? `hits=${payload.hit_count}` : "",
+            trace.embedding_url ? `embedding=${trace.embedding_url}` : "",
+            trace.embedding_skip_reason ? `skip=${trace.embedding_skip_reason}` : "",
+            trace.fallback_reason ? `fallback=${trace.fallback_reason}` : "",
+            trace.embedding_error ? `embedding_error=${trace.embedding_error}` : "",
+            trace.error ? `error=${trace.error}` : "",
+        ]
+            .filter(Boolean)
+            .join("\n");
+        payloadHtml = summary
+            ? `<pre class="trace-box">${escapeHtml(summary)}</pre>`
+            : `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+    } else if (Object.keys(payload).length) {
+        payloadHtml = `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+    }
     return `
         <article class="event-item level-${escapeHtml(event.level || "info")}">
             <div class="event-item-head">
