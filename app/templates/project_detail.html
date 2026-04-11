@@ -122,36 +122,7 @@
     </div>
     <div id="document-container">
         <p class="muted" id="no-docs-message" hidden>还没有上传文档。</p>
-        <div class="kanban-board" id="kanban-board">
-            <div class="kanban-column">
-                <div class="kanban-column-header">
-                    <h3>未处理</h3>
-                    <span class="kanban-count" id="count-unprocessed">0</span>
-                </div>
-                <div class="kanban-column-content" id="col-unprocessed"></div>
-            </div>
-            <div class="kanban-column">
-                <div class="kanban-column-header">
-                    <h3>队列中</h3>
-                    <span class="kanban-count" id="count-queued">0</span>
-                </div>
-                <div class="kanban-column-content" id="col-queued"></div>
-            </div>
-            <div class="kanban-column">
-                <div class="kanban-column-header">
-                    <h3>进行中</h3>
-                    <span class="kanban-count" id="count-processing">0</span>
-                </div>
-                <div class="kanban-column-content" id="col-processing"></div>
-            </div>
-            <div class="kanban-column">
-                <div class="kanban-column-header">
-                    <h3>已完成</h3>
-                    <span class="kanban-count" id="count-completed">0</span>
-                </div>
-                <div class="kanban-column-content" id="col-completed"></div>
-            </div>
-        </div>
+        <div class="document-grid" id="document-grid"></div>
     </div>
 </section>
 
@@ -246,31 +217,34 @@
     }
 
     function renderDocuments() {
-        const kanbanBoard = document.getElementById('kanban-board');
+        const documentGrid = document.getElementById('document-grid');
         const noDocs = document.getElementById('no-docs-message');
 
         if (documents.length === 0) {
-            kanbanBoard.hidden = true;
+            documentGrid.hidden = true;
             noDocs.hidden = false;
             return;
         }
 
-        kanbanBoard.hidden = false;
+        documentGrid.hidden = false;
         noDocs.hidden = true;
 
-        const cols = {
-            unprocessed: [],
-            queued: [],
-            processing: [],
-            completed: []
+        const sortOrder = {
+            'failed': 0,
+            'processing': 1,
+            'queued': 2,
+            'unprocessed': 3,
+            'completed': 4
         };
 
-        documents.forEach(doc => {
+        const cardData = documents.map(doc => {
             const state = taskStates[doc.id] || getInitialState(doc);
             const stage = state.task && state.task.status ? state.task.status : state.status;
             
             let col = 'unprocessed';
-            if (state.status === 'ready' || stage === 'completed') {
+            if (state.status === 'failed') {
+                col = 'failed';
+            } else if (state.status === 'ready' || stage === 'completed') {
                 col = 'completed';
             } else if (state.status === 'queued' || stage === 'queued') {
                 col = 'queued';
@@ -307,7 +281,7 @@
                 }
             }
 
-            cols[col].push(`
+            const html = `
                 <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
                     <div class="doc-card-inner">
                         <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}"></div>
@@ -319,18 +293,21 @@
                         ${(col === 'processing') ? `<div class="doc-progress-bar-container"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                     </div>
                 </div>
-            `);
+            `;
+            
+            return {
+                html: html,
+                order: sortOrder[col] !== undefined ? sortOrder[col] : 99,
+                updatedAt: doc.updated_at || ''
+            };
         });
 
-        document.getElementById('col-unprocessed').innerHTML = cols.unprocessed.join('');
-        document.getElementById('col-queued').innerHTML = cols.queued.join('');
-        document.getElementById('col-processing').innerHTML = cols.processing.join('');
-        document.getElementById('col-completed').innerHTML = cols.completed.join('');
+        cardData.sort((a, b) => {
+            if (a.order !== b.order) return a.order - b.order;
+            return b.updatedAt.localeCompare(a.updatedAt);
+        });
 
-        document.getElementById('count-unprocessed').textContent = cols.unprocessed.length;
-        document.getElementById('count-queued').textContent = cols.queued.length;
-        document.getElementById('count-processing').textContent = cols.processing.length;
-        document.getElementById('count-completed').textContent = cols.completed.length;
+        documentGrid.innerHTML = cardData.map(c => c.html).join('');
     }
 
     function getStatusClass(status, task) {

@@ -4,24 +4,17 @@
 <section class="hero-board">
     <div class="hero-copy">
         <p class="eyebrow">Local Persona Distillation Studio</p>
-        <h1>把零散文档整理成一个可审核、可试聊、可发布的人物 Skill。</h1>
-        <p class="hero-note">
-            先沉淀语料，再分析人格、语言、经历、关系与边界，最后导出统一的人设资产。
-        </p>
+        <h1>构建可交互的人物 Skill。</h1>
         <div class="hero-chips">
             <span>Chat LLM {{ "Ready" if chat_configured else "Missing" }}</span>
             <span>Embeddings {{ "Ready" if embedding_configured else "Fallback" }}</span>
-            <span>本地单用户</span>
+            <span>本地环境</span>
         </div>
     </div>
     <div class="hero-side">
         <div class="metric-tile">
             <strong>{{ projects|length }}</strong>
             <span>人物项目</span>
-        </div>
-        <div class="metric-tile">
-            <strong>{{ "Hybrid" if embedding_configured else "Lexical" }}</strong>
-            <span>检索模式</span>
         </div>
     </div>
 </section>
