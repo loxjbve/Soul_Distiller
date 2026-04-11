@@ -55,6 +55,9 @@ class RetrievedChunk:
     score: float
     page_number: int | None
     metadata: dict[str, Any]
+    anchor_chunk_id: str | None = None
+    anchor_chunk_index: int | None = None
+    context_span: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

@@ -6,9 +6,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import select
+
 from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
 from app.main import create_app
+from app.models import TextChunk
 from app.storage import repository
 
 
@@ -18,6 +21,15 @@ def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float
     while payload["status"] in {"queued", "running"} and time.time() < deadline:
         time.sleep(0.05)
         payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    return payload
+
+
+def _wait_for_rechunk(client, project_id: str, task_id: str, *, timeout_s: float = 8.0) -> dict:
+    deadline = time.time() + timeout_s
+    payload = client.get(f"/api/projects/{project_id}/rechunk/{task_id}").json()
+    while payload["status"] in {"queued", "running"} and time.time() < deadline:
+        time.sleep(0.05)
+        payload = client.get(f"/api/projects/{project_id}/rechunk/{task_id}").json()
     return payload
 
 
@@ -225,6 +237,47 @@ def test_document_delete_removes_record(client, app):
         assert repository.get_document(session, document_id) is None
 
 
+def test_project_rechunk_task_rebuilds_chunks_and_embeddings(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Rechunk"}).json()
+    project_id = project_payload["id"]
+    text = ("Alpha notes with long context for chunk rebuild. " * 200).encode("utf-8")
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(text), "text/plain")},
+    )
+    client.post(
+        "/settings/embedding",
+        data={
+            "provider_kind": "openai",
+            "api_key": "sk-test",
+            "model": "embed-test",
+        },
+        follow_redirects=False,
+    )
+
+    def fake_embeddings(self, inputs, *, model=None):
+        del model
+        return [[float(index + 1), float(len(item) % 13), 0.5] for index, item in enumerate(inputs)]
+
+    monkeypatch.setattr(OpenAICompatibleClient, "embeddings", fake_embeddings)
+
+    start = client.post(f"/api/projects/{project_id}/rechunk")
+    assert start.status_code == 200
+    task_id = start.json()["task_id"]
+
+    status = _wait_for_rechunk(client, project_id, task_id)
+    assert status["status"] == "completed"
+    assert status["document_total"] >= 1
+    assert status["chunk_processed"] >= 1
+    assert status["embedding_processed"] >= 1
+
+    with app.state.db.session() as session:
+        chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == project_id)))
+        assert chunks
+        assert all(len(chunk.content) <= 1800 for chunk in chunks)
+        assert any(chunk.embedding_vector for chunk in chunks)
+
+
 def test_analysis_stream_and_rerun_api(client, app):
     project_payload = client.post("/api/projects", json={"name": "Stream Debug"}).json()
     project_id = project_payload["id"]
@@ -324,6 +377,7 @@ def test_create_app_recovers_stale_active_runs():
     finally:
         first_app.state.analysis_runner.shutdown()
         first_app.state.preprocess_service.shutdown()
+        first_app.state.rechunk_manager.shutdown()
         first_app.state.db.close()
 
     second_app = create_app(config)
@@ -340,6 +394,7 @@ def test_create_app_recovers_stale_active_runs():
     finally:
         second_app.state.analysis_runner.shutdown()
         second_app.state.preprocess_service.shutdown()
+        second_app.state.rechunk_manager.shutdown()
         second_app.state.db.close()
         if root_dir.exists():
             import shutil

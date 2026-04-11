@@ -877,12 +877,14 @@ class AnalysisEngine:
         def callback(delta: str) -> None:
             if not delta:
                 return
-            if len(state["text"]) < RAW_TEXT_PREVIEW_LIMIT:
-                remaining = RAW_TEXT_PREVIEW_LIMIT - len(state["text"])
-                state["text"] += delta[:remaining]
-            state["event_text"] += delta
+            state["text"] = f"{state['text']}{delta}"
+            if len(state["text"]) > RAW_TEXT_PREVIEW_LIMIT:
+                state["text"] = state["text"][-RAW_TEXT_PREVIEW_LIMIT:]
             if state["stream_db_disabled"]:
                 return
+            state["event_text"] += delta
+            if len(state["event_text"]) > RAW_TEXT_PREVIEW_LIMIT:
+                state["event_text"] = state["event_text"][-RAW_TEXT_PREVIEW_LIMIT:]
             if len(state["event_text"]) < 80 and not delta.endswith(("\n", ".", "}", "]")):
                 return
             persisted = self._flush_stream_delta(run_id, facet, state["text"], state["event_text"])
@@ -1042,6 +1044,9 @@ class AnalysisEngine:
                     score=1.0,
                     page_number=chunk.page_number,
                     metadata=chunk.metadata_json or {},
+                    anchor_chunk_id=chunk.id,
+                    anchor_chunk_index=chunk.chunk_index,
+                    context_span={"left": 0, "right": 0, "total_chars": len(chunk.content or "")},
                 )
             )
         return hits
@@ -1058,6 +1063,9 @@ class AnalysisEngine:
             "score": hit.score,
             "page_number": hit.page_number,
             "metadata": hit.metadata,
+            "anchor_chunk_id": hit.anchor_chunk_id,
+            "anchor_chunk_index": hit.anchor_chunk_index,
+            "context_span": dict(hit.context_span or {}),
         }
 
     @staticmethod
@@ -1080,7 +1088,7 @@ def _analyze_with_llm(
     config = ServiceConfig(**llm_config)
     client = OpenAICompatibleClient(config, log_path=llm_log_path)
     excerpt_text = "\n\n".join(
-        f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}\n{chunk['content'][:320]}"
+        f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}\n{chunk['content'][:900]}"
         for chunk in chunks
     )
     messages = build_facet_analysis_messages(

@@ -659,6 +659,34 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
     return _serialize_analysis_run(refreshed)
 
 
+@router.post("/api/projects/{project_id}/rechunk")
+def start_rechunk_api(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    manager = request.app.state.rechunk_manager
+    try:
+        return manager.submit(project_id=project_id, embedding_config=embedding_config)
+    except ValueError as exc:
+        task_id = str(exc)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A rechunk task is already running for this project.",
+                "task_id": task_id,
+                "task": manager.get(task_id),
+            },
+        ) from exc
+
+
+@router.get("/api/projects/{project_id}/rechunk/{task_id}")
+def get_rechunk_task_api(request: Request, project_id: str, task_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    task = request.app.state.rechunk_manager.get(task_id)
+    if not task or task.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Rechunk task not found.")
+    return task
+
+
 @router.post("/api/projects/{project_id}/assets/generate")
 def generate_asset_api(request: Request, project_id: str, payload: AssetGeneratePayload, session: SessionDep):
     draft = _generate_asset_draft(request, session, project_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
@@ -1026,7 +1054,7 @@ def _chat_with_persona(
         limit=4,
     )
     evidence_block = "\n\n".join(
-        f"[{hit.chunk_id}] {hit.document_title} / {hit.filename}\n{hit.content[:280]}"
+        f"[{hit.chunk_id}] {hit.document_title} / {hit.filename}\n{hit.content[:900]}"
         for hit in hits
     )
     prompt_excerpt = f"SKILL:\n{version.system_prompt[:600]}\n\nEVIDENCE:\n{evidence_block[:1200]}"
@@ -1046,11 +1074,14 @@ def _chat_with_persona(
         "evidence": [
             {
                 "chunk_id": hit.chunk_id,
+                "anchor_chunk_id": hit.anchor_chunk_id or hit.chunk_id,
+                "anchor_chunk_index": hit.anchor_chunk_index,
                 "document_title": hit.document_title,
                 "filename": hit.filename,
                 "page_number": hit.page_number,
                 "score": hit.score,
-                "quote": hit.content[:200],
+                "quote": hit.content[:900],
+                "context_span": dict(hit.context_span or {}),
             }
             for hit in hits
         ],

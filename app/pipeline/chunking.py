@@ -7,8 +7,8 @@ from app.utils.text import token_count
 def chunk_segments(
     segments: list[ExtractedSegment],
     *,
-    chunk_size: int = 1200,
-    overlap: int = 180,
+    chunk_size: int = 1800,
+    overlap: int = 300,
 ) -> list[ChunkPayload]:
     chunks: list[ChunkPayload] = []
     global_offset = 0

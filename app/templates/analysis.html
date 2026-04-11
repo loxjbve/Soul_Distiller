@@ -6,7 +6,7 @@
         <p class="eyebrow">Analysis Monitor</p>
         <h1>{{ project.name }} 分析进度</h1>
         <p class="hero-note">
-            这个页面会自动轮询后台任务状态。即使离开页面或关闭浏览器，只要服务仍在运行，重新打开后也能看到同一个 run 的最新进度。
+            这个页面会持续显示本次 run 的执行状态与详细事件。你可以随时离开页面，回来后继续查看同一条 run 的最新进展。
         </p>
     </div>
     <div class="project-hero-actions">
@@ -63,7 +63,15 @@
                 <strong id="metric-llm-failure">{{ (run.summary_json or {}).get("llm_failures", 0) }}</strong>
             </div>
             <div class="metric-card">
-                <span>总 tokens</span>
+                <span>Input Tokens</span>
+                <strong id="metric-input-tokens">{{ (run.summary_json or {}).get("prompt_tokens", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>Output Tokens</span>
+                <strong id="metric-output-tokens">{{ (run.summary_json or {}).get("completion_tokens", 0) }}</strong>
+            </div>
+            <div class="metric-card">
+                <span>Total Tokens</span>
                 <strong id="metric-total-tokens">{{ (run.summary_json or {}).get("total_tokens", 0) }}</strong>
             </div>
             <div class="metric-card">

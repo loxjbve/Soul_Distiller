@@ -515,11 +515,15 @@ class PreprocessAgentService:
                 "retrieval_trace": retrieval_trace,
                 "hits": [
                     {
+                        "chunk_id": hit.chunk_id,
+                        "anchor_chunk_id": hit.anchor_chunk_id or hit.chunk_id,
+                        "anchor_chunk_index": hit.anchor_chunk_index,
                         "document_id": hit.document_id,
                         "filename": hit.filename,
-                        "snippet": hit.content[:320],
+                        "snippet": hit.content[:900],
                         "score": hit.score,
                         "page_number": hit.page_number,
+                        "context_span": dict(hit.context_span or {}),
                     }
                     for hit in filtered_hits
                 ],

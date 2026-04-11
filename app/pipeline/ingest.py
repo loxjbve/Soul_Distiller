@@ -104,6 +104,7 @@ class DocumentIngestService:
             ".html": "html",
             ".htm": "html",
             ".json": "json",
+            ".jsonl": "jsonl",
             ".docx": "docx",
             ".pdf": "pdf",
             ".txt": "text",

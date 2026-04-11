@@ -27,6 +27,7 @@ def app():
     finally:
         application.state.analysis_runner.shutdown()
         application.state.preprocess_service.shutdown()
+        application.state.rechunk_manager.shutdown()
         application.state.db.close()
         shutil.rmtree(root_dir, ignore_errors=True)
 

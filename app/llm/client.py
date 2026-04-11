@@ -18,7 +18,7 @@ OFFICIAL_PROVIDER_BASE_URLS = {
     "xai": "https://api.x.ai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
 }
-MAX_CONCURRENT_LLM_REQUESTS = 4
+MAX_CONCURRENT_LLM_REQUESTS = 5
 _LLM_REQUEST_SEMAPHORE = BoundedSemaphore(MAX_CONCURRENT_LLM_REQUESTS)
 _LLM_LOG_LOCK = Lock()
 

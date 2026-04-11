@@ -35,6 +35,8 @@ def extract_text(filename: str, content: bytes) -> ExtractionResult:
         return _extract_html(content)
     if extension == ".json":
         return _extract_json(content)
+    if extension == ".jsonl":
+        return _extract_jsonl(content)
     if extension == ".docx":
         return _extract_docx(content)
     if extension == ".pdf":
@@ -88,6 +90,37 @@ def _extract_json(content: bytes) -> ExtractionResult:
         created_at_guess=None,
         language=guess_language(clean_text),
         metadata={"line_count": len(lines), "format": "json"},
+        segments=segments,
+    )
+
+
+def _extract_jsonl(content: bytes) -> ExtractionResult:
+    decoded = _decode_text(content)
+    all_extracted_lines: list[str] = []
+    for line in decoded.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+            record_lines: list[str] = []
+            _flatten_json(payload, [], record_lines)
+            all_extracted_lines.extend(record_lines)
+        except json.JSONDecodeError:
+            # Fallback to plain text if a line is not valid JSON
+            all_extracted_lines.append(line)
+
+    raw_text = "\n".join(all_extracted_lines)
+    clean_text = normalize_whitespace(raw_text)
+    segments = [ExtractedSegment(text=line, metadata={}) for line in all_extracted_lines if line.strip()]
+    return ExtractionResult(
+        raw_text=raw_text,
+        clean_text=clean_text,
+        title=None,
+        author_guess=None,
+        created_at_guess=None,
+        language=guess_language(clean_text),
+        metadata={"line_count": len(all_extracted_lines), "format": "jsonl"},
         segments=segments,
     )
 

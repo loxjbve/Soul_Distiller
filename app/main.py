@@ -21,6 +21,7 @@ from app.config import AppConfig, default_config
 from app.db import Database
 from app.models import utcnow
 from app.pipeline.ingest import DocumentIngestService
+from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.storage import repository
@@ -59,7 +60,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         db=database,
         llm_log_path=str(config.llm_log_path),
         use_processes=False,
-        facet_max_workers=1,
+        facet_max_workers=5,
     )
     analysis_runner = AnalysisTaskRunner(
         database,
@@ -68,6 +69,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         error_log_path=str(config.analysis_error_log_path),
     )
     ingest_service = DocumentIngestService(config)
+    rechunk_manager = RechunkTaskManager(database, llm_log_path=str(config.llm_log_path), max_workers=1)
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
     _recover_interrupted_analysis_runs(database)
@@ -79,6 +81,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         finally:
             analysis_runner.shutdown()
             preprocess_service.shutdown()
+            rechunk_manager.shutdown()
             database.close()
 
     app = FastAPI(title="Persona Distiller", lifespan=lifespan)
@@ -88,6 +91,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.analysis_engine = analysis_engine
     app.state.analysis_runner = analysis_runner
     app.state.ingest_service = ingest_service
+    app.state.rechunk_manager = rechunk_manager
     app.state.asset_synthesizer = asset_synthesizer
     app.state.skill_synthesizer = asset_synthesizer
     app.state.preprocess_service = preprocess_service

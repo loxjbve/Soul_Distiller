@@ -60,6 +60,10 @@ function setupDropUploads() {
     });
 }
 
+const analysisUiState = {
+    detailOpen: new Map(),
+};
+
 function setupAnalysisMonitor() {
     const monitor = document.querySelector("[data-analysis-monitor]");
     if (!monitor) {
@@ -127,6 +131,8 @@ function setupAnalysisMonitor() {
 }
 
 function renderAnalysis(payload, projectId) {
+    captureDetailStates();
+
     updateText("analysis-run-title", `Analysis Run ${payload.id.slice(0, 8)}`);
     updateText("analysis-status-chip", payload.status);
     updateText("analysis-role-chip", payload.summary?.target_role || "Not set");
@@ -136,6 +142,8 @@ function renderAnalysis(payload, projectId) {
     updateText("metric-failed", payload.summary?.failed_facets || 0);
     updateText("metric-llm-success", payload.summary?.llm_successes || 0);
     updateText("metric-llm-failure", payload.summary?.llm_failures || 0);
+    updateText("metric-input-tokens", payload.summary?.prompt_tokens || 0);
+    updateText("metric-output-tokens", payload.summary?.completion_tokens || 0);
     updateText("metric-total-tokens", payload.summary?.total_tokens || 0);
     updateText("metric-current-facet", payload.summary?.current_facet || "-");
 
@@ -153,7 +161,7 @@ function renderAnalysis(payload, projectId) {
     if (eventList) {
         eventList.innerHTML = payload.events.length
             ? payload.events.map(renderEventItem).join("")
-            : `<div class="event-item"><strong>No Events Yet</strong><p>Run logs will appear here when analysis starts.</p></div>`;
+            : `<details class="event-item" open><summary class="event-item-summary"><strong>No Events Yet</strong></summary><div class="event-item-body"><p>Run logs will appear here when analysis starts.</p></div></details>`;
     }
 
     const resultList = document.getElementById("analysis-result-list");
@@ -161,6 +169,12 @@ function renderAnalysis(payload, projectId) {
         resultList.innerHTML = payload.facets.map((facet) => renderFacetResult(facet, payload.status)).join("");
     }
 
+    bindFacetRerunActions(projectId);
+    bindDetailToggleState();
+    scrollLiveTextToBottom();
+}
+
+function bindFacetRerunActions(projectId) {
     document.querySelectorAll("[data-facet-rerun]").forEach((button) => {
         button.onclick = async () => {
             button.disabled = true;
@@ -186,8 +200,11 @@ function renderAnalysis(payload, projectId) {
 
 function renderFacetStatusCard(facet, runStatus) {
     const findings = facet.findings || {};
+    const promptTokens = Number(findings.prompt_tokens || 0);
+    const completionTokens = Number(findings.completion_tokens || 0);
+    const totalTokens = Number(findings.total_tokens || 0);
     const llmLine = findings.llm_called
-        ? `LLM ${findings.llm_success ? "ok" : "failed"} · ${findings.total_tokens || 0} tokens`
+        ? `LLM ${findings.llm_success ? "ok" : "failed"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
         : "LLM not used";
     const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
     return `
@@ -207,6 +224,7 @@ function renderFacetStatusCard(facet, runStatus) {
 
 function renderEventItem(event) {
     const payload = event.payload || {};
+    const level = (event.level || "info").toLowerCase();
     let payloadHtml = "";
     if (event.event_type === "llm_delta") {
         payloadHtml = `<pre class="trace-box">${escapeHtml(payload.text || payload.delta || "")}</pre>`;
@@ -218,6 +236,12 @@ function renderEventItem(event) {
             payload.retrieval_mode ? `mode=${payload.retrieval_mode}` : "",
             typeof payload.hit_count === "number" ? `hits=${payload.hit_count}` : "",
             trace.embedding_url ? `embedding=${trace.embedding_url}` : "",
+            typeof trace.candidate_chunks === "number" ? `candidate_chunks=${trace.candidate_chunks}` : "",
+            typeof trace.candidate_documents === "number" ? `candidate_documents=${trace.candidate_documents}` : "",
+            typeof trace.selected_documents === "number" ? `selected_documents=${trace.selected_documents}` : "",
+            typeof trace.per_document_cap_applied === "boolean"
+                ? `per_document_cap_applied=${trace.per_document_cap_applied}`
+                : "",
             trace.embedding_skip_reason ? `skip=${trace.embedding_skip_reason}` : "",
             trace.fallback_reason ? `fallback=${trace.fallback_reason}` : "",
             trace.embedding_error ? `embedding_error=${trace.embedding_error}` : "",
@@ -231,21 +255,32 @@ function renderEventItem(event) {
     } else if (Object.keys(payload).length) {
         payloadHtml = `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
     }
+
+    const openByDefault = level === "warning" || level === "error";
+    const detailKey = `event:${event.id || `${event.event_type}:${event.created_at}`}`;
     return `
-        <article class="event-item level-${escapeHtml(event.level || "info")}">
-            <div class="event-item-head">
-                <strong>${escapeHtml(event.event_type)}</strong>
-                <span>${formatTime(event.created_at)}</span>
+        <details class="event-item level-${escapeHtml(level)}" data-detail-key="${escapeHtml(detailKey)}" ${detailOpenAttr(detailKey, openByDefault)}>
+            <summary class="event-item-summary">
+                <span class="event-main">
+                    <strong>${escapeHtml(event.event_type)}</strong>
+                    <small>${escapeHtml(event.message || "")}</small>
+                </span>
+                <span class="event-time">${formatTime(event.created_at)}</span>
+            </summary>
+            <div class="event-item-body">
+                ${payloadHtml || `<p class="muted">No payload.</p>`}
             </div>
-            <p>${escapeHtml(event.message || "")}</p>
-            ${payloadHtml}
-        </article>
+        </details>
     `;
 }
 
 function renderFacetResult(facet, runStatus) {
     const findings = facet.findings || {};
+    const facetKey = facet.facet_key || "unknown";
     const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
+    const facetOpenDefault = ["running", "failed"].includes(facet.status || "");
+    const hasError = Boolean(facet.error_message || findings.llm_error);
+
     const bullets = (findings.bullets || [])
         .map((item) => `<li>${escapeHtml(item)}</li>`)
         .join("");
@@ -270,58 +305,98 @@ function renderFacetResult(facet, runStatus) {
             `
         )
         .join("");
-    const llmTrace = (findings.llm_request_url || findings.llm_error)
-        ? `
-            <div class="top-gap">
-                <h3>LLM Trace</h3>
-                ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
-                ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
-            </div>
-        `
-        : "";
-    const liveTrace = findings.llm_live_text
-        ? `
-            <div class="top-gap">
-                <h3>LLM Live Text</h3>
-                <pre class="trace-box">${escapeHtml(findings.llm_live_text)}</pre>
-            </div>
-        `
-        : "";
+
+    const notesBody = `
+        ${conflicts || `<p class="muted">No conflicts recorded.</p>`}
+        ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
+        ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
+    `;
+    const traceBody = `
+        ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
+        ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+    `;
+    const liveTextBody = findings.llm_live_text
+        ? `<pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>`
+        : `<p class="muted">No live text yet.</p>`;
 
     return `
-        <article class="facet-panel">
-            <div class="section-head facet-head">
+        <details class="facet-panel facet-panel-details status-${escapeHtml(facet.status || "pending")}" data-detail-key="facet:${escapeHtml(facetKey)}" ${detailOpenAttr(`facet:${facetKey}`, facetOpenDefault)}>
+            <summary class="facet-panel-summary">
                 <div>
-                    <p class="eyebrow">${escapeHtml(facet.facet_key)}</p>
-                    <h2>${escapeHtml(findings.label || facet.facet_key)}</h2>
+                    <p class="eyebrow">${escapeHtml(facetKey)}</p>
+                    <h2>${escapeHtml(findings.label || facetKey)}</h2>
+                    <p class="facet-summary">${escapeHtml(findings.summary || "Waiting for analysis output...")}</p>
                 </div>
                 <div class="facet-meta">
                     <span>Status ${escapeHtml(facet.status || "pending")}</span>
                     <span>Confidence ${(facet.confidence || 0).toFixed(2)}</span>
                     <span>${facet.accepted ? "Accepted" : "Pending"}</span>
                 </div>
-            </div>
-            <p class="facet-summary">${escapeHtml(findings.summary || "")}</p>
-            <div class="inline-actions">
-                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>Rerun This Facet</button>
-            </div>
-            ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
-            <div class="facet-grid">
-                <div>
-                    <h3>Evidence</h3>
-                    ${evidence || `<p class="muted">No evidence captured yet.</p>`}
+            </summary>
+            <div class="facet-panel-body">
+                <div class="inline-actions">
+                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>Rerun This Facet</button>
                 </div>
-                <div>
-                    <h3>Notes</h3>
-                    ${conflicts || `<p class="muted">No conflicts recorded.</p>`}
-                    ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
-                    ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
-                    ${llmTrace}
-                </div>
+                ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">No evidence captured yet.</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:notes`, "Notes", notesBody, hasError)}
+                ${(findings.llm_request_url || findings.llm_error)
+                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
+                    : ""}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, (facet.status || "") === "running")}
             </div>
-            ${liveTrace}
-        </article>
+        </details>
     `;
+}
+
+function renderSubDetails(key, title, body, defaultOpen) {
+    return `
+        <details class="analysis-subsection" data-detail-key="${escapeHtml(key)}" ${detailOpenAttr(key, defaultOpen)}>
+            <summary>${escapeHtml(title)}</summary>
+            <div class="analysis-subsection-body">
+                ${body}
+            </div>
+        </details>
+    `;
+}
+
+function captureDetailStates() {
+    document.querySelectorAll("details[data-detail-key]").forEach((node) => {
+        const key = node.getAttribute("data-detail-key");
+        if (!key) {
+            return;
+        }
+        analysisUiState.detailOpen.set(key, node.open);
+    });
+}
+
+function bindDetailToggleState() {
+    document.querySelectorAll("details[data-detail-key]").forEach((node) => {
+        if (node.dataset.toggleBound === "1") {
+            return;
+        }
+        node.dataset.toggleBound = "1";
+        const key = node.getAttribute("data-detail-key");
+        if (!key) {
+            return;
+        }
+        node.addEventListener("toggle", () => {
+            analysisUiState.detailOpen.set(key, node.open);
+        });
+    });
+}
+
+function detailOpenAttr(key, defaultOpen) {
+    if (analysisUiState.detailOpen.has(key)) {
+        return analysisUiState.detailOpen.get(key) ? "open" : "";
+    }
+    return defaultOpen ? "open" : "";
+}
+
+function scrollLiveTextToBottom() {
+    document.querySelectorAll("[data-live-text-scroll]").forEach((node) => {
+        node.scrollTop = node.scrollHeight;
+    });
 }
 
 function updateText(id, value) {

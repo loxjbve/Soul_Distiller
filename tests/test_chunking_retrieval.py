@@ -78,7 +78,7 @@ def test_lexical_retrieval_returns_relevant_chunk(app):
         assert "poetry" in hits[0].content
 
 
-def test_embedding_trace_explains_when_embedding_call_is_skipped(app):
+def test_embedding_trace_records_embedding_exception_and_fallback(app):
     db = app.state.db
     with db.session() as session:
         project = repository.create_project(session, "Skip Embedding", "test")
@@ -132,7 +132,8 @@ def test_embedding_trace_explains_when_embedding_call_is_skipped(app):
         assert mode == "lexical"
         assert hits == []
         assert trace["embedding_configured"] is True
-        assert trace["embedding_attempted"] is False
-        assert trace["embedding_api_called"] is False
-        assert trace["embedding_skip_reason"] == "no_lexical_candidates"
+        assert trace["embedding_attempted"] is True
+        assert trace["embedding_api_called"] is True
+        assert trace["fallback_reason"] == "embedding_exception"
+        assert trace["embedding_error"]
         assert str(trace["embedding_url"]).endswith("/embeddings")

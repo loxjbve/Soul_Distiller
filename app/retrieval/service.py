@@ -40,6 +40,7 @@ class RetrievalService:
         }
         if embedding_config:
             trace["embedding_url"] = OpenAICompatibleClient(embedding_config, log_path=log_path).endpoint_url("/embeddings")
+            trace["embedding_attempted"] = True
             try:
                 results, embedding_trace = self.embedding.search(
                     session,
@@ -68,6 +69,7 @@ class RetrievalService:
                 trace["embedding_error"] = _format_exception(exc)
                 trace["fallback_reason"] = "embedding_exception"
                 trace["embedding_success"] = False
+                trace["embedding_api_called"] = True
         results = self.lexical.search(
             session,
             project_id=project_id,

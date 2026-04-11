@@ -73,6 +73,9 @@ class LexicalRetriever:
                         score=score,
                         page_number=chunk.page_number,
                         metadata=chunk.metadata_json or {},
+                        anchor_chunk_id=chunk.id,
+                        anchor_chunk_index=chunk.chunk_index,
+                        context_span={"left": 0, "right": 0, "total_chars": len(chunk.content or "")},
                     ),
                 )
             )
