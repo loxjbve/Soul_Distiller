@@ -296,9 +296,8 @@
             cols[col].push(`
                 <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
                     <div class="doc-card-inner">
-                        <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}">
-                            ${(col === 'processing' || col === 'queued') ? `<div class="doc-progress-ring"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
-                        </div>
+                        <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}"></div>
+                        ${(col === 'processing' || col === 'queued') ? `<div class="doc-progress-bar-container"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                         <div class="doc-info">
                             <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
                             ${progressText ? `<div class="doc-progress-text">${progressText}</div>` : ''}
