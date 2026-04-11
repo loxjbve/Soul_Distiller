@@ -21,7 +21,7 @@ from app.storage import repository
 from app.utils.text import top_terms
 
 FACET_EVIDENCE_LIMIT = 50
-RAW_TEXT_PREVIEW_LIMIT = 6000
+RAW_TEXT_PREVIEW_LIMIT = 20000
 
 
 def _parse_confidence(val: Any, default: float) -> float:
@@ -413,6 +413,7 @@ class AnalysisEngine:
                     self.llm_log_path,
                     (run.summary_json or {}).get("target_role"),
                     (run.summary_json or {}).get("analysis_context"),
+                    self._build_stream_callback(run.id, facet),
                 )
                 future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
 
