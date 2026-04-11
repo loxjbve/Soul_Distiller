@@ -310,6 +310,7 @@ class AnalysisEngine:
                 run.project_id,
                 facet_def,
                 embedding_config=embedding_config,
+                llm_payload=llm_payload,
                 target_role=summary.get("target_role"),
                 analysis_context=summary.get("analysis_context"),
             )
@@ -473,6 +474,7 @@ class AnalysisEngine:
                 run.project_id,
                 facet,
                 embedding_config=embedding_config,
+                llm_payload=llm_payload,
                 target_role=(run.summary_json or {}).get("target_role"),
                 analysis_context=(run.summary_json or {}).get("analysis_context"),
             )
@@ -943,6 +945,7 @@ class AnalysisEngine:
         facet: FacetDefinition,
         *,
         embedding_config: ServiceConfig | None,
+        llm_payload: dict[str, Any] | None,
         target_role: str | None,
         analysis_context: str | None,
     ) -> tuple[list[RetrievedChunk], str, dict[str, Any]]:
@@ -952,11 +955,13 @@ class AnalysisEngine:
         if analysis_context:
             query_parts.append(analysis_context)
         query_text = " ".join(part for part in query_parts if part).strip()
+        llm_config = ServiceConfig(**llm_payload) if llm_payload else None
         hits, retrieval_mode, retrieval_trace = self.retrieval.search(
             session,
             project_id=project_id,
             query=query_text,
             embedding_config=embedding_config,
+            llm_config=llm_config,
             log_path=self.llm_log_path,
             limit=FACET_EVIDENCE_LIMIT,
         )

@@ -506,6 +506,7 @@ class PreprocessAgentService:
                 project_id=project_id,
                 query=query,
                 embedding_config=embedding_config,
+                llm_config=self.config,
                 log_path=str(self.config.llm_log_path),
                 limit=max(limit * 3, 8),
             )
