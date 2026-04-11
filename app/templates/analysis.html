@@ -12,6 +12,9 @@
     <div class="project-hero-actions">
         <a class="secondary-button" href="/projects/{{ project.id }}">返回项目</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
+        {% if run and run.status in ['completed', 'partial_failed'] %}
+        <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">一键导出(ZIP)</a>
+        {% endif %}
     </div>
 </section>
 
