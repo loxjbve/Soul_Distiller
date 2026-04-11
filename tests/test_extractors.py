@@ -51,6 +51,17 @@ def test_extract_json_flattens_nested_content():
     assert "skip-me" not in result.clean_text
 
 
+def test_extract_jsonl_flattens_each_line():
+    payload = b'{"name":"Alice"}\n{"name":"Bob"}\nNot a JSON line\n{"bio":"Writer"}'
+    result = extract_text("data.jsonl", payload)
+    assert "name: Alice" in result.clean_text
+    assert "name: Bob" in result.clean_text
+    assert "Not a JSON line" in result.clean_text
+    assert "bio: Writer" in result.clean_text
+    assert result.metadata["format"] == "jsonl"
+    assert len(result.segments) == 4
+
+
 def test_extract_docx_reads_paragraphs_and_tables():
     doc = Document()
     doc.add_heading("Alice Memo", level=1)

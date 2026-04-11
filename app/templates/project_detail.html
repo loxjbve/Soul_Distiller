@@ -7,8 +7,8 @@
         <h1>{{ project.name }}</h1>
         <p class="hero-note">{{ project.description or "这个项目还没有补充说明。" }}</p>
         <div class="hero-chips">
-            <span>{{ stats.document_count }} 份文档</span>
-            <span>{{ stats.ready_count }} 份可分析</span>
+            <span id="stat-total">{{ stats.document_count }} 份文档</span>
+            <span id="stat-ready">{{ stats.ready_count }} 份可分析</span>
             {% if latest_run %}
                 <span>最新分析 {{ latest_run.status }}</span>
             {% else %}
@@ -27,8 +27,8 @@
         <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/preprocess">预分析工作区</a>
-        <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('Delete this project and all related data?');">
-            <button type="submit" class="danger-button">Delete Project</button>
+        <form method="post" action="/projects/{{ project.id }}/delete" id="delete-project-form" onsubmit="return confirm('Delete this project and all related data?');">
+            <button type="submit" class="danger-button" id="delete-project-btn">Delete Project</button>
         </form>
     </div>
 </section>
@@ -41,39 +41,43 @@
                 <h2>拖拽上传文档</h2>
             </div>
         </div>
-        <form method="post" action="/projects/{{ project.id }}/documents" enctype="multipart/form-data" class="stack" data-drop-upload>
-            <label class="dropzone" data-dropzone>
-                <input type="file" name="files" multiple required data-file-input>
+        <div class="upload-zone-wrapper">
+            <div class="dropzone" id="upload-dropzone">
+                <input type="file" id="file-input" multiple accept=".html,.htm,.json,.jsonl,.docx,.pdf,.txt,.md,.log">
                 <span class="dropzone-kicker">Drop files here</span>
                 <strong>拖拽或点击上传</strong>
-                <small>支持 html / json / jsonl / docx / pdf / txt / md / log。扫描 PDF 当前不做 OCR。</small>
-                <em data-file-count>未选择文件</em>
-            </label>
-            <div class="file-pills" data-file-list></div>
-            <button type="submit">上传并抽取文本</button>
-        </form>
+                <small>支持 html / json / jsonl / docx / pdf / txt / md / log</small>
+            </div>
+            <div class="upload-progress" id="upload-progress" hidden>
+                <div class="upload-progress-text" id="upload-progress-text">上传中...</div>
+                <div class="upload-progress-bar"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
+            </div>
+        </div>
+        <div class="file-pills" id="file-list"></div>
     </article>
 
-    <article class="workspace-panel">
+    <article class="workspace-panel" id="analysis-panel">
         <div class="section-head">
             <div>
                 <p class="eyebrow">Analysis Studio</p>
                 <h2>指定分析目标</h2>
             </div>
         </div>
-        <form method="post" action="/projects/{{ project.id }}/analyze" class="stack roomy">
+        <form method="post" action="/projects/{{ project.id }}/analyze" class="stack roomy" id="analyze-form">
             <label>
                 <span>要分析和模拟的角色</span>
-                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="例如：作者本人、群聊管理员、小红本人">
+                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="例如：作者本人、群聊管理员、小红本人" id="target-role-input">
             </label>
             <label>
                 <span>文档补充说明</span>
-                <textarea name="analysis_context" rows="7" placeholder="说明语料来源、可信度、谁在说话、你希望重点模仿什么">{{ analysis_defaults.analysis_context }}</textarea>
+                <textarea name="analysis_context" rows="7" placeholder="说明语料来源、可信度、谁在说话、你希望重点模仿什么" id="analysis-context-input">{{ analysis_defaults.analysis_context }}</textarea>
             </label>
             <p class="muted">
-                这些输入会进入分析提示词和 skill 合成流程，用来限定“在模仿谁”以及“如何理解这批语料”。
+                这些输入会进入分析提示词和 skill 合成流程，用来限定"在模仿谁"以及"如何理解这批语料"。
             </p>
-            <button type="submit">后台启动分析</button>
+            <div id="analysis-submit-wrapper">
+                <button type="submit" id="analyze-submit-btn">后台启动分析</button>
+            </div>
         </form>
     </article>
 
@@ -87,27 +91,27 @@
         <div class="status-stack">
             <div class="status-row">
                 <span>文档</span>
-                <strong>{{ stats.document_count }}</strong>
+                <strong id="status-total">{{ stats.document_count }}</strong>
             </div>
             <div class="status-row">
                 <span>可分析</span>
-                <strong>{{ stats.ready_count }}</strong>
+                <strong id="status-ready">{{ stats.ready_count }}</strong>
             </div>
             <div class="status-row">
                 <span>失败</span>
-                <strong>{{ stats.failed_count }}</strong>
+                <strong id="status-failed">{{ stats.failed_count }}</strong>
             </div>
             <div class="status-row">
                 <span>最新分析</span>
-                <strong>{{ latest_run.status if latest_run else "未运行" }}</strong>
+                <strong id="status-latest">{{ latest_run.status if latest_run else "未运行" }}</strong>
             </div>
             <div class="status-row">
                 <span>分析进度</span>
-                <strong>{{ latest_run.summary_json.progress_percent if latest_run and latest_run.summary_json else 0 }}%</strong>
+                <strong id="status-progress">{{ latest_run.summary_json.progress_percent if latest_run and latest_run.summary_json else 0 }}%</strong>
             </div>
             <div class="status-row">
                 <span>资产草稿</span>
-                <strong>{{ "已生成" if latest_draft else "无" }}</strong>
+                <strong id="status-draft">{{ "已生成" if latest_draft else "无" }}</strong>
             </div>
             <div class="status-row">
                 <span>预分析会话</span>
@@ -123,61 +127,481 @@
             <p class="eyebrow">Documents</p>
             <h2>文档管理</h2>
         </div>
+        <button type="button" class="secondary-button" id="refresh-docs-btn">刷新</button>
     </div>
-    {% if documents %}
-        <div class="document-stack">
-            {% for document in documents %}
-                <article class="document-card {% if document.ingest_status == 'failed' %}document-card-danger{% endif %}" id="document-{{ document.id }}">
+    <div id="document-container">
+        {% if documents %}
+            <div class="document-stack" id="document-stack">
+                {% for document in documents %}
+                    <article class="document-card {% if document.ingest_status == 'failed' %}document-card-danger{% endif %}" id="doc-{{ document.id }}" data-status="{{ document.ingest_status }}">
+                        <div class="document-main">
+                            <div class="document-title-block">
+                                <strong>{{ document.title or document.filename }}</strong>
+                                <p>{{ document.filename }}</p>
+                            </div>
+                            <div class="hero-chips compact-chips">
+                                <span class="doc-source-type">{{ document.source_type }}</span>
+                                <span class="doc-status" data-doc-id="{{ document.id }}">{{ document.ingest_status }}</span>
+                                <span class="doc-lang">{{ document.language or "unknown" }}</span>
+                            </div>
+                        </div>
+                        {% if document.error_message %}
+                            <p class="danger doc-error">{{ document.error_message }}</p>
+                        {% endif %}
+                        <p class="muted doc-note">{{ (document.metadata_json or {}).get("user_note", "尚未添加备注") }}</p>
+                        <div class="inline-actions top-gap">
+                            <a class="secondary-button" href="/projects/{{ project.id }}/preprocess?mention=@&quot;{{ document.filename }}&quot;">在预分析里打开</a>
+                        </div>
+                        <details class="document-editor">
+                            <summary>管理这份文档</summary>
+                            <div class="document-editor-grid">
+                                <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/update" class="stack doc-update-form">
+                                    <label>
+                                        <span>显示标题</span>
+                                        <input type="text" name="title" value="{{ document.title or document.filename }}">
+                                    </label>
+                                    <label>
+                                        <span>来源类型</span>
+                                        <input type="text" name="source_type" value="{{ document.source_type }}">
+                                    </label>
+                                    <label>
+                                        <span>备注</span>
+                                        <textarea name="user_note" rows="4">{{ (document.metadata_json or {}).get("user_note", "") }}</textarea>
+                                    </label>
+                                    <button type="submit">保存文档信息</button>
+                                </form>
+                                <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/delete" class="danger-zone doc-delete-form" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
+                                    <p>删除会移除原文件、抽取文本和检索索引。</p>
+                                    <button type="submit" class="danger-button">删除文档</button>
+                                </form>
+                            </div>
+                        </details>
+                    </article>
+                {% endfor %}
+            </div>
+            {% if document_pagination.has_more %}
+                <div class="load-more-wrapper" id="load-more-wrapper">
+                    <button type="button" class="secondary-button" id="load-more-btn">加载更多文档</button>
+                </div>
+            {% endif %}
+        {% else %}
+            <p class="muted" id="no-docs-message">还没有上传文档。</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(function() {
+    const projectId = "{{ project.id }}";
+    const initialDocs = [
+        {% for doc in documents %}
+            {id: "{{ doc.id }}", filename: "{{ doc.filename }}", status: "{{ doc.ingest_status }}"},
+        {% endfor %}
+    ];
+    let pendingUploads = new Map();
+    let allDocStatuses = new Map();
+    let documentOffset = {{ document_pagination.offset if document_pagination else 0 }};
+    const documentLimit = {{ document_pagination.limit if document_pagination else 20 }};
+    let hasMoreDocs = {{ 'true' if document_pagination.has_more else 'false' }};
+    let pollIntervals = [];
+
+    initialDocs.forEach(d => allDocStatuses.set(d.id, d.status));
+
+    function init() {
+        setupDropzone();
+        setupAnalyzeForm();
+        setupDeleteProject();
+        setupRefreshDocs();
+        setupLoadMore();
+        setupDocumentForms();
+        startStatusPolling();
+    }
+
+    function setupDropzone() {
+        const dropzone = document.getElementById('upload-dropzone');
+        const fileInput = document.getElementById('file-input');
+        const fileList = document.getElementById('file-list');
+
+        if (!dropzone || !fileInput) return;
+
+        fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+
+        dropzone.addEventListener('click', () => fileInput.click());
+
+        dropzone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropzone.classList.add('drag-active');
+        });
+
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('drag-active');
+        });
+
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('drag-active');
+            handleFiles(e.dataTransfer.files);
+        });
+    }
+
+    async function handleFiles(files) {
+        if (!files || files.length === 0) return;
+        const formData = new FormData();
+        for (const file of files) {
+            formData.append('files', file);
+        }
+        const uploadProgress = document.getElementById('upload-progress');
+        const uploadProgressFill = document.getElementById('upload-progress-fill');
+        const uploadProgressText = document.getElementById('upload-progress-text');
+        uploadProgress.hidden = false;
+        uploadProgressFill.style.width = '10%';
+        uploadProgressText.textContent = '上传中 0%';
+
+        try {
+            const xhr = new XMLHttpRequest();
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 40) + 10;
+                    uploadProgressFill.style.width = pct + '%';
+                    uploadProgressText.textContent = `上传中 ${pct}%`;
+                }
+            });
+
+            await new Promise((resolve, reject) => {
+                xhr.open('POST', `/api/projects/${projectId}/documents`);
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        resolve(JSON.parse(xhr.responseText));
+                    } else {
+                        reject(new Error('Upload failed: ' + xhr.statusText));
+                    }
+                };
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.send(formData);
+            });
+
+            uploadProgressFill.style.width = '60%';
+            uploadProgressText.textContent = '解析中...';
+
+            const result = JSON.parse(xhr.responseText);
+            const docs = result.documents || [];
+
+            docs.forEach((doc, i) => {
+                const filename = doc.filename || doc.title;
+                addPendingUpload(doc.id, filename, 60 + (i / docs.length) * 20);
+                allDocStatuses.set(doc.id, 'uploading');
+            });
+
+            updateDocumentCards();
+            refreshStats();
+
+            uploadProgressFill.style.width = '100%';
+            uploadProgressText.textContent = '已添加，后台处理中...';
+            setTimeout(() => { uploadProgress.hidden = true; }, 1500);
+
+        } catch (err) {
+            console.error('Upload error:', err);
+            uploadProgressFill.style.width = '100%';
+            uploadProgressText.textContent = '上传失败: ' + err.message;
+            setTimeout(() => { uploadProgress.hidden = true; }, 3000);
+        }
+    }
+
+    function addPendingUpload(docId, filename, startProgress) {
+        pendingUploads.set(docId, { filename, progress: startProgress });
+        renderPendingUploads();
+    }
+
+    function renderPendingUploads() {
+        const container = document.getElementById('document-stack') || createDocumentStack();
+        const noDocsMsg = document.getElementById('no-docs-message');
+        if (noDocsMsg) noDocsMsg.hidden = true;
+
+        pendingUploads.forEach((info, docId) => {
+            let card = document.getElementById('doc-' + docId);
+            if (!card) {
+                card = document.createElement('article');
+                card.className = 'document-card document-card-pending';
+                card.id = 'doc-' + docId;
+                card.innerHTML = `
                     <div class="document-main">
                         <div class="document-title-block">
-                            <strong>{{ document.title or document.filename }}</strong>
-                            <p>{{ document.filename }}</p>
+                            <strong class="doc-title">${escapeHtml(info.filename)}</strong>
+                            <p class="doc-filename">${escapeHtml(info.filename)}</p>
                         </div>
                         <div class="hero-chips compact-chips">
-                            <span>{{ document.source_type }}</span>
-                            <span>{{ document.ingest_status }}</span>
-                            <span>{{ document.language or "unknown" }}</span>
+                            <span class="doc-status-badge">上传中</span>
+                            <div class="doc-progress-bar"><div class="doc-progress-fill" style="width: ${info.progress}%"></div></div>
                         </div>
                     </div>
+                    <p class="muted doc-note">正在处理中...</p>
+                `;
+                container.insertBefore(card, container.firstChild);
+            }
+            const progressFill = card.querySelector('.doc-progress-fill');
+            if (progressFill) progressFill.style.width = info.progress + '%';
+        });
+    }
 
-                    {% if document.error_message %}
-                        <p class="danger">{{ document.error_message }}</p>
-                    {% endif %}
+    function createDocumentStack() {
+        const container = document.getElementById('document-container');
+        const stack = document.createElement('div');
+        stack.className = 'document-stack';
+        stack.id = 'document-stack';
+        container.innerHTML = '';
+        container.appendChild(stack);
+        return stack;
+    }
 
-                    <p class="muted">{{ (document.metadata_json or {}).get("user_note", "尚未添加备注") }}</p>
-                    <div class="inline-actions top-gap">
-                        <a class="secondary-button" href="/projects/{{ project.id }}/preprocess?mention=@&quot;{{ document.filename }}&quot;">在预分析里打开</a>
+    function updateDocumentCards() {
+        pendingUploads.forEach((info, docId) => {
+            const card = document.getElementById('doc-' + docId);
+            if (card) {
+                const statusEl = card.querySelector('.doc-status-badge');
+                const noteEl = card.querySelector('.doc-note');
+                if (info.progress >= 100) {
+                    card.classList.remove('document-card-pending');
+                    card.classList.add('document-card-ready');
+                    if (statusEl) statusEl.textContent = '已添加';
+                    if (noteEl) noteEl.textContent = '处理完成，已添加到检索库';
+                }
+            }
+        });
+    }
+
+    function refreshStats() {
+        fetch(`/api/projects/${projectId}`)
+            .then(r => r.json())
+            .catch(() => ({}));
+    }
+
+    function startStatusPolling() {
+        pollIntervals.forEach(clearInterval);
+        pollIntervals = [];
+
+        const interval = setInterval(() => {
+            if (pendingUploads.size === 0) return;
+
+            Promise.all([...pendingUploads.keys()].map(docId =>
+                fetch(`/api/projects/${projectId}/documents/${docId}/task`)
+                    .then(r => r.json())
+                    .then(task => ({ docId, task }))
+                    .catch(() => null)
+            )).then(results => {
+                let changed = false;
+                results.forEach(({ docId, task }) => {
+                    if (!task || !task.task_id) return;
+                    const info = pendingUploads.get(docId);
+                    if (!info) return;
+
+                    const newProgress = task.progress_percent;
+                    if (newProgress !== info.progress) {
+                        info.progress = newProgress;
+                        changed = true;
+                    }
+
+                    if (task.status === 'completed') {
+                        pendingUploads.delete(docId);
+                        allDocStatuses.set(docId, 'ready');
+                        changed = true;
+                        const card = document.getElementById('doc-' + docId);
+                        if (card) {
+                            card.classList.remove('document-card-pending');
+                            card.classList.add('document-card-ready');
+                            const statusEl = card.querySelector('.doc-status-badge');
+                            const noteEl = card.querySelector('.doc-note');
+                            if (statusEl) statusEl.textContent = '已添加';
+                            if (noteEl) noteEl.textContent = '处理完成，已添加到检索库';
+                            card.dataset.status = 'ready';
+                        }
+                        updateStats();
+                    } else if (task.status === 'failed') {
+                        pendingUploads.delete(docId);
+                        allDocStatuses.set(docId, 'failed');
+                        changed = true;
+                        const card = document.getElementById('doc-' + docId);
+                        if (card) {
+                            card.classList.remove('document-card-pending');
+                            card.classList.add('document-card-danger');
+                            const statusEl = card.querySelector('.doc-status-badge');
+                            const noteEl = card.querySelector('.doc-note');
+                            if (statusEl) statusEl.textContent = '失败';
+                            if (noteEl) noteEl.textContent = task.error || '处理失败';
+                            card.dataset.status = 'failed';
+                        }
+                        updateStats();
+                    }
+                });
+
+                if (changed) {
+                    renderPendingUploads();
+                    updateDocumentCards();
+                }
+            });
+        }, 1500);
+
+        pollIntervals.push(interval);
+    }
+
+    function updateStats() {
+        let ready = 0, failed = 0, total = 0;
+        allDocStatuses.forEach(status => {
+            total++;
+            if (status === 'ready') ready++;
+            else if (status === 'failed') failed++;
+        });
+        pendingUploads.forEach(() => { total++; });
+
+        const readyEl = document.getElementById('status-ready');
+        const failedEl = document.getElementById('status-failed');
+        const totalEl = document.getElementById('status-total');
+        const statReadyEl = document.getElementById('stat-ready');
+        if (readyEl) readyEl.textContent = ready;
+        if (failedEl) failedEl.textContent = failed;
+        if (totalEl) totalEl.textContent = total;
+        if (statReadyEl) statReadyEl.textContent = ready + ' 份可分析';
+    }
+
+    function setupAnalyzeForm() {
+        const form = document.getElementById('analyze-form');
+        if (!form) return;
+        form.addEventListener('submit', (e) => {
+            const btn = document.getElementById('analyze-submit-btn');
+            const wrapper = document.getElementById('analysis-submit-wrapper');
+            if (!wrapper) return;
+            const hasPending = pendingUploads.size > 0;
+            const hasUnready = [...allDocStatuses.values()].some(s => s !== 'ready' && s !== 'failed');
+            if (hasPending || hasUnready) {
+                e.preventDefault();
+                alert('请等待所有文档处理完成后再开始分析');
+                return;
+            }
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '分析启动中...';
+            }
+            form.submit();
+        });
+    }
+
+    function setupDeleteProject() {
+        const form = document.getElementById('delete-project-form');
+        if (!form) return;
+        form.addEventListener('submit', (e) => {
+            const btn = document.getElementById('delete-project-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = '删除中...';
+            }
+        });
+    }
+
+    function setupRefreshDocs() {
+        const btn = document.getElementById('refresh-docs-btn');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            btn.disabled = true;
+            btn.textContent = '刷新中...';
+            location.reload();
+        });
+    }
+
+    function setupLoadMore() {
+        const btn = document.getElementById('load-more-btn');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            btn.disabled = true;
+            btn.textContent = '加载中...';
+            documentOffset += documentLimit;
+            fetch(`/api/projects/${projectId}/documents?offset=${documentOffset}&limit=${documentLimit}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.documents && data.documents.length > 0) {
+                        appendDocuments(data.documents);
+                        hasMoreDocs = data.has_more;
+                        const wrapper = document.getElementById('load-more-wrapper');
+                        if (wrapper) wrapper.hidden = !hasMoreDocs;
+                    }
+                    btn.disabled = false;
+                    btn.textContent = '加载更多文档';
+                })
+                .catch(() => {
+                    btn.disabled = false;
+                    btn.textContent = '加载更多文档';
+                });
+        });
+    }
+
+    function appendDocuments(docs) {
+        const container = document.getElementById('document-stack');
+        if (!container) return;
+        docs.forEach(doc => {
+            allDocStatuses.set(doc.id, doc.status);
+            const article = document.createElement('article');
+            article.className = 'document-card';
+            article.id = 'doc-' + doc.id;
+            article.dataset.status = doc.status;
+            article.innerHTML = `
+                <div class="document-main">
+                    <div class="document-title-block">
+                        <strong>${escapeHtml(doc.title || doc.filename)}</strong>
+                        <p>${escapeHtml(doc.filename)}</p>
                     </div>
+                    <div class="hero-chips compact-chips">
+                        <span>${escapeHtml(doc.source_type || 'document')}</span>
+                        <span class="doc-status" data-doc-id="${doc.id}">${doc.status}</span>
+                        <span>${doc.language || 'unknown'}</span>
+                    </div>
+                </div>
+                <p class="muted doc-note">${escapeHtml((doc.metadata_json || {}).user_note || '尚未添加备注')}</p>
+                <div class="inline-actions top-gap">
+                    <a class="secondary-button" href="/projects/${projectId}/preprocess?mention=@&quot;${doc.filename}&quot;">在预分析里打开</a>
+                </div>
+                <details class="document-editor">
+                    <summary>管理这份文档</summary>
+                    <div class="document-editor-grid">
+                        <form method="post" action="/projects/${projectId}/documents/${doc.id}/update" class="stack doc-update-form">
+                            <label><span>显示标题</span><input type="text" name="title" value="${escapeHtml(doc.title || doc.filename)}"></label>
+                            <label><span>来源类型</span><input type="text" name="source_type" value="${escapeHtml(doc.source_type || '')}"></label>
+                            <label><span>备注</span><textarea name="user_note" rows="4">${escapeHtml((doc.metadata_json || {}).user_note || '')}</textarea></label>
+                            <button type="submit">保存文档信息</button>
+                        </form>
+                        <form method="post" action="/projects/${projectId}/documents/${doc.id}/delete" class="danger-zone doc-delete-form" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
+                            <p>删除会移除原文件、抽取文本和检索索引。</p>
+                            <button type="submit" class="danger-button">删除文档</button>
+                        </form>
+                    </div>
+                </details>
+            `;
+            container.appendChild(article);
+        });
+        setupDocumentForms();
+        updateStats();
+    }
 
-                    <details class="document-editor">
-                        <summary>管理这份文档</summary>
-                        <div class="document-editor-grid">
-                            <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/update" class="stack">
-                                <label>
-                                    <span>显示标题</span>
-                                    <input type="text" name="title" value="{{ document.title or document.filename }}">
-                                </label>
-                                <label>
-                                    <span>来源类型</span>
-                                    <input type="text" name="source_type" value="{{ document.source_type }}">
-                                </label>
-                                <label>
-                                    <span>备注</span>
-                                    <textarea name="user_note" rows="4">{{ (document.metadata_json or {}).get("user_note", "") }}</textarea>
-                                </label>
-                                <button type="submit">保存文档信息</button>
-                            </form>
-                            <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/delete" class="danger-zone" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
-                                <p>删除会移除原文件、抽取文本和检索索引。</p>
-                                <button type="submit" class="danger-button">删除文档</button>
-                            </form>
-                        </div>
-                    </details>
-                </article>
-            {% endfor %}
-        </div>
-    {% else %}
-        <p class="muted">还没有上传文档。</p>
-    {% endif %}
-</section>
+    function setupDocumentForms() {
+        document.querySelectorAll('.doc-delete-form').forEach(form => {
+            if (form.dataset.bound) return;
+            form.dataset.bound = '1';
+            form.addEventListener('submit', () => {
+                const btn = form.querySelector('button[type="submit"]');
+                if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
+            });
+        });
+    }
+
+    function escapeHtml(str) {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
 {% endblock %}

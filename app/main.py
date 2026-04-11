@@ -21,9 +21,11 @@ from app.config import AppConfig, default_config
 from app.db import Database
 from app.models import utcnow
 from app.pipeline.ingest import DocumentIngestService
+from app.pipeline.ingest_task import IngestTaskManager
 from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
+from app.retrieval.vector_store import VectorStoreManager
 from app.storage import repository
 from app.web.routes import router
 
@@ -55,6 +57,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     database = Database(config)
     database.create_all()
     retrieval = RetrievalService()
+    vector_store_manager = VectorStoreManager(config.data_dir)
     analysis_engine = AnalysisEngine(
         retrieval,
         db=database,
@@ -69,6 +72,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         error_log_path=str(config.analysis_error_log_path),
     )
     ingest_service = DocumentIngestService(config)
+    ingest_task_manager = IngestTaskManager(
+        database,
+        vector_store_manager,
+        max_workers=4,
+        llm_log_path=str(config.llm_log_path),
+    )
     rechunk_manager = RechunkTaskManager(database, llm_log_path=str(config.llm_log_path), max_workers=1)
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
@@ -82,15 +91,19 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             analysis_runner.shutdown()
             preprocess_service.shutdown()
             rechunk_manager.shutdown()
+            ingest_task_manager.shutdown()
+            vector_store_manager.save_all()
             database.close()
 
     app = FastAPI(title="Persona Distiller", lifespan=lifespan)
     app.state.config = config
     app.state.db = database
     app.state.retrieval = retrieval
+    app.state.vector_store_manager = vector_store_manager
     app.state.analysis_engine = analysis_engine
     app.state.analysis_runner = analysis_runner
     app.state.ingest_service = ingest_service
+    app.state.ingest_task_manager = ingest_task_manager
     app.state.rechunk_manager = rechunk_manager
     app.state.asset_synthesizer = asset_synthesizer
     app.state.skill_synthesizer = asset_synthesizer

@@ -124,6 +124,7 @@ def project_detail(request: Request, project_id: str, session: SessionDep):
 def delete_project_form(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     _delete_project_resources(request, session, project.id)
+    session.commit()
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -521,6 +522,7 @@ def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
 def delete_project_api(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     _delete_project_resources(request, session, project.id)
+    session.commit()
     return {"ok": True, "project_id": project.id}
 
 
@@ -532,7 +534,10 @@ async def upload_documents_api(
     files: list[UploadFile] = File(...),
 ):
     _ensure_project(session, project_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    request.app.state.ingest_task_manager.set_embedding_config(embedding_config)
     ingest = request.app.state.ingest_service
+    task_manager = request.app.state.ingest_task_manager
     created = []
     for upload in files:
         content = await upload.read()
@@ -543,8 +548,46 @@ async def upload_documents_api(
             content=content,
             mime_type=upload.content_type,
         )
+        session.commit()
+        task_manager.submit(
+            project_id=project_id,
+            document_id=document.id,
+            filename=upload.filename or "upload.bin",
+            content=content,
+            mime_type=upload.content_type,
+        )
         created.append(_serialize_document(document))
     return {"documents": created}
+
+
+@router.get("/api/projects/{project_id}/documents")
+def list_documents_api(project_id: str, session: SessionDep, offset: int = 0, limit: int = 20):
+    _ensure_project(session, project_id)
+    documents = repository.list_project_documents(session, project_id, limit=limit, offset=offset)
+    doc_counts = repository.count_project_documents(session, project_id)
+    return {
+        "documents": [_serialize_document(doc) for doc in documents],
+        "total": doc_counts["total"],
+        "ready": doc_counts["ready"],
+        "failed": doc_counts["failed"],
+        "has_more": offset + len(documents) < doc_counts["total"],
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@router.get("/api/projects/{project_id}/documents/{document_id}/task")
+def get_document_task_status(request: Request, project_id: str, document_id: str):
+    task = request.app.state.ingest_task_manager.get_by_document(document_id)
+    if not task:
+        return {"task_id": None, "status": "not_found", "progress_percent": 0}
+    return task
+
+
+@router.get("/api/projects/{project_id}/tasks")
+def get_project_tasks(request: Request, project_id: str):
+    tasks = request.app.state.ingest_task_manager.get_by_project(project_id)
+    return {"tasks": tasks}
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}")
@@ -892,15 +935,14 @@ def list_models_api(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _project_context(session: Session, project_id: str) -> dict[str, Any]:
+def _project_context(session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
-    documents = repository.list_project_documents(session, project_id)
+    documents = repository.list_project_documents(session, project_id, limit=document_limit, offset=document_offset)
+    doc_counts = repository.count_project_documents(session, project_id)
     latest_run = repository.get_latest_analysis_run(session, project_id)
     latest_draft = repository.get_latest_skill_draft(session, project_id)
     latest_version = repository.get_latest_skill_version(session, project_id)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
-    ready_count = sum(1 for document in documents if document.ingest_status == "ready")
-    failed_count = sum(1 for document in documents if document.ingest_status == "failed")
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     return {
         "project": project,
@@ -910,9 +952,14 @@ def _project_context(session: Session, project_id: str) -> dict[str, Any]:
         "latest_version": latest_version,
         "preprocess_sessions": preprocess_sessions,
         "stats": {
-            "document_count": len(documents),
-            "ready_count": ready_count,
-            "failed_count": failed_count,
+            "document_count": doc_counts["total"],
+            "ready_count": doc_counts["ready"],
+            "failed_count": doc_counts["failed"],
+        },
+        "document_pagination": {
+            "limit": document_limit,
+            "offset": document_offset,
+            "has_more": document_offset + len(documents) < doc_counts["total"],
         },
         "analysis_defaults": {
             "target_role": latest_summary.get("target_role") or project.name,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, desc, or_, select
+from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.llm.client import normalize_api_mode, normalize_provider_kind
@@ -88,13 +88,36 @@ def replace_document_chunks(session: Session, document_id: str, chunks: list[dic
     return created
 
 
-def list_project_documents(session: Session, project_id: str) -> list[DocumentRecord]:
+def list_project_documents(session: Session, project_id: str, *, limit: int | None = None, offset: int = 0) -> list[DocumentRecord]:
     stmt = (
         select(DocumentRecord)
         .where(DocumentRecord.project_id == project_id)
         .order_by(desc(DocumentRecord.created_at))
     )
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     return list(session.scalars(stmt))
+
+
+def count_project_documents(session: Session, project_id: str) -> dict[str, int]:
+    total = session.scalar(
+        select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == project_id)
+    ) or 0
+    ready = session.scalar(
+        select(func.count()).select_from(DocumentRecord).where(
+            DocumentRecord.project_id == project_id,
+            DocumentRecord.ingest_status == "ready",
+        )
+    ) or 0
+    failed = session.scalar(
+        select(func.count()).select_from(DocumentRecord).where(
+            DocumentRecord.project_id == project_id,
+            DocumentRecord.ingest_status == "failed",
+        )
+    ) or 0
+    return {"total": total, "ready": ready, "failed": failed}
 
 
 def list_project_documents_by_ids(
