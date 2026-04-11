@@ -385,5 +385,7 @@ class IngestTaskManager:
     def _update_task(self, task: IngestTask, **fields: Any) -> None:
         with self._lock:
             for key, value in fields.items():
-                if hasattr(task, key):
+                if key == "stages" and isinstance(value, dict):
+                    task.stages.update(value)
+                elif hasattr(task, key):
                     setattr(task, key, value)
