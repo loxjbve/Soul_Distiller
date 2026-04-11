@@ -56,6 +56,8 @@ def upgrade_schema(engine) -> None:
             project_columns = {column["name"] for column in inspector.get_columns("projects")}
             if "mode" not in project_columns:
                 connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN mode VARCHAR(32) DEFAULT 'group'")
+            if "parent_id" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN parent_id VARCHAR(36) DEFAULT NULL")
             connection.exec_driver_sql(
                 "UPDATE projects SET mode = 'group' WHERE mode IS NULL OR mode = ''"
             )

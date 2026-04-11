@@ -949,6 +949,7 @@ class AnalysisEngine:
         target_role: str | None,
         analysis_context: str | None,
     ) -> tuple[list[RetrievedChunk], str, dict[str, Any]]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         query_parts = [facet.search_query]
         if target_role:
             query_parts.append(target_role)
@@ -958,7 +959,7 @@ class AnalysisEngine:
         llm_config = ServiceConfig(**llm_payload) if llm_payload else None
         hits, retrieval_mode, retrieval_trace = self.retrieval.search(
             session,
-            project_id=project_id,
+            project_id=target_project_id,
             query=query_text,
             embedding_config=embedding_config,
             llm_config=llm_config,
@@ -985,22 +986,23 @@ class AnalysisEngine:
         target_role: str | None,
         analysis_context: str | None,
     ) -> dict[str, Any]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         document_count = (
             session.scalar(
-                select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == project_id)
+                select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
             )
             or 0
         )
         chunk_count = (
             session.scalar(
-                select(func.count()).select_from(TextChunk).where(TextChunk.project_id == project_id)
+                select(func.count()).select_from(TextChunk).where(TextChunk.project_id == target_project_id)
             )
             or 0
         )
         failed_count = (
             session.scalar(
                 select(func.count()).select_from(DocumentRecord).where(
-                    DocumentRecord.project_id == project_id,
+                    DocumentRecord.project_id == target_project_id,
                     DocumentRecord.ingest_status == "failed",
                 )
             )
@@ -1028,10 +1030,11 @@ class AnalysisEngine:
         }
 
     def _fallback_hits(self, session: Session, project_id: str) -> list[RetrievedChunk]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         stmt = (
             select(TextChunk, DocumentRecord)
             .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-            .where(TextChunk.project_id == project_id)
+            .where(TextChunk.project_id == target_project_id)
             .order_by(TextChunk.chunk_index.asc())
             .limit(FACET_EVIDENCE_LIMIT)
         )
