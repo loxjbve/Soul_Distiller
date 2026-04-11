@@ -1344,19 +1344,9 @@ def _chat_with_persona(
         chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
     history = sorted(chat_session.turns, key=lambda item: item.created_at)
     repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
-    hits, retrieval_mode, retrieval_trace = request.app.state.retrieval.search(
-        session,
-        project_id=project_id,
-        query=message,
-        embedding_config=embedding_config,
-        log_path=str(request.app.state.config.llm_log_path),
-        limit=4,
-    )
-    evidence_block = "\n\n".join(
-        f"[{hit.chunk_id}] {hit.document_title} / {hit.filename}\n{hit.content[:900]}"
-        for hit in hits
-    )
-    prompt_excerpt = f"SKILL:\n{version.system_prompt[:600]}\n\nEVIDENCE:\n{evidence_block[:1200]}"
+
+    evidence_block = ""
+    prompt_excerpt = f"SKILL:\n{version.system_prompt[:1800]}"
     assistant_reply, llm_meta = _generate_chat_reply(
         chat_config,
         version.system_prompt,
@@ -1368,22 +1358,6 @@ def _chat_with_persona(
     trace = {
         "skill_version_id": version.id,
         "skill_version_number": version.version_number,
-        "retrieval_mode": retrieval_mode,
-        "retrieval_trace": retrieval_trace,
-        "evidence": [
-            {
-                "chunk_id": hit.chunk_id,
-                "anchor_chunk_id": hit.anchor_chunk_id or hit.chunk_id,
-                "anchor_chunk_index": hit.anchor_chunk_index,
-                "document_title": hit.document_title,
-                "filename": hit.filename,
-                "page_number": hit.page_number,
-                "score": hit.score,
-                "quote": hit.content[:900],
-                "context_span": dict(hit.context_span or {}),
-            }
-            for hit in hits
-        ],
         "prompt_excerpt": prompt_excerpt,
         "llm": llm_meta,
     }
@@ -1413,13 +1387,10 @@ def _generate_chat_reply(
 ) -> tuple[str, dict[str, Any]]:
     if not config:
         prefix = "当前为无外部 LLM 降级模式。"
-        evidence_lines = [line for line in evidence_block.splitlines() if line.strip()]
-        evidence_hint = evidence_lines[1] if len(evidence_lines) > 1 else "暂无命中证据。"
         return (
             (
                 f"{prefix}\n\n"
-                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n"
-                f"本轮检索提示：{evidence_hint}\n\n"
+                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n\n"
                 f"你刚刚说的是：{message}"
             ),
             {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
