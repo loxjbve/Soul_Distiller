@@ -5,10 +5,12 @@ pyproject.toml
 ./app/db.py
 ./app/main.py
 ./app/models.py
+./app/runtime_limits.py
 ./app/schemas.py
 ./app/analysis/__init__.py
 ./app/analysis/engine.py
 ./app/analysis/facets.py
+./app/analysis/prompts.py
 ./app/analysis/runner.py
 ./app/analysis/synthesizer.py
 ./app/llm/__init__.py
@@ -17,11 +19,17 @@ pyproject.toml
 ./app/pipeline/chunking.py
 ./app/pipeline/extractors.py
 ./app/pipeline/ingest.py
+./app/pipeline/ingest_task.py
+./app/pipeline/rechunk.py
+./app/preprocess/__init__.py
+./app/preprocess/service.py
+./app/preprocess/tools.py
 ./app/retrieval/__init__.py
 ./app/retrieval/base.py
 ./app/retrieval/embedding.py
 ./app/retrieval/lexical.py
 ./app/retrieval/service.py
+./app/retrieval/vector_store.py
 ./app/storage/__init__.py
 ./app/storage/repository.py
 ./app/utils/__init__.py
@@ -37,6 +45,7 @@ app/schemas.py
 app/analysis/__init__.py
 app/analysis/engine.py
 app/analysis/facets.py
+app/analysis/runner.py
 app/analysis/synthesizer.py
 app/llm/__init__.py
 app/llm/client.py
@@ -63,4 +72,5 @@ persona_distiller.egg-info/top_level.txt
 tests/test_chunking_retrieval.py
 tests/test_extractors.py
 tests/test_llm_and_analysis.py
+tests/test_preprocess.py
 tests/test_web_app.py
