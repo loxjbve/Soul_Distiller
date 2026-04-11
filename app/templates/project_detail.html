@@ -301,6 +301,7 @@
                         <div class="doc-info">
                             <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
                             ${progressText ? `<div class="doc-progress-text">${progressText}</div>` : ''}
+                            ${state.status === 'failed' && doc.error_message ? `<div class="doc-error-text" style="color: var(--danger); font-size: 0.65rem; margin-top: 2px;" title="${escapeHtml(doc.error_message)}">失败: ${escapeHtml(doc.error_message)}</div>` : ''}
                         </div>
                     </div>
                 </div>

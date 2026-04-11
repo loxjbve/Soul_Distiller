@@ -370,6 +370,12 @@ class IngestTaskManager:
                 session.commit()
 
     def _handle_failure(self, task: IngestTask, exc: Exception) -> None:
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"IngestTask {task.task_id} for doc {task.document_id} failed: {exc}")
+        logger.error(traceback.format_exc())
+        
         self._update_task(task, status=TaskStage.FAILED, error=str(exc), finished_at=utcnow().isoformat())
         self._mark_document_failed(task, str(exc))
 
