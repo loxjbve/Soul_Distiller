@@ -36,7 +36,7 @@ def chunk_segments(
         start = 0
         while start < len(text):
             hard_end = min(start + chunk_size, len(text))
-            end = _find_boundary(text, start, hard_end)
+            end = _find_boundary(text, start, hard_end, overlap)
             if end <= start:
                 end = hard_end
             chunk_text = text[start:end].strip()
@@ -60,11 +60,27 @@ def chunk_segments(
     return chunks
 
 
-def _find_boundary(text: str, start: int, hard_end: int) -> int:
+def _find_boundary(text: str, start: int, hard_end: int, overlap: int) -> int:
     if hard_end >= len(text):
         return len(text)
+        
+    min_advance = max(50, (hard_end - start) // 10)
+    min_index = start + overlap + min_advance
+    
+    if min_index >= hard_end:
+        min_index = start + overlap
+        
+    # Phase 1: Try to find a marker in the preferred range
     for marker in ("\n\n", "\n", "。", ".", "!", "?", "！", "？", "；", ";", " "):
-        index = text.rfind(marker, start, hard_end)
-        if index != -1 and index > start + 200:
+        index = text.rfind(marker, min_index, hard_end)
+        if index != -1:
             return index + len(marker)
+            
+    # Phase 2: If no marker found in preferred range, try finding ANY marker > start + overlap
+    if min_index > start + overlap:
+        for marker in ("\n\n", "\n", "。", ".", "!", "?", "！", "？", "；", ";", " "):
+            index = text.rfind(marker, start + overlap, min_index)
+            if index != -1:
+                return index + len(marker)
+                
     return hard_end
