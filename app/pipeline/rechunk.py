@@ -188,34 +188,66 @@ class RechunkTaskManager:
                 )
                 .order_by(TextChunk.document_id.asc(), TextChunk.chunk_index.asc())
             )
-            result = session.execute(stmt)
+            rows = session.execute(stmt).fetchall()
+            
+            batch_ids = []
+            batch_texts = []
+            for i in range(0, len(rows), EMBEDDING_BATCH_SIZE):
+                batch = rows[i:i + EMBEDDING_BATCH_SIZE]
+                batch_ids.append([str(row.id) for row in batch])
+                batch_texts.append([str(row.content or "") for row in batch])
+                
+            def _fetch_batch(texts: list[str]) -> list[list[float]]:
+                if not texts:
+                    return []
+                import time
+                for attempt in range(3):
+                    try:
+                        return client.embeddings(texts, model=resolved_model, timeout=180.0)
+                    except Exception:
+                        if attempt == 2:
+                            raise
+                        time.sleep(2.0 * (attempt + 1))
+                return []
+                
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
             processed = 0
             batches = 0
-            while True:
-                rows = result.fetchmany(EMBEDDING_BATCH_SIZE)
-                if not rows:
-                    break
-                chunk_ids = [str(row.id) for row in rows]
-                chunk_texts = [str(row.content or "") for row in rows]
-                vectors = client.embeddings(chunk_texts, model=resolved_model)
-                chunks = list(session.scalars(select(TextChunk).where(TextChunk.id.in_(chunk_ids))))
-                chunk_map = {chunk.id: chunk for chunk in chunks}
-                for chunk_id, vector in zip(chunk_ids, vectors):
-                    chunk = chunk_map.get(chunk_id)
-                    if not chunk:
-                        continue
-                    chunk.embedding_vector = vector
-                    chunk.embedding_model = resolved_model
-                    processed += 1
-                batches += 1
-                session.flush()
-                progress = min(99, 65 + int((processed / max(total, 1)) * 34))
-                self._update(
-                    task_id,
-                    embedding_processed=processed,
-                    embedding_batches=batches,
-                    progress_percent=progress,
-                )
+            with ThreadPoolExecutor(max_workers=16, thread_name_prefix="rechunk_emb") as executor:
+                futures = []
+                for texts in batch_texts:
+                    if texts:
+                        futures.append(executor.submit(_fetch_batch, texts))
+                        
+                future_to_ids = {future: ids for future, ids in zip(futures, batch_ids)}
+                for future in as_completed(futures):
+                    ids = future_to_ids[future]
+                    vectors = future.result()
+                    
+                    mappings = []
+                    for idx, id_ in enumerate(ids):
+                        if idx < len(vectors):
+                            mappings.append({
+                                "id": id_,
+                                "embedding_vector": vectors[idx],
+                                "embedding_model": resolved_model
+                            })
+                    
+                    if mappings:
+                        with self.db.session() as update_session:
+                            update_session.bulk_update_mappings(TextChunk, mappings)
+                            update_session.commit()
+                            
+                    processed += len(ids)
+                    batches += 1
+                    progress = min(99, 65 + int((processed / max(total, 1)) * 34))
+                    self._update(
+                        task_id,
+                        embedding_processed=processed,
+                        embedding_batches=batches,
+                        progress_percent=progress,
+                    )
 
     @staticmethod
     def _build_document_chunks(document: DocumentRecord) -> list[dict[str, Any]]:

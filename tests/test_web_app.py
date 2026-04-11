@@ -271,9 +271,10 @@ def test_project_rechunk_task_rebuilds_chunks_and_embeddings(client, app, monkey
         follow_redirects=False,
     )
 
-    def fake_embeddings(self, inputs, *, model=None):
-        del model
-        return [[float(index + 1), float(len(item) % 13), 0.5] for index, item in enumerate(inputs)]
+    def fake_embeddings(self, inputs, *, model=None, timeout=None):
+            del model
+            del timeout
+            return [[float(index + 1), float(len(item) % 13), 0.5] for index, item in enumerate(inputs)]
 
     monkeypatch.setattr(OpenAICompatibleClient, "embeddings", fake_embeddings)
 
@@ -282,6 +283,8 @@ def test_project_rechunk_task_rebuilds_chunks_and_embeddings(client, app, monkey
     task_id = start.json()["task_id"]
 
     status = _wait_for_rechunk(client, project_id, task_id)
+    if status["status"] == "failed":
+        print(f"Rechunk failed: {status.get('error')}")
     assert status["status"] == "completed"
     assert status["document_total"] >= 1
     assert status["chunk_processed"] >= 1

@@ -7,8 +7,8 @@ from app.utils.text import token_count
 def chunk_segments(
     segments: list[ExtractedSegment],
     *,
-    chunk_size: int = 4000,
-    overlap: int = 400,
+    chunk_size: int = 1200,
+    overlap: int = 200,
 ) -> list[ChunkPayload]:
     # Merge segments with identical metadata to prevent excessive tiny chunks
     grouped_segments: list[dict] = []
