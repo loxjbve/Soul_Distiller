@@ -64,11 +64,40 @@
                             <p class="muted">最后更新：{{ project.updated_at }}</p>
                         </div>
                         <div class="inline-actions">
-                            <form method="post" action="/projects/{{ project.id }}/clone">
-                                <button type="submit" class="ghost-button">克隆</button>
+                            <button type="button" class="secondary-button" onclick="document.getElementById('edit-project-modal-{{ project.id }}').hidden = false">编辑</button>
+                            <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('确定要删除该项目吗？所有数据将无法恢复。')">
+                                <button type="submit" class="danger-button">删除</button>
                             </form>
-                            <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('确定删除项目及所有数据？');">
-                                <button type="submit" class="ghost-button destructive">删除</button>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
+                        <div class="modal">
+                            <div class="modal-header">
+                                <h3>编辑项目信息</h3>
+                                <button type="button" class="modal-close" onclick="document.getElementById('edit-project-modal-{{ project.id }}').hidden = true">&times;</button>
+                            </div>
+                            <form method="post" action="/projects/{{ project.id }}/update" class="stack">
+                                <div class="modal-body stack">
+                                    <label>
+                                        <span>项目名称</span>
+                                        <input type="text" name="name" value="{{ project.name }}" required>
+                                    </label>
+                                    <label>
+                                        <span>项目描述</span>
+                                        <textarea name="description" rows="3">{{ project.description or '' }}</textarea>
+                                    </label>
+                                    <label>
+                                        <span>项目模式</span>
+                                        <select name="mode">
+                                            <option value="single" {% if project.mode == 'single' %}selected{% endif %}>单人模式</option>
+                                            <option value="group" {% if project.mode == 'group' %}selected{% endif %}>群聊模式</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="submit" class="primary-button">保存修改</button>
+                                </div>
                             </form>
                         </div>
                     </div>

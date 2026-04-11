@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.models import DocumentRecord, TextChunk
 from app.retrieval.base import RetrievalFilters
 from app.schemas import RetrievedChunk
+from app.storage import repository
 from app.utils.text import tokenize
 
 MAX_LEXICAL_CANDIDATES = 1200
@@ -26,6 +27,7 @@ class LexicalRetriever:
         limit: int = 8,
         filters: RetrievalFilters | None = None,
     ) -> list[RetrievedChunk]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         query_terms = tokenize(query)
         if not query_terms:
             return []
@@ -33,7 +35,7 @@ class LexicalRetriever:
         stmt = (
             select(TextChunk, DocumentRecord)
             .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-            .where(TextChunk.project_id == project_id, DocumentRecord.ingest_status == "ready")
+            .where(TextChunk.project_id == target_project_id, DocumentRecord.ingest_status == "ready")
         )
         if filters and filters.source_types:
             stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))

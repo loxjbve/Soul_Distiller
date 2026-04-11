@@ -117,45 +117,17 @@ def create_project_form(
     return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
-
-
-
-@router.post("/projects/{project_id}/clone")
-def clone_project_form(request: Request, project_id: str, session: SessionDep):
-    project = _ensure_project(session, project_id)
-    new_name = f"{project.name} (Copy)"
-    
-    new_project = repository.clone_project(session, project_id, new_name)
-    if not new_project:
-        raise HTTPException(status_code=404, detail="Failed to clone project.")
-        
-    from app.models import TextChunk
-    store = request.app.state.vector_store_manager.get_store(new_project.id)
-    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
-    
-    chunk_ids = []
-    vectors = []
-    payloads = []
-    
-    for c in chunks:
-        if c.embedding_vector:
-            chunk_ids.append(c.id)
-            vectors.append(c.embedding_vector)
-            payloads.append({
-                "content": c.content,
-                "filename": c.document.filename if c.document else "",
-                "chunk_index": c.chunk_index
-            })
-            
-    if vectors and chunk_ids:
-        try:
-            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
-            store.save()
-        except Exception:
-            pass
-            
-    session.commit()
-    return RedirectResponse(url=f"/projects/{new_project.id}", status_code=303)
+@router.post("/projects/{project_id}/profiles")
+def create_profile_form(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    name: Annotated[str, Form(...)],
+    description: Annotated[str | None, Form()] = None,
+):
+    _ensure_project(session, project_id)
+    child = repository.create_project(session, name=name, description=description, mode="single", parent_id=project_id)
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
 
 @router.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -184,8 +156,11 @@ def update_project_form(
 @router.post("/projects/{project_id}/delete")
 def delete_project_form(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
+    parent_id = project.parent_id
     _delete_project_resources(request, session, project.id)
     session.commit()
+    if parent_id:
+        return RedirectResponse(url=f"/projects/{parent_id}", status_code=303)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -627,44 +602,7 @@ async def upload_documents_api(
     return {"documents": created}
 
 
-@router.post("/api/projects/{project_id}/clone")
-def clone_project_api(request: Request, project_id: str, session: SessionDep):
-    project = _ensure_project(session, project_id)
-    new_name = f"{project.name} (Copy)"
-    
-    new_project = repository.clone_project(session, project_id, new_name)
-    if not new_project:
-        raise HTTPException(status_code=404, detail="Failed to clone project.")
-        
-    # Migrate vector store
-    from app.models import TextChunk
-    store = request.app.state.vector_store_manager.get_store(new_project.id)
-    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
-    
-    chunk_ids = []
-    vectors = []
-    payloads = []
-    
-    for c in chunks:
-        if c.embedding_vector:
-            chunk_ids.append(c.id)
-            vectors.append(c.embedding_vector)
-            payloads.append({
-                "content": c.content,
-                "filename": c.document.filename if c.document else "",
-                "chunk_index": c.chunk_index
-            })
-            
-    if vectors and chunk_ids:
-        try:
-            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
-            store.save()
-        except Exception as e:
-            # We log but continue, user can re-embed if it fails
-            pass
-            
-    session.commit()
-    return {"id": new_project.id, "name": new_project.name, "description": new_project.description}
+
 
 
 @router.get("/api/projects/{project_id}/documents")
@@ -1215,8 +1153,17 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
     latest_version = repository.get_latest_skill_version(session, project_id)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
+    
+    profiles = []
+    if project.mode == "group":
+        for p in repository.list_child_projects(session, project_id):
+            p.latest_run = repository.get_latest_analysis_run(session, p.id)
+            p.latest_skill = repository.get_latest_skill_version(session, p.id)
+            profiles.append(p)
+            
     return {
         "project": project,
+        "profiles": profiles,
         "documents": documents,
         "latest_run": latest_run,
         "latest_draft": latest_draft,
@@ -1508,6 +1455,12 @@ def _delete_document_with_file(document: DocumentRecord) -> None:
 
 
 def _delete_project_resources(request: Request, session: Session, project_id: str) -> None:
+    from app.models import Project
+    from sqlalchemy import select
+    child_ids = session.scalars(select(Project.id).where(Project.parent_id == project_id)).all()
+    for cid in child_ids:
+        _delete_project_resources(request, session, cid)
+
     repository.delete_project_cascade(session, project_id)
     config = request.app.state.config
     request.app.state.vector_store_manager.delete_store(project_id)
