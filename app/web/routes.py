@@ -278,6 +278,40 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
     return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={latest_run.id}", status_code=303)
 
 
+@router.get("/projects/{project_id}/analysis/export")
+def export_analysis_zip(request: Request, project_id: str, session: SessionDep, run_id: str | None = Query(default=None)):
+    import io
+    import zipfile
+    from fastapi.responses import StreamingResponse
+    
+    project = _ensure_project(session, project_id)
+    run = _resolve_run(session, project_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="No analysis run found.")
+        
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for facet in run.facets:
+            facet_data = {
+                "facet_key": facet.facet_key,
+                "status": facet.status,
+                "confidence": facet.confidence,
+                "findings": facet.findings_json,
+                "evidence": facet.evidence_json,
+                "conflicts": facet.conflicts_json,
+            }
+            json_str = json.dumps(facet_data, ensure_ascii=False, indent=2)
+            zip_file.writestr(f"{facet.facet_key}.json", json_str)
+            
+    zip_buffer.seek(0)
+    filename = f"analysis_export_{project.name}_{run.id[:8]}.zip"
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]), 
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @router.get("/projects/{project_id}/assets", response_class=HTMLResponse)
 def assets_page(
     request: Request,
