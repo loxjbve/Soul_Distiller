@@ -738,6 +738,36 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
     return {"submitted": submitted}
 
 
+@router.post("/api/projects/{project_id}/retry-all")
+def retry_all_documents_api(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.set_embedding_config(embedding_config)
+    
+    # First, forcefully stop any existing processing for this project
+    task_manager.stop_project_tasks(project_id)
+    
+    documents = repository.list_project_documents(session, project_id)
+    submitted = []
+    for doc in documents:
+        # Retry all documents that are not 'ready'
+        if doc.ingest_status != "ready":
+            doc.error_message = None
+            task = task_manager.submit(
+                project_id=project_id,
+                document_id=doc.id,
+                filename=doc.filename,
+                storage_path=doc.storage_path,
+                mime_type=None,
+            )
+            # update db status to queued to immediately reflect in UI
+            doc.ingest_status = "queued"
+            submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
+    session.commit()
+    return {"submitted": submitted}
+
+
 @router.post("/api/projects/{project_id}/stop-processing")
 def stop_processing_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)

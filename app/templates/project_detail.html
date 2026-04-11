@@ -116,7 +116,11 @@
                 <span class="btn-text">一键处理</span>
                 <span class="btn-loading" hidden>处理中...</span>
             </button>
-            <button type="button" class="danger-button" id="stop-processing-btn" onclick="stopProcessing()">
+            <button type="button" class="secondary-button" id="retry-all-btn" data-project-id="{{ project.id }}">
+                <span class="btn-text">一键重试</span>
+                <span class="btn-loading" hidden>重试中...</span>
+            </button>
+            <button type="button" class="danger-button" id="stop-processing-btn">
                 停止处理
             </button>
         </div>
@@ -181,6 +185,8 @@
         setupAnalyzeForm();
         setupDeleteProject();
         setupProcessAll();
+        setupRetryAll();
+        setupStopProcessing();
         setupModal();
         loadDocuments();
         startPolling();
@@ -478,23 +484,25 @@
             });
     }
 
-    function stopProcessing() {
+    function setupStopProcessing() {
         const btn = document.getElementById('stop-processing-btn');
         if (!btn) return;
-        btn.disabled = true;
-        btn.textContent = '停止中...';
-        fetch(`/api/projects/${projectId}/stop-processing`, { method: 'POST' })
-            .then(r => r.json())
-            .then(() => {
-                btn.textContent = '停止处理';
-                btn.disabled = false;
-                loadDocuments();
-            })
-            .catch(err => {
-                console.error(err);
-                btn.textContent = '停止处理';
-                btn.disabled = false;
-            });
+        btn.addEventListener('click', () => {
+            btn.disabled = true;
+            btn.textContent = '停止中...';
+            fetch(`/api/projects/${projectId}/stop-processing`, { method: 'POST' })
+                .then(r => r.json())
+                .then(() => {
+                    btn.textContent = '停止处理';
+                    btn.disabled = false;
+                    loadDocuments();
+                })
+                .catch(err => {
+                    console.error(err);
+                    btn.textContent = '停止处理';
+                    btn.disabled = false;
+                });
+        });
     }
 
     function setupAnalyzeForm() {
@@ -558,6 +566,51 @@
             } catch (err) {
                 console.error('Process all error:', err);
                 alert('处理失败: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.querySelector('.btn-text').hidden = false;
+                btn.querySelector('.btn-loading').hidden = true;
+            }
+        });
+    }
+
+    function setupRetryAll() {
+        const btn = document.getElementById('retry-all-btn');
+        if (!btn) return;
+
+        btn.addEventListener('click', async () => {
+            const docsToProcess = documents.filter(d => {
+                const state = taskStates[d.id];
+                return !state || state.status !== 'ready';
+            });
+
+            if (docsToProcess.length === 0) {
+                alert('所有文档都已处理成功，没有需要重试的文档哦～');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.querySelector('.btn-text').hidden = true;
+            btn.querySelector('.btn-loading').hidden = false;
+
+            try {
+                const response = await fetch(`/api/projects/${projectId}/retry-all`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+
+                if (result.submitted) {
+                    result.submitted.forEach(item => {
+                        if (taskStates[item.document_id]) {
+                            taskStates[item.document_id].status = 'queued';
+                            taskStates[item.document_id].task = item.task;
+                        }
+                    });
+                    renderDocuments();
+                }
+            } catch (err) {
+                console.error('Retry all error:', err);
+                alert('一键重试失败了呢: ' + err.message);
             } finally {
                 btn.disabled = false;
                 btn.querySelector('.btn-text').hidden = false;
