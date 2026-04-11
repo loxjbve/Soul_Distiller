@@ -10,9 +10,12 @@ from app.schemas import RetrievedChunk, ServiceConfig
 
 
 class RetrievalService:
-    def __init__(self) -> None:
+    def __init__(self, vector_store=None) -> None:
         self.lexical = LexicalRetriever()
-        self.embedding = EmbeddingRetriever()
+        self.embedding = EmbeddingRetriever(vector_store=vector_store)
+
+    def set_vector_store(self, vector_store) -> None:
+        self.embedding.set_vector_store(vector_store)
 
     def search(
         self,

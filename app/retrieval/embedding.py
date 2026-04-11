@@ -13,7 +13,7 @@ from app.retrieval.base import RetrievalFilters
 from app.schemas import RetrievedChunk, ServiceConfig
 from app.utils.text import cosine_similarity
 
-EMBEDDING_BATCH_SIZE = 32
+EMBEDDING_BATCH_SIZE = 64
 SEMANTIC_POOL_MIN = 240
 SEMANTIC_POOL_MULTIPLIER = 25
 CONTEXT_TARGET_CHARS = 900
@@ -23,6 +23,12 @@ PER_DOCUMENT_CAP = 3
 
 
 class EmbeddingRetriever:
+    def __init__(self, vector_store=None):
+        self._vector_store = vector_store
+
+    def set_vector_store(self, vector_store):
+        self._vector_store = vector_store
+
     def search(
         self,
         session: Session,
@@ -47,10 +53,180 @@ class EmbeddingRetriever:
             "per_document_cap_applied": False,
             "backfill_batches": 0,
             "missing_embeddings_before": 0,
+            "vector_store_used": self._vector_store is not None,
         }
         client = OpenAICompatibleClient(config, log_path=log_path)
         query_vector = client.embeddings([query], model=config.model)[0]
 
+        if self._vector_store is not None:
+            return self._search_from_vector_store(
+                session,
+                project_id=project_id,
+                query_vector=query_vector,
+                config=config,
+                client=client,
+                limit=limit,
+                filters=filters,
+                trace=trace,
+            )
+
+        backfill = self._backfill_missing_embeddings(
+            session,
+            project_id=project_id,
+            config=config,
+            client=client,
+            filters=filters,
+        )
+        trace["new_chunk_embeddings"] = backfill["embedded_chunks"]
+        trace["backfill_batches"] = backfill["batches"]
+        trace["missing_embeddings_before"] = backfill["missing_before"]
+
+        candidates, candidate_chunks, candidate_docs = self._rank_semantic_candidates(
+            session,
+            project_id=project_id,
+            query_vector=query_vector,
+            config=config,
+            limit=limit,
+            filters=filters,
+        )
+        trace["candidate_chunks"] = candidate_chunks
+        trace["candidate_documents"] = candidate_docs
+        if not candidates:
+            trace["embedding_skip_reason"] = "no_semantic_candidates"
+            return [], trace
+
+        selected, selected_docs, cap_applied = self._apply_document_cap(
+            candidates,
+            limit=limit,
+            per_document_cap=PER_DOCUMENT_CAP,
+        )
+        trace["selected_documents"] = selected_docs
+        trace["per_document_cap_applied"] = cap_applied
+
+        hits = [
+            self._expand_context_hit(
+                session,
+                project_id=project_id,
+                anchor=anchor,
+                target_chars=CONTEXT_TARGET_CHARS,
+            )
+            for anchor in selected
+        ]
+        return hits, trace
+
+    def _search_from_vector_store(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        query_vector: list[float],
+        config: ServiceConfig,
+        client: OpenAICompatibleClient,
+        limit: int,
+        filters: RetrievalFilters | None,
+        trace: dict[str, object],
+    ) -> tuple[list[RetrievedChunk], dict[str, object]]:
+        try:
+            search_results = self._vector_store.search(query_vector, top_k=limit * PER_DOCUMENT_CAP)
+            if not search_results:
+                trace["embedding_skip_reason"] = "vector_store_empty"
+                return [], trace
+
+            chunk_ids = [r.get("id") for r in search_results if r.get("id")]
+            if not chunk_ids:
+                trace["embedding_skip_reason"] = "no_chunk_ids_from_vector_store"
+                return [], trace
+
+            stmt = (
+                select(
+                    TextChunk.id.label("chunk_id"),
+                    TextChunk.document_id.label("document_id"),
+                    TextChunk.chunk_index.label("chunk_index"),
+                    TextChunk.page_number.label("page_number"),
+                    TextChunk.content.label("content"),
+                    TextChunk.metadata_json.label("metadata_json"),
+                    DocumentRecord.filename.label("filename"),
+                    DocumentRecord.title.label("document_title"),
+                    DocumentRecord.source_type.label("source_type"),
+                )
+                .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
+                .where(
+                    TextChunk.id.in_(chunk_ids),
+                    TextChunk.project_id == project_id,
+                    DocumentRecord.ingest_status == "ready",
+                )
+            )
+            if filters and filters.source_types:
+                stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
+
+            rows = session.execute(stmt).all()
+            id_to_row = {str(row.chunk_id): row for row in rows}
+            id_to_score = {str(r.get("id", "")): r.get("score", 0.0) for r in search_results}
+
+            candidates = []
+            for row in rows:
+                chunk_id = str(row.chunk_id)
+                score = id_to_score.get(chunk_id, 0.0)
+                candidates.append({
+                    "chunk_id": chunk_id,
+                    "document_id": str(row.document_id),
+                    "chunk_index": int(row.chunk_index),
+                    "page_number": row.page_number,
+                    "content": str(row.content or ""),
+                    "metadata": dict(row.metadata_json or {}),
+                    "filename": str(row.filename or ""),
+                    "document_title": str(row.document_title or row.filename or ""),
+                    "source_type": str(row.source_type or "document"),
+                    "score": float(score),
+                })
+
+            selected, selected_docs, cap_applied = self._apply_document_cap(
+                candidates,
+                limit=limit,
+                per_document_cap=PER_DOCUMENT_CAP,
+            )
+            trace["selected_documents"] = selected_docs
+            trace["per_document_cap_applied"] = cap_applied
+            trace["candidate_chunks"] = len(candidates)
+            trace["candidate_documents"] = len({c.get("document_id") for c in candidates})
+            trace["vector_store_hit_count"] = len(search_results)
+
+            hits = [
+                self._expand_context_hit(
+                    session,
+                    project_id=project_id,
+                    anchor=anchor,
+                    target_chars=CONTEXT_TARGET_CHARS,
+                )
+                for anchor in selected
+            ]
+            return hits, trace
+        except Exception as exc:
+            trace["vector_store_error"] = str(exc)
+            trace["fallback_to_db"] = True
+            return self._search_from_db(
+                session,
+                project_id=project_id,
+                query_vector=query_vector,
+                config=config,
+                client=client,
+                limit=limit,
+                filters=filters,
+                trace=trace,
+            )
+
+    def _search_from_db(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        query_vector: list[float],
+        config: ServiceConfig,
+        client: OpenAICompatibleClient,
+        limit: int,
+        filters: RetrievalFilters | None,
+        trace: dict[str, object],
+    ) -> tuple[list[RetrievedChunk], dict[str, object]]:
         backfill = self._backfill_missing_embeddings(
             session,
             project_id=project_id,

@@ -10,7 +10,23 @@ EMBEDDING_DIMENSIONS = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
     "text-embedding-ada-002": 1536,
+    "text-embedding-qwen3-embedding-8b": 1024,
 }
+
+
+def get_embedding_dimension(model: str | None) -> int:
+    if model:
+        model_lower = model.lower()
+        for key, dim in EMBEDDING_DIMENSIONS.items():
+            if key.lower() in model_lower or model_lower in key.lower():
+                return dim
+        if "qwen3" in model_lower or "qwen" in model_lower:
+            return 1024
+        if "bge" in model_lower:
+            return 1024
+        if "e5" in model_lower:
+            return 1024
+    return 1536
 
 
 class VectorStore(ABC):
@@ -187,24 +203,27 @@ class ChromaVectorStore(VectorStore):
 
 
 class VectorStoreManager:
-    def __init__(self, data_dir: Path) -> None:
+    def __init__(self, data_dir: Path, default_model: str | None = None) -> None:
         self.data_dir = data_dir
+        self.default_model = default_model
         self._stores: dict[str, VectorStore] = {}
         self._lock = threading.Lock()
 
-    def get_store(self, project_id: str, provider: str = "auto") -> VectorStore:
+    def get_store(self, project_id: str, provider: str = "auto", model: str | None = None) -> VectorStore:
         with self._lock:
             if project_id in self._stores:
                 return self._stores[project_id]
-            store = self._create_store(project_id, provider)
+            store = self._create_store(project_id, provider, model)
             self._stores[project_id] = store
             return store
 
-    def _create_store(self, project_id: str, provider: str) -> VectorStore:
+    def _create_store(self, project_id: str, provider: str, model: str | None) -> VectorStore:
         project_dir = self.data_dir / "vectors" / project_id
         project_dir.mkdir(parents=True, exist_ok=True)
+        effective_model = model or self.default_model
+        dimension = get_embedding_dimension(effective_model)
         if provider == "faiss":
-            return FAISSVectorStore(project_dir / "index.faiss", dimension=1536)
+            return FAISSVectorStore(project_dir / "index.faiss", dimension=dimension)
         elif provider == "chroma":
             return ChromaVectorStore(project_dir, collection_name=project_id)
         elif provider == "memory":
@@ -216,7 +235,7 @@ class VectorStoreManager:
             except ImportError:
                 try:
                     import faiss
-                    return FAISSVectorStore(project_dir / "index.faiss", dimension=1536)
+                    return FAISSVectorStore(project_dir / "index.faiss", dimension=dimension)
                 except ImportError:
                     return InMemoryVectorStore()
 

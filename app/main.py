@@ -56,8 +56,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     config.ensure_dirs()
     database = Database(config)
     database.create_all()
-    retrieval = RetrievalService()
     vector_store_manager = VectorStoreManager(config.data_dir)
+    retrieval = RetrievalService(vector_store=vector_store_manager)
     analysis_engine = AnalysisEngine(
         retrieval,
         db=database,

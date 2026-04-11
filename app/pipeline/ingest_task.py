@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -19,6 +21,8 @@ from app.pipeline.extractors import ExtractionError, extract_text
 from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import ServiceConfig
 from app.storage import repository
+
+EMBEDDING_DIMENSION_DEFAULT = 1024
 
 
 class TaskStage(str, Enum):
@@ -68,19 +72,21 @@ class IngestTask:
 class IngestTaskManager:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
-    EMBEDDING_BATCH_SIZE = 32
+    EMBEDDING_BATCH_SIZE = 64
+    EMBEDDING_CONCURRENCY = 16
 
     def __init__(
         self,
         db: Database,
         vector_store_manager: VectorStoreManager,
         *,
-        max_workers: int = 4,
+        max_workers: int = 16,
         llm_log_path: str | None = None,
     ) -> None:
         self.db = db
         self.vector_store_manager = vector_store_manager
         self.executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="ingest")
+        self._embedding_executor = ThreadPoolExecutor(max_workers=self.EMBEDDING_CONCURRENCY, thread_name_prefix="embedding")
         self._tasks: dict[str, IngestTask] = {}
         self._tasks_by_project: dict[str, set[str]] = {}
         self._tasks_by_document: dict[str, str] = {}
@@ -138,6 +144,7 @@ class IngestTaskManager:
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
+        self._embedding_executor.shutdown(wait=False, cancel_futures=True)
 
     def _run_task(self, task_id: str, content: bytes, mime_type: str | None) -> None:
         task = self._tasks.get(task_id)
@@ -152,9 +159,9 @@ class IngestTaskManager:
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
             self._process_chunks(task, result)
             self._update_task(task, status=TaskStage.EMBEDDING, progress_percent=70)
-            self._process_embeddings(task)
+            self._process_embeddings_concurrent(task)
             self._update_task(task, status=TaskStage.STORING, progress_percent=90)
-            self._finalize_document(task)
+            self._store_to_vector_db(task)
             self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
         except Exception as exc:
             self._handle_failure(task, exc)
@@ -187,7 +194,7 @@ class IngestTaskManager:
                 document.clean_text = extraction_result.clean_text
                 document.language = extraction_result.language
                 document.metadata_json = extraction_result.metadata
-                document.ingest_status = "ready"
+                document.ingest_status = "processing"
                 session.flush()
             repository.replace_document_chunks(
                 session,
@@ -208,11 +215,12 @@ class IngestTaskManager:
             )
             session.commit()
 
-    def _process_embeddings(self, task: IngestTask) -> None:
+    def _process_embeddings_concurrent(self, task: IngestTask) -> None:
         if not self._embedding_config:
             return
         client = OpenAICompatibleClient(self._embedding_config, log_path=self.llm_log_path)
         resolved_model = self._embedding_config.model or client.resolve_model()
+
         with self.db.session() as session:
             total = session.scalar(
                 select(func.count()).select_from(TextChunk).where(TextChunk.document_id == task.document_id)
@@ -220,41 +228,73 @@ class IngestTaskManager:
             if total <= 0:
                 return
             self._update_task(task, stages={"embedding_total": total})
-            offset = 0
-            processed = 0
-            while offset < total:
-                rows = session.execute(
-                    select(TextChunk.id, TextChunk.content)
-                    .where(TextChunk.document_id == task.document_id)
-                    .order_by(TextChunk.chunk_index)
-                    .offset(offset)
-                    .limit(self.EMBEDDING_BATCH_SIZE)
-                ).fetchall()
-                if not rows:
-                    break
-                chunk_ids = [str(row.id) for row in rows]
-                chunk_texts = [str(row.content or "") for row in rows]
-                vectors = client.embeddings(chunk_texts, model=resolved_model)
-                chunks = list(session.scalars(select(TextChunk).where(TextChunk.id.in_(chunk_ids))))
-                chunk_map = {chunk.id: chunk for chunk in chunks}
-                for chunk_id, vector in zip(chunk_ids, vectors):
-                    chunk_obj = chunk_map.get(chunk_id)
-                    if chunk_obj:
-                        chunk_obj.embedding_vector = vector
-                        chunk_obj.embedding_model = resolved_model
-                        processed += 1
-                session.flush()
-                offset += len(rows)
-                progress = 70 + int((offset / max(total, 1)) * 20)
+
+            rows = session.execute(
+                select(TextChunk.id, TextChunk.content)
+                .where(TextChunk.document_id == task.document_id)
+                .order_by(TextChunk.chunk_index)
+            ).fetchall()
+            session.expunge_all()
+
+        if not rows:
+            return
+
+        all_chunk_ids = [str(row.id) for row in rows]
+        all_texts = [str(row.content or "") for row in rows]
+
+        batch_texts: list[list[str]] = []
+        batch_ids: list[list[str]] = []
+        for i in range(0, len(all_texts), self.EMBEDDING_BATCH_SIZE):
+            batch_texts.append(all_texts[i:i + self.EMBEDDING_BATCH_SIZE])
+            batch_ids.append(all_chunk_ids[i:i + self.EMBEDDING_BATCH_SIZE])
+
+        def process_batch(batch_idx: int, ids: list[str], texts: list[str]) -> list[tuple[str, list[float]]]:
+            try:
+                vectors = client.embeddings(texts, model=resolved_model)
+                return list(zip(ids, vectors))
+            except Exception:
+                return []
+
+        futures = []
+        for batch_idx, (ids, texts) in enumerate(zip(batch_ids, batch_texts)):
+            future = self._embedding_executor.submit(process_batch, batch_idx, ids, texts)
+            futures.append(future)
+
+        results: dict[str, list[float]] = {}
+        processed = 0
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                batch_results = future.result()
+                for chunk_id, vector in batch_results:
+                    results[chunk_id] = vector
+                processed += len(batch_results)
+                progress = 70 + int((processed / max(total, 1)) * 19)
                 self._update_task(task, progress_percent=min(89, progress), stages={"embedding_processed": processed})
+            except Exception:
+                pass
+
+        with self.db.session() as session:
+            chunk_id_to_vector = results
+            for chunk_id, vector in chunk_id_to_vector.items():
+                chunk = session.get(TextChunk, chunk_id)
+                if chunk:
+                    chunk.embedding_vector = vector
+                    chunk.embedding_model = resolved_model
             session.commit()
+
+    def _store_to_vector_db(self, task: IngestTask) -> None:
         store = self.vector_store_manager.get_store(task.project_id)
         with self.db.session() as session:
-            chunks = list(session.scalars(select(TextChunk).where(TextChunk.document_id == task.document_id)))
+            chunks = list(session.scalars(
+                select(TextChunk).where(TextChunk.document_id == task.document_id)
+            ))
             chunk_ids = [c.id for c in chunks]
             vectors = [c.embedding_vector for c in chunks if c.embedding_vector]
             if vectors and chunk_ids:
-                payloads = [{"content": c.content, "filename": task.filename, "chunk_index": c.chunk_index} for c in chunks]
+                payloads = [
+                    {"content": c.content, "filename": task.filename, "chunk_index": c.chunk_index}
+                    for c in chunks
+                ]
                 try:
                     store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
                     store.save()
