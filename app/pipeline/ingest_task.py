@@ -71,8 +71,8 @@ class IngestTask:
 class IngestTaskManager:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
-    EMBEDDING_BATCH_SIZE = 64
-    EMBEDDING_CONCURRENCY = 16
+    EMBEDDING_BATCH_SIZE = 16
+    EMBEDDING_CONCURRENCY = 4
 
     def __init__(
         self,
@@ -281,9 +281,19 @@ class IngestTaskManager:
                     batch_texts.append([str(row.content or "") for row in batch])
                 
                 def _fetch_batch(texts: list[str]) -> list[list[float]]:
-                    if not texts:
+                    if not texts or task.is_cancelled:
                         return []
-                    return client.embeddings(texts, model=resolved_model)
+                    import time
+                    for attempt in range(3):
+                        if task.is_cancelled:
+                            return []
+                        try:
+                            return client.embeddings(texts, model=resolved_model, timeout=180.0)
+                        except Exception as exc:
+                            if attempt == 2 or task.is_cancelled:
+                                raise
+                            time.sleep(2.0 * (attempt + 1))
+                    return []
                 
                 from concurrent.futures import as_completed
                 futures = []
@@ -376,6 +386,7 @@ class IngestTaskManager:
         logger.error(f"IngestTask {task.task_id} for doc {task.document_id} failed: {exc}")
         logger.error(traceback.format_exc())
         
+        task.is_cancelled = True
         self._update_task(task, status=TaskStage.FAILED, error=str(exc), finished_at=utcnow().isoformat())
         self._mark_document_failed(task, str(exc))
 
