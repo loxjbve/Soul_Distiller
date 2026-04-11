@@ -18,9 +18,34 @@ OFFICIAL_PROVIDER_BASE_URLS = {
     "xai": "https://api.x.ai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
 }
-MAX_CONCURRENT_LLM_REQUESTS = 5
-_LLM_REQUEST_SEMAPHORE = BoundedSemaphore(MAX_CONCURRENT_LLM_REQUESTS)
-_LLM_LOG_LOCK = Lock()
+MAX_CONCURRENT_LLM_REQUESTS = 20
+
+# Global httpx client for connection pooling
+_HTTP_CLIENT = httpx.Client(limits=httpx.Limits(max_keepalive_connections=20, max_connections=50))
+
+import queue
+import threading
+
+_LOG_QUEUE = queue.Queue()
+
+def _log_worker():
+    while True:
+        log_item = _LOG_QUEUE.get()
+        if log_item is None:
+            break
+        path, record = log_item
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        finally:
+            _LOG_QUEUE.task_done()
+
+_log_thread = threading.Thread(target=_log_worker, daemon=True)
+_log_thread.start()
 
 
 class LLMError(Exception):
@@ -486,9 +511,7 @@ class OpenAICompatibleClient:
         stream_handler_disabled = False
         stream_handler_error: str | None = None
         try:
-            with _LLM_REQUEST_SEMAPHORE:
-                with httpx.Client(timeout=timeout) as client:
-                    with client.stream("POST", url, headers=self._headers(), json=payload) as response:
+            with _HTTP_CLIENT.stream("POST", url, headers=self._headers(), json=payload, timeout=timeout) as response:
                         if response.is_error:
                             response_text = response.read().decode("utf-8", errors="replace")
                             self._append_log(
@@ -626,10 +649,8 @@ class OpenAICompatibleClient:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         url = self._url(path)
         try:
-            with _LLM_REQUEST_SEMAPHORE:
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.post(url, headers=self._headers(), json=payload)
-                    response_text = response.text
+            response = _HTTP_CLIENT.post(url, headers=self._headers(), json=payload, timeout=timeout)
+            response_text = response.text
         except Exception as exc:
             self._append_log(
                 {
@@ -738,10 +759,8 @@ class OpenAICompatibleClient:
     def _get_json_with_meta(self, path: str, *, timeout: float = 20.0) -> tuple[dict[str, Any], dict[str, Any]]:
         url = self._url(path)
         try:
-            with _LLM_REQUEST_SEMAPHORE:
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.get(url, headers=self._headers())
-                    response_text = response.text
+            response = _HTTP_CLIENT.get(url, headers=self._headers(), timeout=timeout)
+            response_text = response.text
         except Exception as exc:
             self._append_log(
                 {
@@ -842,10 +861,7 @@ class OpenAICompatibleClient:
     def _append_log(self, record: dict[str, Any]) -> None:
         if not self.log_path:
             return
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        with _LLM_LOG_LOCK:
-            with self.log_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _LOG_QUEUE.put((self.log_path, record))
 
 
 def parse_json_response(text: str) -> dict[str, Any]:

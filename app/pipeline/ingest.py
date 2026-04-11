@@ -37,20 +37,18 @@ class DocumentIngestService:
         }
         return source_map.get(ext, "document")
 
-    def ingest_bytes(
+    def ingest_file(
         self,
         session: Session,
         *,
         project_id: str,
+        document_id: str,
         filename: str,
-        content: bytes,
+        storage_path: Path,
         mime_type: str | None = None,
         source_type: str | None = None,
     ):
         source = source_type or self._infer_source_type(filename)
-        document_id = str(uuid4())
-        storage_path = self._store_upload(project_id, document_id, filename, content)
-
         document = repository.create_document(
             session,
             id=document_id,

@@ -537,13 +537,29 @@ async def upload_documents_api(
     _ensure_project(session, project_id)
     ingest = request.app.state.ingest_service
     created = []
+    
+    from uuid import uuid4
+    from pathlib import Path
+    import shutil
+    
     for upload in files:
-        content = await upload.read()
-        document = ingest.ingest_bytes(
+        document_id = str(uuid4())
+        filename = upload.filename or "upload.bin"
+        ext = Path(filename).suffix.lower()
+        upload_dir = ingest._config.upload_dir / project_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        storage_path = upload_dir / f"{document_id}{ext}"
+        
+        with storage_path.open("wb") as f:
+            while chunk := await upload.read(1024 * 1024):
+                f.write(chunk)
+                
+        document = ingest.ingest_file(
             session,
             project_id=project_id,
-            filename=upload.filename or "upload.bin",
-            content=content,
+            document_id=document_id,
+            filename=filename,
+            storage_path=storage_path,
             mime_type=upload.content_type,
         )
         session.commit()
@@ -587,17 +603,12 @@ def process_document_api(request: Request, project_id: str, document_id: str, se
     embedding_config = repository.get_service_config(session, "embedding_service")
     task_manager = request.app.state.ingest_task_manager
     task_manager.set_embedding_config(embedding_config)
-    try:
-        with open(document.storage_path, "rb") as f:
-            content = f.read()
-    except Exception:
-        content = b""
 
     task = task_manager.submit(
         project_id=project_id,
         document_id=document_id,
         filename=document.filename,
-        content=content,
+        storage_path=document.storage_path,
         mime_type=None,
     )
     return {"task": task}
@@ -613,17 +624,11 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
     submitted = []
     for doc in documents:
         if doc.ingest_status not in ("ready", "processing", "queued"):
-            try:
-                with open(doc.storage_path, "rb") as f:
-                    content = f.read()
-            except Exception:
-                content = b""
-
             task = task_manager.submit(
                 project_id=project_id,
                 document_id=doc.id,
                 filename=doc.filename,
-                content=content,
+                storage_path=doc.storage_path,
                 mime_type=None,
             )
             # update db status to queued to immediately reflect in UI
@@ -709,14 +714,23 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
     if not run:
         raise HTTPException(status_code=404, detail="No analysis run found.")
 
-    def generate():
+    async def generate():
         last_snapshot = ""
         while True:
-            with request.app.state.db.session() as live_session:
-                live_run = _resolve_run(live_session, project_id, run_id or run.id)
-                if not live_run:
-                    break
-                payload = _serialize_analysis_run(live_run)
+            def fetch_payload():
+                with request.app.state.db.session() as live_session:
+                    live_run = _resolve_run(live_session, project_id, run_id or run.id)
+                    if not live_run:
+                        return None
+                    return _serialize_analysis_run(live_run)
+            
+            from starlette.concurrency import run_in_threadpool
+            import asyncio
+            
+            payload = await run_in_threadpool(fetch_payload)
+            if not payload:
+                break
+            
             encoded = json.dumps(payload, ensure_ascii=False)
             if encoded != last_snapshot:
                 last_snapshot = encoded
@@ -724,7 +738,7 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
             if payload["status"] not in {"queued", "running"}:
                 yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
                 break
-            time.sleep(0.35)
+            await asyncio.sleep(0.35)
 
     return StreamingResponse(
         generate(),
