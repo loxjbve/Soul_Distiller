@@ -301,8 +301,9 @@ class IngestTaskManager:
                             chunk_id_to_vector[id_] = vectors[idx]
                 
                 # Update DB for this batch
+                all_batch_ids = [str(row.id) for row in rows]
                 with self.db.session() as update_session:
-                    chunks = update_session.scalars(select(TextChunk).where(TextChunk.id.in_(ids))).all()
+                    chunks = update_session.scalars(select(TextChunk).where(TextChunk.id.in_(all_batch_ids))).all()
                     for chunk in chunks:
                         if str(chunk.id) in chunk_id_to_vector:
                             chunk.embedding_vector = chunk_id_to_vector[str(chunk.id)]
@@ -318,12 +319,14 @@ class IngestTaskManager:
             chunks = list(session.scalars(
                 select(TextChunk).where(TextChunk.document_id == task.document_id)
             ))
-            chunk_ids = [str(c.id) for c in chunks]
-            vectors = [c.embedding_vector for c in chunks if c.embedding_vector]
+            # Only use chunks that have valid embeddings
+            valid_chunks = [c for c in chunks if c.embedding_vector]
+            chunk_ids = [str(c.id) for c in valid_chunks]
+            vectors = [c.embedding_vector for c in valid_chunks]
             if vectors and chunk_ids:
                 payloads = [
                     {"content": c.content, "filename": task.filename, "chunk_index": c.chunk_index}
-                    for c in chunks
+                    for c in valid_chunks
                 ]
                 store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
                 store.save()
