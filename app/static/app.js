@@ -190,6 +190,8 @@ function bindFacetRerunActions(projectId) {
                     const errorPayload = await response.json().catch(() => ({}));
                     throw new Error(errorPayload.detail || "Rerun failed");
                 }
+                // Reload page to start streaming the rerun
+                window.location.reload();
             } catch (error) {
                 window.alert(error instanceof Error ? error.message : "Rerun failed");
                 button.disabled = false;
@@ -319,6 +321,12 @@ function renderFacetResult(facet, runStatus) {
         ? `<pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>`
         : `<p class="muted">No live text yet.</p>`;
 
+    // LLM Live Text should default open if the facet is running
+    const isRunning = (facet.status || "") === "running";
+    // We want LLM Live Text to be opened by default ALWAYS, not just when running, 
+    // to give user a better observation of the streaming
+    const defaultOpenLive = true;
+    
     return `
         <details class="facet-panel facet-panel-details status-${escapeHtml(facet.status || "pending")}" data-detail-key="facet:${escapeHtml(facetKey)}" ${detailOpenAttr(`facet:${facetKey}`, facetOpenDefault)}>
             <summary class="facet-panel-summary">
@@ -343,7 +351,7 @@ function renderFacetResult(facet, runStatus) {
                 ${(findings.llm_request_url || findings.llm_error)
                     ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
                     : ""}
-                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, (facet.status || "") === "running")}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, defaultOpenLive)}
             </div>
         </details>
     `;
