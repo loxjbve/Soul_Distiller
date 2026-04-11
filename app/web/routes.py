@@ -534,10 +534,7 @@ async def upload_documents_api(
     files: list[UploadFile] = File(...),
 ):
     _ensure_project(session, project_id)
-    embedding_config = repository.get_service_config(session, "embedding_service")
-    request.app.state.ingest_task_manager.set_embedding_config(embedding_config)
     ingest = request.app.state.ingest_service
-    task_manager = request.app.state.ingest_task_manager
     created = []
     for upload in files:
         content = await upload.read()
@@ -549,13 +546,6 @@ async def upload_documents_api(
             mime_type=upload.content_type,
         )
         session.commit()
-        task_manager.submit(
-            project_id=project_id,
-            document_id=document.id,
-            filename=upload.filename or "upload.bin",
-            content=content,
-            mime_type=upload.content_type,
-        )
         created.append(_serialize_document(document))
     return {"documents": created}
 
@@ -588,6 +578,43 @@ def get_document_task_status(request: Request, project_id: str, document_id: str
 def get_project_tasks(request: Request, project_id: str):
     tasks = request.app.state.ingest_task_manager.get_by_project(project_id)
     return {"tasks": tasks}
+
+
+@router.post("/api/projects/{project_id}/documents/{document_id}/process")
+def process_document_api(request: Request, project_id: str, document_id: str, session: SessionDep):
+    document = _get_project_document(session, project_id, document_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.set_embedding_config(embedding_config)
+    task = task_manager.submit(
+        project_id=project_id,
+        document_id=document_id,
+        filename=document.filename,
+        content=document.file_path.encode() if document.file_path else b"",
+        mime_type=None,
+    )
+    return {"task": task}
+
+
+@router.post("/api/projects/{project_id}/process-all")
+def process_all_documents_api(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.set_embedding_config(embedding_config)
+    documents = repository.list_project_documents(session, project_id)
+    submitted = []
+    for doc in documents:
+        if doc.ingest_status not in ("ready", "processing"):
+            task = task_manager.submit(
+                project_id=project_id,
+                document_id=doc.id,
+                filename=doc.filename,
+                content=doc.file_path.encode() if doc.file_path else b"",
+                mime_type=None,
+            )
+            submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
+    return {"submitted": submitted}
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}")
@@ -1237,16 +1264,8 @@ def _delete_document_with_file(document: DocumentRecord) -> None:
 
 
 def _delete_project_resources(request: Request, session: Session, project_id: str) -> None:
-    document_paths = [Path(document.storage_path) for document in repository.list_project_documents(session, project_id)]
-    artifact_paths = list(
-        Path(artifact.storage_path)
-        for artifact in session.scalars(select(GeneratedArtifact).where(GeneratedArtifact.project_id == project_id))
-    )
     repository.delete_project_cascade(session, project_id)
     config = request.app.state.config
-    for path in document_paths + artifact_paths:
-        if path.exists() and path.is_file():
-            path.unlink(missing_ok=True)
     for directory in (
         config.upload_dir / project_id,
         config.assets_dir / project_id,
@@ -1264,9 +1283,10 @@ def _serialize_document(document: DocumentRecord) -> dict[str, Any]:
         "filename": document.filename,
         "title": document.title or document.filename,
         "source_type": document.source_type,
-        "status": document.ingest_status,
+        "language": getattr(document, 'language', None),
+        "ingest_status": document.ingest_status,
         "error_message": document.error_message,
-        "user_note": metadata.get("user_note", ""),
+        "metadata_json": metadata,
     }
 
 

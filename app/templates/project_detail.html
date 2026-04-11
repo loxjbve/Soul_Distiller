@@ -19,7 +19,6 @@
             {% else %}
                 <span>未发布</span>
             {% endif %}
-            <span>{{ preprocess_sessions|length }} 个预分析会话</span>
         </div>
     </div>
     <div class="project-hero-actions">
@@ -48,12 +47,7 @@
                 <strong>拖拽或点击上传</strong>
                 <small>支持 html / json / jsonl / docx / pdf / txt / md / log</small>
             </div>
-            <div class="upload-progress" id="upload-progress" hidden>
-                <div class="upload-progress-text" id="upload-progress-text">上传中...</div>
-                <div class="upload-progress-bar"><div class="upload-progress-fill" id="upload-progress-fill"></div></div>
-            </div>
         </div>
-        <div class="file-pills" id="file-list"></div>
     </article>
 
     <article class="workspace-panel" id="analysis-panel">
@@ -76,7 +70,7 @@
                 这些输入会进入分析提示词和 skill 合成流程，用来限定"在模仿谁"以及"如何理解这批语料"。
             </p>
             <div id="analysis-submit-wrapper">
-                <button type="submit" id="analyze-submit-btn">后台启动分析</button>
+                <button type="submit" id="analyze-submit-btn" disabled>需要先处理文档</button>
             </div>
         </form>
     </article>
@@ -98,24 +92,12 @@
                 <strong id="status-ready">{{ stats.ready_count }}</strong>
             </div>
             <div class="status-row">
+                <span>待处理</span>
+                <strong id="status-pending">0</strong>
+            </div>
+            <div class="status-row">
                 <span>失败</span>
                 <strong id="status-failed">{{ stats.failed_count }}</strong>
-            </div>
-            <div class="status-row">
-                <span>最新分析</span>
-                <strong id="status-latest">{{ latest_run.status if latest_run else "未运行" }}</strong>
-            </div>
-            <div class="status-row">
-                <span>分析进度</span>
-                <strong id="status-progress">{{ latest_run.summary_json.progress_percent if latest_run and latest_run.summary_json else 0 }}%</strong>
-            </div>
-            <div class="status-row">
-                <span>资产草稿</span>
-                <strong id="status-draft">{{ "已生成" if latest_draft else "无" }}</strong>
-            </div>
-            <div class="status-row">
-                <span>预分析会话</span>
-                <strong>{{ preprocess_sessions|length }}</strong>
             </div>
         </div>
     </aside>
@@ -127,103 +109,53 @@
             <p class="eyebrow">Documents</p>
             <h2>文档管理</h2>
         </div>
-        <button type="button" class="secondary-button" id="refresh-docs-btn">刷新</button>
+        <div class="section-actions">
+            <button type="button" class="secondary-button" id="refresh-docs-btn">刷新</button>
+            <button type="button" class="primary-button" id="process-all-btn" data-project-id="{{ project.id }}">
+                <span class="btn-text">一键处理</span>
+                <span class="btn-loading" hidden>处理中...</span>
+            </button>
+        </div>
     </div>
     <div id="document-container">
-        {% if documents %}
-            <div class="document-stack" id="document-stack">
-                {% for document in documents %}
-                    <article class="document-card {% if document.ingest_status == 'failed' %}document-card-danger{% endif %}" id="doc-{{ document.id }}" data-status="{{ document.ingest_status }}">
-                        <div class="document-main">
-                            <div class="document-title-block">
-                                <strong>{{ document.title or document.filename }}</strong>
-                                <p>{{ document.filename }}</p>
-                            </div>
-                            <div class="hero-chips compact-chips">
-                                <span class="doc-source-type">{{ document.source_type }}</span>
-                                <span class="doc-status" data-doc-id="{{ document.id }}">{{ document.ingest_status }}</span>
-                                <span class="doc-lang">{{ document.language or "unknown" }}</span>
-                            </div>
-                        </div>
-                        {% if document.error_message %}
-                            <p class="danger doc-error">{{ document.error_message }}</p>
-                        {% endif %}
-                        <p class="muted doc-note">{{ (document.metadata_json or {}).get("user_note", "尚未添加备注") }}</p>
-                        <div class="inline-actions top-gap">
-                            <a class="secondary-button" href="/projects/{{ project.id }}/preprocess?mention=@&quot;{{ document.filename }}&quot;">在预分析里打开</a>
-                        </div>
-                        <details class="document-editor">
-                            <summary>管理这份文档</summary>
-                            <div class="document-editor-grid">
-                                <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/update" class="stack doc-update-form">
-                                    <label>
-                                        <span>显示标题</span>
-                                        <input type="text" name="title" value="{{ document.title or document.filename }}">
-                                    </label>
-                                    <label>
-                                        <span>来源类型</span>
-                                        <input type="text" name="source_type" value="{{ document.source_type }}">
-                                    </label>
-                                    <label>
-                                        <span>备注</span>
-                                        <textarea name="user_note" rows="4">{{ (document.metadata_json or {}).get("user_note", "") }}</textarea>
-                                    </label>
-                                    <button type="submit">保存文档信息</button>
-                                </form>
-                                <form method="post" action="/projects/{{ project.id }}/documents/{{ document.id }}/delete" class="danger-zone doc-delete-form" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
-                                    <p>删除会移除原文件、抽取文本和检索索引。</p>
-                                    <button type="submit" class="danger-button">删除文档</button>
-                                </form>
-                            </div>
-                        </details>
-                    </article>
-                {% endfor %}
-            </div>
-            {% if document_pagination.has_more %}
-                <div class="load-more-wrapper" id="load-more-wrapper">
-                    <button type="button" class="secondary-button" id="load-more-btn">加载更多文档</button>
-                </div>
-            {% endif %}
-        {% else %}
-            <p class="muted" id="no-docs-message">还没有上传文档。</p>
-        {% endif %}
+        <div class="document-grid" id="document-grid"></div>
+        <p class="muted" id="no-docs-message" hidden>还没有上传文档。</p>
     </div>
 </section>
+
+<div class="modal-overlay" id="doc-modal-overlay" hidden>
+    <div class="modal" id="doc-modal">
+        <div class="modal-header">
+            <h3 id="modal-title">文档详情</h3>
+            <button type="button" class="modal-close" id="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+        <div class="modal-footer" id="modal-footer"></div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
 <script>
 (function() {
     const projectId = "{{ project.id }}";
-    const initialDocs = [
-        {% for doc in documents %}
-            {id: "{{ doc.id }}", filename: "{{ doc.filename }}", status: "{{ doc.ingest_status }}"},
-        {% endfor %}
-    ];
-    let pendingUploads = new Map();
-    let allDocStatuses = new Map();
-    let documentOffset = {{ document_pagination.offset if document_pagination else 0 }};
-    const documentLimit = {{ document_pagination.limit if document_pagination else 20 }};
-    let hasMoreDocs = {{ 'true' if document_pagination.has_more else 'false' }};
-    let pollIntervals = [];
-
-    initialDocs.forEach(d => allDocStatuses.set(d.id, d.status));
+    let documents = [];
+    let taskStates = {};
+    let pollInterval = null;
 
     function init() {
         setupDropzone();
         setupAnalyzeForm();
         setupDeleteProject();
-        setupRefreshDocs();
-        setupLoadMore();
-        setupDocumentForms();
-        startStatusPolling();
+        setupProcessAll();
+        setupModal();
+        loadDocuments();
+        startPolling();
     }
 
     function setupDropzone() {
         const dropzone = document.getElementById('upload-dropzone');
         const fileInput = document.getElementById('file-input');
-        const fileList = document.getElementById('file-list');
-
         if (!dropzone || !fileInput) return;
 
         fileInput.addEventListener('change', () => handleFiles(fileInput.files));
@@ -252,244 +184,200 @@
         for (const file of files) {
             formData.append('files', file);
         }
-        const uploadProgress = document.getElementById('upload-progress');
-        const uploadProgressFill = document.getElementById('upload-progress-fill');
-        const uploadProgressText = document.getElementById('upload-progress-text');
-        uploadProgress.hidden = false;
-        uploadProgressFill.style.width = '10%';
-        uploadProgressText.textContent = '上传中 0%';
 
         try {
-            const xhr = new XMLHttpRequest();
-            xhr.upload.addEventListener('progress', (e) => {
-                if (e.lengthComputable) {
-                    const pct = Math.round((e.loaded / e.total) * 40) + 10;
-                    uploadProgressFill.style.width = pct + '%';
-                    uploadProgressText.textContent = `上传中 ${pct}%`;
-                }
+            const response = await fetch(`/api/projects/${projectId}/documents`, {
+                method: 'POST',
+                body: formData
             });
-
-            await new Promise((resolve, reject) => {
-                xhr.open('POST', `/api/projects/${projectId}/documents`);
-                xhr.onload = () => {
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        resolve(JSON.parse(xhr.responseText));
-                    } else {
-                        reject(new Error('Upload failed: ' + xhr.statusText));
-                    }
-                };
-                xhr.onerror = () => reject(new Error('Network error'));
-                xhr.send(formData);
-            });
-
-            uploadProgressFill.style.width = '60%';
-            uploadProgressText.textContent = '解析中...';
-
-            const result = JSON.parse(xhr.responseText);
-            const docs = result.documents || [];
-
-            docs.forEach((doc, i) => {
-                const filename = doc.filename || doc.title;
-                addPendingUpload(doc.id, filename, 60 + (i / docs.length) * 20);
-                allDocStatuses.set(doc.id, 'uploading');
-            });
-
-            updateDocumentCards();
-            refreshStats();
-
-            uploadProgressFill.style.width = '100%';
-            uploadProgressText.textContent = '已添加，后台处理中...';
-            setTimeout(() => { uploadProgress.hidden = true; }, 1500);
-
+            const result = await response.json();
+            if (result.documents) {
+                result.documents.forEach(doc => {
+                    documents.push(doc);
+                    taskStates[doc.id] = getInitialState(doc);
+                });
+                renderDocuments();
+                updateStats();
+            }
         } catch (err) {
             console.error('Upload error:', err);
-            uploadProgressFill.style.width = '100%';
-            uploadProgressText.textContent = '上传失败: ' + err.message;
-            setTimeout(() => { uploadProgress.hidden = true; }, 3000);
+            alert('上传失败: ' + err.message);
         }
     }
 
-    function addPendingUpload(docId, filename, startProgress) {
-        pendingUploads.set(docId, { filename, progress: startProgress });
-        renderPendingUploads();
+    function getInitialState(doc) {
+        return {
+            status: doc.ingest_status || 'pending',
+            progress: 0,
+            task: null
+        };
     }
 
-    function renderPendingUploads() {
-        const container = document.getElementById('document-stack') || createDocumentStack();
-        const noDocsMsg = document.getElementById('no-docs-message');
-        if (noDocsMsg) noDocsMsg.hidden = true;
+    function renderDocuments() {
+        const grid = document.getElementById('document-grid');
+        const noDocs = document.getElementById('no-docs-message');
 
-        pendingUploads.forEach((info, docId) => {
-            let card = document.getElementById('doc-' + docId);
-            if (!card) {
-                card = document.createElement('article');
-                card.className = 'document-card document-card-pending';
-                card.id = 'doc-' + docId;
-                card.innerHTML = `
-                    <div class="document-main">
-                        <div class="document-title-block">
-                            <strong class="doc-title">${escapeHtml(info.filename)}</strong>
-                            <p class="doc-filename">${escapeHtml(info.filename)}</p>
+        if (documents.length === 0) {
+            grid.innerHTML = '';
+            noDocs.hidden = false;
+            return;
+        }
+
+        noDocs.hidden = true;
+        grid.innerHTML = documents.map(doc => {
+            const state = taskStates[doc.id] || getInitialState(doc);
+            const statusClass = getStatusClass(state.status);
+            const statusLabel = getStatusLabel(state.status);
+            const progressStyle = state.status === 'processing' ? `width: ${state.progress}%` : '';
+            const progressText = getProgressText(state.task);
+
+            return `
+                <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
+                    <div class="doc-card-inner">
+                        <div class="doc-status-indicator ${statusClass}" title="${statusLabel}">
+                            ${state.status === 'processing' ? `<div class="doc-progress-ring"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
                         </div>
-                        <div class="hero-chips compact-chips">
-                            <span class="doc-status-badge">上传中</span>
-                            <div class="doc-progress-bar"><div class="doc-progress-fill" style="width: ${info.progress}%"></div></div>
+                        <div class="doc-info">
+                            <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
+                            ${progressText ? `<div class="doc-progress-text">${progressText}</div>` : ''}
                         </div>
                     </div>
-                    <p class="muted doc-note">正在处理中...</p>
-                `;
-                container.insertBefore(card, container.firstChild);
-            }
-            const progressFill = card.querySelector('.doc-progress-fill');
-            if (progressFill) progressFill.style.width = info.progress + '%';
-        });
+                </div>
+            `;
+        }).join('');
     }
 
-    function createDocumentStack() {
-        const container = document.getElementById('document-container');
-        const stack = document.createElement('div');
-        stack.className = 'document-stack';
-        stack.id = 'document-stack';
-        container.innerHTML = '';
-        container.appendChild(stack);
-        return stack;
+    function getStatusClass(status) {
+        switch (status) {
+            case 'ready': return 'status-ready';
+            case 'processing': return 'status-processing';
+            case 'failed': return 'status-failed';
+            default: return 'status-pending';
+        }
     }
 
-    function updateDocumentCards() {
-        pendingUploads.forEach((info, docId) => {
-            const card = document.getElementById('doc-' + docId);
-            if (card) {
-                const statusEl = card.querySelector('.doc-status-badge');
-                const noteEl = card.querySelector('.doc-note');
-                if (info.progress >= 100) {
-                    card.classList.remove('document-card-pending');
-                    card.classList.add('document-card-ready');
-                    if (statusEl) statusEl.textContent = '已添加';
-                    if (noteEl) noteEl.textContent = '处理完成，已添加到检索库';
-                }
-            }
-        });
+    function getStatusLabel(status) {
+        switch (status) {
+            case 'ready': return '可分析';
+            case 'processing': return '处理中';
+            case 'failed': return '失败';
+            default: return '待处理';
+        }
     }
 
-    function refreshStats() {
-        fetch(`/api/projects/${projectId}`)
+    function getProgressText(task) {
+        if (!task || !task.stages) return '';
+        const stages = task.stages;
+        if (stages.extracting !== undefined && stages.chunking !== undefined) {
+            return `已抽取 ${stages.extracting}/${stages.total || '?'}`;
+        }
+        if (stages.embedding_processed !== undefined) {
+            return `已索引 ${stages.embedding_processed}/${stages.embedding_total || '?'}`;
+        }
+        return '';
+    }
+
+    function loadDocuments() {
+        fetch(`/api/projects/${projectId}/documents?limit=100`)
             .then(r => r.json())
-            .catch(() => ({}));
-    }
-
-    function startStatusPolling() {
-        pollIntervals.forEach(clearInterval);
-        pollIntervals = [];
-
-        const interval = setInterval(() => {
-            if (pendingUploads.size === 0) return;
-
-            Promise.all([...pendingUploads.keys()].map(docId =>
-                fetch(`/api/projects/${projectId}/documents/${docId}/task`)
-                    .then(r => r.json())
-                    .then(task => ({ docId, task }))
-                    .catch(() => null)
-            )).then(results => {
-                let changed = false;
-                results.forEach(({ docId, task }) => {
-                    if (!task || !task.task_id) return;
-                    const info = pendingUploads.get(docId);
-                    if (!info) return;
-
-                    const newProgress = task.progress_percent;
-                    if (newProgress !== info.progress) {
-                        info.progress = newProgress;
-                        changed = true;
-                    }
-
-                    if (task.status === 'completed') {
-                        pendingUploads.delete(docId);
-                        allDocStatuses.set(docId, 'ready');
-                        changed = true;
-                        const card = document.getElementById('doc-' + docId);
-                        if (card) {
-                            card.classList.remove('document-card-pending');
-                            card.classList.add('document-card-ready');
-                            const statusEl = card.querySelector('.doc-status-badge');
-                            const noteEl = card.querySelector('.doc-note');
-                            if (statusEl) statusEl.textContent = '已添加';
-                            if (noteEl) noteEl.textContent = '处理完成，已添加到检索库';
-                            card.dataset.status = 'ready';
-                        }
-                        updateStats();
-                    } else if (task.status === 'failed') {
-                        pendingUploads.delete(docId);
-                        allDocStatuses.set(docId, 'failed');
-                        changed = true;
-                        const card = document.getElementById('doc-' + docId);
-                        if (card) {
-                            card.classList.remove('document-card-pending');
-                            card.classList.add('document-card-danger');
-                            const statusEl = card.querySelector('.doc-status-badge');
-                            const noteEl = card.querySelector('.doc-note');
-                            if (statusEl) statusEl.textContent = '失败';
-                            if (noteEl) noteEl.textContent = task.error || '处理失败';
-                            card.dataset.status = 'failed';
-                        }
-                        updateStats();
-                    }
-                });
-
-                if (changed) {
-                    renderPendingUploads();
-                    updateDocumentCards();
+            .then(data => {
+                if (data.documents) {
+                    documents = data.documents;
+                    documents.forEach(doc => {
+                        taskStates[doc.id] = getInitialState(doc);
+                    });
+                    renderDocuments();
+                    updateStats();
                 }
-            });
-        }, 1500);
-
-        pollIntervals.push(interval);
+            })
+            .catch(console.error);
     }
 
     function updateStats() {
-        let ready = 0, failed = 0, total = 0;
-        allDocStatuses.forEach(status => {
-            total++;
-            if (status === 'ready') ready++;
-            else if (status === 'failed') failed++;
-        });
-        pendingUploads.forEach(() => { total++; });
+        let total = documents.length;
+        let ready = 0, pending = 0, failed = 0;
 
-        const readyEl = document.getElementById('status-ready');
-        const failedEl = document.getElementById('status-failed');
-        const totalEl = document.getElementById('status-total');
-        const statReadyEl = document.getElementById('stat-ready');
-        if (readyEl) readyEl.textContent = ready;
-        if (failedEl) failedEl.textContent = failed;
-        if (totalEl) totalEl.textContent = total;
-        if (statReadyEl) statReadyEl.textContent = ready + ' 份可分析';
+        documents.forEach(doc => {
+            const state = taskStates[doc.id] || {};
+            if (state.status === 'ready') ready++;
+            else if (state.status === 'failed') failed++;
+            else pending++;
+        });
+
+        document.getElementById('status-total').textContent = total;
+        document.getElementById('status-ready').textContent = ready;
+        document.getElementById('status-pending').textContent = pending;
+        document.getElementById('status-failed').textContent = failed;
+        document.getElementById('stat-total').textContent = total + ' 份文档';
+        document.getElementById('stat-ready').textContent = ready + ' 份可分析';
+
+        const analyzeBtn = document.getElementById('analyze-submit-btn');
+        if (analyzeBtn) {
+            if (ready > 0) {
+                analyzeBtn.disabled = false;
+                analyzeBtn.textContent = '后台启动分析';
+            } else {
+                analyzeBtn.disabled = true;
+                analyzeBtn.textContent = '需要先处理文档';
+            }
+        }
+    }
+
+    function startPolling() {
+        pollInterval = setInterval(pollTaskStates, 1500);
+    }
+
+    function pollTaskStates() {
+        const pendingDocs = documents.filter(d => {
+            const state = taskStates[d.id];
+            return state && (state.status === 'processing' || state.status === 'queued');
+        });
+
+        if (pendingDocs.length === 0) return;
+
+        Promise.all(pendingDocs.map(doc =>
+            fetch(`/api/projects/${projectId}/documents/${doc.id}/task`)
+                .then(r => r.json())
+                .then(task => ({ docId: doc.id, task }))
+                .catch(() => null)
+        )).then(results => {
+            let changed = false;
+            results.forEach(({ docId, task }) => {
+                if (!task || !task.task_id) return;
+                const state = taskStates[docId];
+                if (!state) return;
+
+                if (task.status !== state.status || task.progress_percent !== state.progress) {
+                    state.status = task.status;
+                    state.progress = task.progress_percent;
+                    state.task = task;
+                    changed = true;
+                }
+            });
+
+            if (changed) {
+                renderDocuments();
+                updateStats();
+            }
+        });
     }
 
     function setupAnalyzeForm() {
         const form = document.getElementById('analyze-form');
         if (!form) return;
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', () => {
             const btn = document.getElementById('analyze-submit-btn');
-            const wrapper = document.getElementById('analysis-submit-wrapper');
-            if (!wrapper) return;
-            const hasPending = pendingUploads.size > 0;
-            const hasUnready = [...allDocStatuses.values()].some(s => s !== 'ready' && s !== 'failed');
-            if (hasPending || hasUnready) {
-                e.preventDefault();
-                alert('请等待所有文档处理完成后再开始分析');
-                return;
-            }
             if (btn) {
                 btn.disabled = true;
                 btn.textContent = '分析启动中...';
             }
-            form.submit();
         });
     }
 
     function setupDeleteProject() {
         const form = document.getElementById('delete-project-form');
         if (!form) return;
-        form.addEventListener('submit', (e) => {
+        form.addEventListener('submit', () => {
             const btn = document.getElementById('delete-project-btn');
             if (btn) {
                 btn.disabled = true;
@@ -498,98 +386,147 @@
         });
     }
 
-    function setupRefreshDocs() {
-        const btn = document.getElementById('refresh-docs-btn');
+    function setupProcessAll() {
+        const btn = document.getElementById('process-all-btn');
         if (!btn) return;
-        btn.addEventListener('click', () => {
-            btn.disabled = true;
-            btn.textContent = '刷新中...';
-            location.reload();
-        });
-    }
 
-    function setupLoadMore() {
-        const btn = document.getElementById('load-more-btn');
-        if (!btn) return;
-        btn.addEventListener('click', () => {
-            btn.disabled = true;
-            btn.textContent = '加载中...';
-            documentOffset += documentLimit;
-            fetch(`/api/projects/${projectId}/documents?offset=${documentOffset}&limit=${documentLimit}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.documents && data.documents.length > 0) {
-                        appendDocuments(data.documents);
-                        hasMoreDocs = data.has_more;
-                        const wrapper = document.getElementById('load-more-wrapper');
-                        if (wrapper) wrapper.hidden = !hasMoreDocs;
-                    }
-                    btn.disabled = false;
-                    btn.textContent = '加载更多文档';
-                })
-                .catch(() => {
-                    btn.disabled = false;
-                    btn.textContent = '加载更多文档';
-                });
-        });
-    }
-
-    function appendDocuments(docs) {
-        const container = document.getElementById('document-stack');
-        if (!container) return;
-        docs.forEach(doc => {
-            allDocStatuses.set(doc.id, doc.status);
-            const article = document.createElement('article');
-            article.className = 'document-card';
-            article.id = 'doc-' + doc.id;
-            article.dataset.status = doc.status;
-            article.innerHTML = `
-                <div class="document-main">
-                    <div class="document-title-block">
-                        <strong>${escapeHtml(doc.title || doc.filename)}</strong>
-                        <p>${escapeHtml(doc.filename)}</p>
-                    </div>
-                    <div class="hero-chips compact-chips">
-                        <span>${escapeHtml(doc.source_type || 'document')}</span>
-                        <span class="doc-status" data-doc-id="${doc.id}">${doc.status}</span>
-                        <span>${doc.language || 'unknown'}</span>
-                    </div>
-                </div>
-                <p class="muted doc-note">${escapeHtml((doc.metadata_json || {}).user_note || '尚未添加备注')}</p>
-                <div class="inline-actions top-gap">
-                    <a class="secondary-button" href="/projects/${projectId}/preprocess?mention=@&quot;${doc.filename}&quot;">在预分析里打开</a>
-                </div>
-                <details class="document-editor">
-                    <summary>管理这份文档</summary>
-                    <div class="document-editor-grid">
-                        <form method="post" action="/projects/${projectId}/documents/${doc.id}/update" class="stack doc-update-form">
-                            <label><span>显示标题</span><input type="text" name="title" value="${escapeHtml(doc.title || doc.filename)}"></label>
-                            <label><span>来源类型</span><input type="text" name="source_type" value="${escapeHtml(doc.source_type || '')}"></label>
-                            <label><span>备注</span><textarea name="user_note" rows="4">${escapeHtml((doc.metadata_json || {}).user_note || '')}</textarea></label>
-                            <button type="submit">保存文档信息</button>
-                        </form>
-                        <form method="post" action="/projects/${projectId}/documents/${doc.id}/delete" class="danger-zone doc-delete-form" onsubmit="return confirm('确定删除这份文档及其 chunks 吗？');">
-                            <p>删除会移除原文件、抽取文本和检索索引。</p>
-                            <button type="submit" class="danger-button">删除文档</button>
-                        </form>
-                    </div>
-                </details>
-            `;
-            container.appendChild(article);
-        });
-        setupDocumentForms();
-        updateStats();
-    }
-
-    function setupDocumentForms() {
-        document.querySelectorAll('.doc-delete-form').forEach(form => {
-            if (form.dataset.bound) return;
-            form.dataset.bound = '1';
-            form.addEventListener('submit', () => {
-                const btn = form.querySelector('button[type="submit"]');
-                if (btn) { btn.disabled = true; btn.textContent = '删除中...'; }
+        btn.addEventListener('click', async () => {
+            const docsToProcess = documents.filter(d => {
+                const state = taskStates[d.id];
+                return !state || state.status === 'pending' || state.status === 'failed';
             });
+
+            if (docsToProcess.length === 0) {
+                alert('没有需要处理的文档');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.querySelector('.btn-text').hidden = true;
+            btn.querySelector('.btn-loading').hidden = false;
+
+            try {
+                const response = await fetch(`/api/projects/${projectId}/process-all`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+
+                if (result.submitted) {
+                    result.submitted.forEach(item => {
+                        if (taskStates[item.document_id]) {
+                            taskStates[item.document_id].status = 'queued';
+                            taskStates[item.document_id].task = item.task;
+                        }
+                    });
+                    renderDocuments();
+                }
+            } catch (err) {
+                console.error('Process all error:', err);
+                alert('处理失败: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.querySelector('.btn-text').hidden = false;
+                btn.querySelector('.btn-loading').hidden = true;
+            }
         });
+    }
+
+    function setupModal() {
+        const overlay = document.getElementById('doc-modal-overlay');
+        const closeBtn = document.getElementById('modal-close');
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', closeModal);
+        }
+
+        if (overlay) {
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) closeModal();
+            });
+        }
+    }
+
+    window.openDocModal = function(docId) {
+        const doc = documents.find(d => d.id === docId);
+        if (!doc) return;
+
+        const state = taskStates[docId] || {};
+        const overlay = document.getElementById('doc-modal-overlay');
+        const modal = document.getElementById('doc-modal');
+        const title = document.getElementById('modal-title');
+        const body = document.getElementById('modal-body');
+        const footer = document.getElementById('modal-footer');
+
+        title.textContent = doc.title || doc.filename || '文档详情';
+
+        body.innerHTML = `
+            <div class="modal-doc-info">
+                <div class="modal-status ${getStatusClass(state.status)}">${getStatusLabel(state.status)}</div>
+                <p class="modal-filename">${escapeHtml(doc.filename || '')}</p>
+                ${doc.language ? `<p class="modal-meta">语言: ${doc.language}</p>` : ''}
+                ${doc.source_type ? `<p class="modal-meta">来源: ${doc.source_type}</p>` : ''}
+                ${state.status === 'processing' ? `<div class="modal-progress"><div class="modal-progress-bar"><div class="modal-progress-fill" style="width: ${state.progress}%"></div></div><span>${state.progress}%</span></div>` : ''}
+                ${state.task && state.task.error ? `<p class="modal-error">${escapeHtml(state.task.error)}</p>` : ''}
+                ${doc.error_message ? `<p class="modal-error">${escapeHtml(doc.error_message)}</p>` : ''}
+            </div>
+            <details class="modal-details">
+                <summary>编辑文档信息</summary>
+                <form method="post" action="/projects/${projectId}/documents/${docId}/update" class="stack modal-form" id="modal-update-form">
+                    <label>
+                        <span>显示标题</span>
+                        <input type="text" name="title" value="${escapeHtml(doc.title || doc.filename || '')}">
+                    </label>
+                    <label>
+                        <span>来源类型</span>
+                        <input type="text" name="source_type" value="${escapeHtml(doc.source_type || '')}">
+                    </label>
+                    <label>
+                        <span>备注</span>
+                        <textarea name="user_note" rows="4">${escapeHtml((doc.metadata_json || {}).user_note || '')}</textarea>
+                    </label>
+                    <button type="submit" class="secondary-button">保存</button>
+                </form>
+            </details>
+        `;
+
+        const canProcess = state.status !== 'processing' && state.status !== 'ready';
+        footer.innerHTML = `
+            ${canProcess ? `<button type="button" class="primary-button" onclick="processDoc('${docId}')">处理此文档</button>` : ''}
+            <form method="post" action="/projects/${projectId}/documents/${docId}/delete" class="inline-form" onsubmit="return confirm('确定删除这份文档吗？');">
+                <button type="submit" class="danger-button">删除文档</button>
+            </form>
+        `;
+
+        overlay.hidden = false;
+        modal.hidden = false;
+    };
+
+    window.processDoc = async function(docId) {
+        try {
+            const response = await fetch(`/api/projects/${projectId}/documents/${docId}/process`, {
+                method: 'POST'
+            });
+            const result = await response.json();
+            if (result.task) {
+                taskStates[docId] = {
+                    status: 'queued',
+                    progress: 0,
+                    task: result.task
+                };
+                renderDocuments();
+                closeModal();
+            }
+        } catch (err) {
+            console.error('Process doc error:', err);
+            alert('处理失败: ' + err.message);
+        }
+    };
+
+    function closeModal() {
+        const overlay = document.getElementById('doc-modal-overlay');
+        const modal = document.getElementById('doc-modal');
+        if (overlay) overlay.hidden = true;
+        if (modal) modal.hidden = true;
     }
 
     function escapeHtml(str) {
