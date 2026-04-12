@@ -8,11 +8,12 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from app.analysis.facets import FACETS
 from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
 from app.main import create_app
 from app.models import TextChunk
-from app.schemas import AssetBundle
+from app.schemas import AssetBundle, DEFAULT_ANALYSIS_CONCURRENCY, RetrievedChunk
 from app.storage import repository
 
 
@@ -33,6 +34,18 @@ def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float
         time.sleep(0.05)
         payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
     return payload
+
+
+def _collect_analysis_snapshots(client, project_id: str, run_id: str, *, timeout_s: float = 8.0) -> list[dict]:
+    deadline = time.time() + timeout_s
+    snapshots: list[dict] = []
+    while time.time() < deadline:
+        payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+        snapshots.append(payload)
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.02)
+    return snapshots
 
 
 def _wait_for_rechunk(client, project_id: str, task_id: str, *, timeout_s: float = 8.0) -> dict:
@@ -287,6 +300,232 @@ def test_analysis_api_truncates_large_preview_fields(client, app):
     assert "request_payload" not in event_payload
 
 
+def test_analysis_api_backfills_queue_fields_for_legacy_runs(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Legacy Queue"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="queued",
+            summary_json={"current_stage": "legacy"},
+        )
+        for facet in FACETS:
+            repository.upsert_facet(
+                session,
+                run.id,
+                facet.key,
+                status="pending",
+                confidence=0.0,
+                findings_json={"label": facet.label, "summary": ""},
+                evidence_json=[],
+                conflicts_json=[],
+                error_message=None,
+            )
+        run_id = run.id
+
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+
+    assert payload["summary"]["concurrency"] == DEFAULT_ANALYSIS_CONCURRENCY
+    assert payload["summary"]["active_facets"] == 0
+    assert payload["summary"]["queued_facets"] == len(FACETS)
+    assert payload["summary"]["current_phase"] == "queued"
+    assert [facet["findings"]["queue_position"] for facet in payload["facets"]] == list(range(1, len(FACETS) + 1))
+    assert all(facet["status"] == "queued" for facet in payload["facets"])
+    assert all("phase" in facet["findings"] for facet in payload["facets"])
+    assert all("started_at" in facet["findings"] for facet in payload["facets"])
+    assert all("finished_at" in facet["findings"] for facet in payload["facets"])
+
+
+def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
+    import app.analysis.engine as analysis_engine_module
+
+    project_payload = client.post("/api/projects", json={"name": "Serial Run"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Serial analysis test content."), "text/plain")},
+    )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    app.state.analysis_runner.run_inline = False
+
+    def fake_retrieve(session, project_id, facet, **kwargs):
+        del session, project_id, kwargs
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=f"{facet.key}-chunk",
+                    document_id="doc-1",
+                    document_title="Memo",
+                    filename="memo.txt",
+                    source_type="text",
+                    content=f"Evidence for {facet.key}",
+                    score=1.0,
+                    page_number=None,
+                    metadata={},
+                    anchor_chunk_id=f"{facet.key}-chunk",
+                    anchor_chunk_index=0,
+                    context_span={"left": 0, "right": 0, "total_chars": 32},
+                )
+            ],
+            "keyword",
+            {"query": facet.key},
+        )
+
+    def fake_worker(
+        facet,
+        project_name,
+        chunks,
+        llm_config,
+        llm_log_path,
+        target_role,
+        analysis_context,
+        stream_callback=None,
+    ):
+        del project_name, chunks, llm_config, llm_log_path, target_role, analysis_context, stream_callback
+        time.sleep(0.12)
+        return {
+            "facet_key": facet.key,
+            "status": "completed",
+            "confidence": 0.75,
+            "summary": f"{facet.key} complete",
+            "bullets": [f"{facet.key} bullet"],
+            "evidence": [],
+            "conflicts": [],
+            "notes": None,
+            "raw_payload": {
+                "_meta": {
+                    "llm_called": False,
+                    "llm_success": False,
+                    "llm_attempts": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "duration_ms": 120,
+                }
+            },
+        }
+
+    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Strict serial", "concurrency": 1},
+    )
+    run_id = analyze_response.json()["id"]
+    snapshots = _collect_analysis_snapshots(client, project_id, run_id)
+
+    assert snapshots
+    assert max(snapshot["summary"]["active_facets"] for snapshot in snapshots) <= 1
+    assert all(
+        sum(1 for facet in snapshot["facets"] if facet["status"] in {"preparing", "running"}) <= 1
+        for snapshot in snapshots
+    )
+    assert any(
+        snapshot["summary"]["active_facets"] == 1 and snapshot["summary"]["queued_facets"] >= 1
+        for snapshot in snapshots
+        if snapshot["status"] == "running"
+    )
+    assert snapshots[-1]["summary"]["concurrency"] == 1
+    assert snapshots[-1]["status"] == "completed"
+
+
+def test_analysis_concurrency_two_caps_active_slots(client, app, monkeypatch):
+    import app.analysis.engine as analysis_engine_module
+
+    project_payload = client.post("/api/projects", json={"name": "Parallel Cap"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Parallel analysis test content."), "text/plain")},
+    )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    app.state.analysis_runner.run_inline = False
+
+    def fake_retrieve(session, project_id, facet, **kwargs):
+        del session, project_id, kwargs
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=f"{facet.key}-chunk",
+                    document_id="doc-1",
+                    document_title="Memo",
+                    filename="memo.txt",
+                    source_type="text",
+                    content=f"Evidence for {facet.key}",
+                    score=1.0,
+                    page_number=None,
+                    metadata={},
+                    anchor_chunk_id=f"{facet.key}-chunk",
+                    anchor_chunk_index=0,
+                    context_span={"left": 0, "right": 0, "total_chars": 32},
+                )
+            ],
+            "keyword",
+            {"query": facet.key},
+        )
+
+    def fake_worker(
+        facet,
+        project_name,
+        chunks,
+        llm_config,
+        llm_log_path,
+        target_role,
+        analysis_context,
+        stream_callback=None,
+    ):
+        del project_name, chunks, llm_config, llm_log_path, target_role, analysis_context, stream_callback
+        time.sleep(0.12)
+        return {
+            "facet_key": facet.key,
+            "status": "completed",
+            "confidence": 0.75,
+            "summary": f"{facet.key} complete",
+            "bullets": [f"{facet.key} bullet"],
+            "evidence": [],
+            "conflicts": [],
+            "notes": None,
+            "raw_payload": {
+                "_meta": {
+                    "llm_called": False,
+                    "llm_success": False,
+                    "llm_attempts": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "duration_ms": 120,
+                }
+            },
+        }
+
+    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Cap active slots", "concurrency": 2},
+    )
+    run_id = analyze_response.json()["id"]
+    snapshots = _collect_analysis_snapshots(client, project_id, run_id)
+
+    assert snapshots
+    assert max(snapshot["summary"]["active_facets"] for snapshot in snapshots) <= 2
+    assert all(
+        sum(1 for facet in snapshot["facets"] if facet["status"] in {"preparing", "running"}) <= 2
+        for snapshot in snapshots
+    )
+    assert any(snapshot["summary"]["active_facets"] == 2 for snapshot in snapshots if snapshot["status"] == "running")
+    assert snapshots[-1]["summary"]["concurrency"] == 2
+    assert snapshots[-1]["status"] == "completed"
+
+
 def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
     project_payload = client.post("/api/projects", json={"name": "Asset Stream"}).json()
     project_id = project_payload["id"]
@@ -415,12 +654,21 @@ def test_analysis_stream_and_rerun_api(client, app):
     stream_response = client.get(f"/api/projects/{project_id}/analysis/stream", params={"run_id": run_id})
     assert stream_response.status_code == 200
     assert "event: snapshot" in stream_response.text
+    assert '"active_facets"' in stream_response.text
+    assert '"queued_facets"' in stream_response.text
+    assert '"current_phase"' in stream_response.text
 
     rerun_response = client.post(f"/api/projects/{project_id}/analysis/personality/rerun")
     assert rerun_response.status_code == 200
     rerun_payload = rerun_response.json()
     assert rerun_payload["id"] == run_id
     assert len(rerun_payload["facets"]) == 10
+    assert "active_facets" in rerun_payload["summary"]
+    assert "queued_facets" in rerun_payload["summary"]
+    assert "current_phase" in rerun_payload["summary"]
+    assert all("phase" in facet["findings"] for facet in rerun_payload["facets"])
+    assert all("started_at" in facet["findings"] for facet in rerun_payload["facets"])
+    assert all("finished_at" in facet["findings"] for facet in rerun_payload["facets"])
 
 
 def test_analysis_run_survives_single_facet_retrieval_failure(client, app, monkeypatch):

@@ -141,7 +141,7 @@ class AssetSynthesizer:
                 p_msgs = build_personality_messages(
                     project.name, facet_dump, p_context, target_role=target_role, analysis_context=analysis_context
                 )
-                p_res = client.chat_completion_result(p_msgs, model=config.model, temperature=0.2)
+                p_res = client.chat_completion_result(p_msgs, model=config.model, temperature=0.2, max_tokens=None)
                 personality_data = parse_json_response(p_res.content, fallback=True)
             except Exception:
                 pass
@@ -164,7 +164,7 @@ class AssetSynthesizer:
                 m_msgs = build_memories_messages(
                     project.name, facet_dump, m_context, target_role=target_role, analysis_context=analysis_context
                 )
-                m_res = client.chat_completion_result(m_msgs, model=config.model, temperature=0.2)
+                m_res = client.chat_completion_result(m_msgs, model=config.model, temperature=0.2, max_tokens=None)
                 memories_data = parse_json_response(m_res.content, fallback=True)
             except Exception:
                 pass
@@ -184,7 +184,11 @@ class AssetSynthesizer:
                 message="LLM 正在生成结构化草稿",
             )
             response = client.chat_completion_result(
-                messages, model=config.model, temperature=0.2, stream_handler=stream_callback
+                messages,
+                model=config.model,
+                temperature=0.2,
+                max_tokens=None,
+                stream_handler=stream_callback,
             )
             
             flush_remaining = getattr(stream_callback, "_flush_remaining", None)

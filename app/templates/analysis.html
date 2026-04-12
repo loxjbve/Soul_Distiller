@@ -5,19 +5,23 @@
 {% set total_facets = summary.get("total_facets", 10) %}
 {% set completed_facets = summary.get("completed_facets", 0) %}
 {% set failed_facets = summary.get("failed_facets", 0) %}
+{% set concurrency = summary.get("concurrency", 4) %}
+{% set active_facets = summary.get("active_facets", 0) %}
+{% set queued_facets = summary.get("queued_facets", 0) %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Analysis Monitor</p>
-        <h1>{{ project.name }} 的多维分析</h1>
+        <p class="eyebrow">Analysis Queue</p>
+        <h1>{{ project.name }} Multi-Facet Analysis</h1>
         <p class="hero-note">
-            页面会持续刷新当前 run 的阶段、进度、最近事件和各维度结果。长文本预览会自动截断，展开卡片后仍可查看实时输出和证据细节。
+            This monitor shows the real queue state of the run. Facets are separated into queued, preparing,
+            running, completed, and failed so the page reflects actual slot usage instead of guessed activity.
         </p>
     </div>
     <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}">返回项目</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}">Back to Project</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">Asset Output</a>
         {% if run and run.status in ["completed", "partial_failed"] %}
-        <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">导出 ZIP</a>
+        <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">Export ZIP</a>
         {% endif %}
     </div>
 </section>
@@ -34,19 +38,19 @@
     <div class="section-head">
         <div>
             <p class="eyebrow">Run</p>
-            <h2 id="analysis-run-title">分析运行 {{ run.id[:8] }}</h2>
-            <p class="hero-note" id="analysis-progress-detail">等待实时状态更新…</p>
+            <h2 id="analysis-run-title">Analysis Run {{ run.id[:8] }}</h2>
+            <p class="hero-note" id="analysis-progress-detail">Waiting for live updates.</p>
         </div>
         <div class="facet-meta analysis-run-meta">
             <span id="analysis-status-chip">{{ run.status }}</span>
-            <span id="analysis-role-chip">{{ summary.get("target_role") or "未指定角色" }}</span>
+            <span id="analysis-role-chip">{{ summary.get("target_role") or "Unspecified" }}</span>
             <span id="analysis-last-updated">--</span>
         </div>
     </div>
 
     <section class="progress-shell">
         <div class="progress-labels">
-            <strong id="analysis-stage">{{ summary.get("current_stage") or "排队中" }}</strong>
+            <strong id="analysis-stage">{{ summary.get("current_stage") or "Queued" }}</strong>
             <span id="analysis-percent">{{ summary.get("progress_percent", 0) }}%</span>
         </div>
         <div class="progress-track">
@@ -60,42 +64,52 @@
 
     <section class="analysis-brief-grid">
         <article class="analysis-brief-card">
-            <span>整体完成度</span>
-            <strong id="analysis-progress-caption">{{ completed_facets + failed_facets }} / {{ total_facets }} 维</strong>
-            <p>失败维度也会计入整体进度。</p>
+            <span>Progress</span>
+            <strong id="analysis-progress-caption">{{ completed_facets + failed_facets }} / {{ total_facets }} facets</strong>
+            <p>Completed and failed facets both count toward total progress.</p>
         </article>
         <article class="analysis-brief-card">
-            <span>当前动作</span>
-            <strong id="analysis-active-message">{{ summary.get("current_stage") or "等待任务开始" }}</strong>
-            <p>这里会持续提示当前正在发生什么。</p>
+            <span>Actual Concurrency</span>
+            <strong id="analysis-actual-concurrency">{{ concurrency }}</strong>
+            <p>The effective value used by this run after validation and fallback.</p>
         </article>
         <article class="analysis-brief-card">
-            <span>最近事件</span>
-            <strong id="analysis-latest-event">暂无事件</strong>
-            <p>便于快速确认最新进展。</p>
+            <span>Slot Usage</span>
+            <strong id="analysis-slot-usage">{{ active_facets }} / {{ concurrency }}</strong>
+            <p>Active slots: <span id="analysis-running-count">{{ active_facets }}</span></p>
         </article>
         <article class="analysis-brief-card">
-            <span>活跃维度</span>
-            <strong id="analysis-running-count">0</strong>
-            <p>正在执行中的 facet 数量。</p>
+            <span>Current Facet</span>
+            <strong id="analysis-active-message">{{ summary.get("current_facet") or "-" }}</strong>
+            <p id="analysis-current-phase">{{ summary.get("current_phase") or "queued" }}</p>
+        </article>
+        <article class="analysis-brief-card">
+            <span>Queued Facets</span>
+            <strong id="analysis-queued-count">{{ queued_facets }}</strong>
+            <p id="analysis-queue-note">Queued facets are waiting for a free slot.</p>
+        </article>
+        <article class="analysis-brief-card">
+            <span>Latest Event</span>
+            <strong id="analysis-latest-event">No events yet</strong>
+            <p id="analysis-latest-event-detail">Live run events will appear here.</p>
         </article>
     </section>
 
     <section class="run-metric-grid">
         <div class="metric-card">
-            <span>完成维度</span>
+            <span>Completed</span>
             <strong id="metric-completed">{{ completed_facets }}</strong>
         </div>
         <div class="metric-card">
-            <span>失败维度</span>
+            <span>Failed</span>
             <strong id="metric-failed">{{ failed_facets }}</strong>
         </div>
         <div class="metric-card">
-            <span>LLM 成功</span>
+            <span>LLM Success</span>
             <strong id="metric-llm-success">{{ summary.get("llm_successes", 0) }}</strong>
         </div>
         <div class="metric-card">
-            <span>LLM 失败</span>
+            <span>LLM Fallback</span>
             <strong id="metric-llm-failure">{{ summary.get("llm_failures", 0) }}</strong>
         </div>
         <div class="metric-card">
@@ -111,7 +125,7 @@
             <strong id="metric-total-tokens">{{ summary.get("total_tokens", 0) }}</strong>
         </div>
         <div class="metric-card">
-            <span>当前维度</span>
+            <span>Current Facet</span>
             <strong id="metric-current-facet">{{ summary.get("current_facet") or "-" }}</strong>
         </div>
     </section>
@@ -120,8 +134,8 @@
         <div>
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Facets</p>
-                    <h3>维度状态</h3>
+                    <p class="eyebrow">Queue Board</p>
+                    <h3>Facet Queue</h3>
                 </div>
             </div>
             <div id="facet-status-list" class="facet-status-grid"></div>
@@ -131,7 +145,7 @@
             <div class="section-head slim-head">
                 <div>
                     <p class="eyebrow">Events</p>
-                    <h3>运行事件流</h3>
+                    <h3>Run Event Stream</h3>
                 </div>
             </div>
             <div id="analysis-events" class="event-stream"></div>
@@ -141,14 +155,14 @@
     <section class="section-head slim-head top-gap">
         <div>
             <p class="eyebrow">Results</p>
-            <h3>分析结果</h3>
+            <h3>Facet Results</h3>
         </div>
     </section>
     <div id="analysis-result-list" class="facet-stack"></div>
 </section>
 {% else %}
 <section class="workspace-panel">
-    <p class="muted">还没有分析记录。回到项目页启动一次分析即可。</p>
+    <p class="muted">No analysis run exists yet. Start one from the project page to open the queue monitor.</p>
 </section>
 {% endif %}
 {% endblock %}

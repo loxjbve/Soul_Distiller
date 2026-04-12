@@ -119,7 +119,7 @@ class OpenAICompatibleClient:
         model: str | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        max_tokens: int = 1400,
+        max_tokens: int | None = 1400,
     ) -> str:
         return self.chat_completion_result(
             messages,
@@ -136,7 +136,7 @@ class OpenAICompatibleClient:
         model: str | None = None,
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
-        max_tokens: int = 1400,
+        max_tokens: int | None = 1400,
         stream_handler: Callable[[str], None] | None = None,
     ) -> ChatCompletionResult:
         resolved_model = model or self.resolve_model()
@@ -145,8 +145,9 @@ class OpenAICompatibleClient:
                 "model": resolved_model,
                 "input": self._messages_to_responses_input(messages),
                 "temperature": temperature,
-                "max_output_tokens": max_tokens,
             }
+            if max_tokens is not None:
+                payload["max_output_tokens"] = max_tokens
             if response_format:
                 payload["text"] = {"format": response_format}
             if stream_handler:
@@ -176,8 +177,9 @@ class OpenAICompatibleClient:
                 "model": resolved_model,
                 "messages": messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
             }
+            if max_tokens is not None:
+                payload["max_tokens"] = max_tokens
             if response_format:
                 payload["response_format"] = response_format
             if stream_handler:
@@ -229,7 +231,7 @@ class OpenAICompatibleClient:
         *,
         model: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 1400,
+        max_tokens: int | None = 1400,
     ) -> ToolRoundResult:
         resolved_model = model or self.resolve_model()
         if normalize_api_mode(self.config.api_mode) == "responses":
@@ -239,8 +241,9 @@ class OpenAICompatibleClient:
                 "tools": [self._chat_tool_to_responses_tool(tool) for tool in tools],
                 "tool_choice": "auto",
                 "temperature": temperature,
-                "max_output_tokens": max_tokens,
             }
+            if max_tokens is not None:
+                payload["max_output_tokens"] = max_tokens
             data, _meta = self._post_json_with_meta("/responses", payload)
             tool_calls = self._extract_responses_tool_calls(data)
             content = self._extract_responses_text(data)
@@ -258,8 +261,9 @@ class OpenAICompatibleClient:
             "tools": tools,
             "tool_choice": "auto",
             "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         data, meta = self._post_json_with_meta("/chat/completions", payload)
         try:
             message = data["choices"][0]["message"]

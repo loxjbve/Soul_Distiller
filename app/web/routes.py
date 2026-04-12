@@ -10,14 +10,20 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 import asyncio
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact, utcnow
-from app.schemas import ASSET_KINDS, ServiceConfig
+from app.schemas import (
+    ASSET_KINDS,
+    DEFAULT_ANALYSIS_CONCURRENCY,
+    MAX_ANALYSIS_CONCURRENCY,
+    MIN_ANALYSIS_CONCURRENCY,
+    ServiceConfig,
+)
 from app.storage import repository
 
 
@@ -60,7 +66,7 @@ class ChatPayload(BaseModel):
 class AnalysisRequestPayload(BaseModel):
     target_role: str | None = None
     analysis_context: str | None = None
-    concurrency: int | None = None
+    concurrency: int | None = Field(default=None, ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -222,7 +228,7 @@ def analyze_project_form(
     session: SessionDep,
     target_role: Annotated[str | None, Form()] = None,
     analysis_context: Annotated[str | None, Form()] = None,
-    concurrency: Annotated[int | None, Form()] = None,
+    concurrency: Annotated[int | None, Form(ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)] = None,
 ):
     run = _enqueue_analysis(
         request,
@@ -1275,8 +1281,9 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "analysis_defaults": {
             "target_role": latest_summary.get("target_role") or project.name,
             "analysis_context": latest_summary.get("analysis_context") or project.description or "",
-            "concurrency": latest_summary.get("concurrency") or 4,
+            "concurrency": latest_summary.get("concurrency") or DEFAULT_ANALYSIS_CONCURRENCY,
         },
+        "analysis_concurrency_default": DEFAULT_ANALYSIS_CONCURRENCY,
     }
 
 
@@ -1584,6 +1591,55 @@ def _truncate_preview(
     return f"{text[:keep]}{marker}", True
 
 
+def _normalize_analysis_status(value: Any) -> str:
+    normalized = str(value or "queued").strip().lower().replace(" ", "_")
+    if normalized in {"", "pending"}:
+        return "queued"
+    if normalized not in {"queued", "preparing", "running", "completed", "failed"}:
+        return "queued"
+    return normalized
+
+
+def _normalize_analysis_phase(status: str, value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace(" ", "_")
+    if normalized:
+        return normalized
+    return {
+        "queued": "queued",
+        "preparing": "retrieving",
+        "running": "analyzing",
+        "completed": "completed",
+        "failed": "failed",
+    }.get(status, "queued")
+
+
+def _normalize_analysis_concurrency(value: Any) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        candidate = DEFAULT_ANALYSIS_CONCURRENCY
+    return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+
+
+def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
+    label = facet_label or "Analysis"
+    if phase == "retrieving":
+        return f"{label}: retrieving evidence"
+    if phase == "llm":
+        return f"{label}: generating with LLM"
+    if phase == "analyzing":
+        return f"{label}: analyzing"
+    if phase == "completed":
+        return "Analysis completed"
+    if phase == "failed":
+        return "Analysis finished with failures"
+    if phase == "persisting":
+        return "Finalizing analysis"
+    if queued:
+        return f"{queued} facet(s) waiting for a slot"
+    return "Waiting to start"
+
+
 def _serialize_analysis_event(event) -> dict[str, Any]:
     payload = dict(event.payload_json or {})
 
@@ -1617,7 +1673,15 @@ def _serialize_analysis_event(event) -> dict[str, Any]:
 
 
 def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
+    status = _normalize_analysis_status(facet.status)
     findings = dict(facet.findings_json or {})
+    findings["label"] = findings.get("label") or facet.facet_key
+    findings["phase"] = _normalize_analysis_phase(status, findings.get("phase"))
+    findings["queue_position"] = findings.get("queue_position")
+    findings["started_at"] = findings.get("started_at")
+    findings["finished_at"] = findings.get("finished_at")
+    if status != "queued":
+        findings["queue_position"] = None
     summary_preview, summary_truncated = _truncate_preview(
         findings.get("summary"),
         ANALYSIS_SUMMARY_PREVIEW_LIMIT,
@@ -1651,7 +1715,7 @@ def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
 
     return {
         "facet_key": facet.facet_key,
-        "status": facet.status,
+        "status": status,
         "accepted": bool(facet.accepted),
         "confidence": facet.confidence,
         "findings": findings,
@@ -1663,14 +1727,71 @@ def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
 
 def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     ordered_events = sorted(run.events, key=lambda item: item.created_at, reverse=True)[:ANALYSIS_EVENT_LIMIT]
+    serialized_facets = [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)]
+    summary = dict(run.summary_json or {})
+    summary["total_facets"] = int(summary.get("total_facets") or len(FACETS))
+    summary["concurrency"] = _normalize_analysis_concurrency(summary.get("concurrency"))
+
+    completed = sum(1 for facet in serialized_facets if facet["status"] == "completed")
+    failed = sum(1 for facet in serialized_facets if facet["status"] == "failed")
+    active = [facet for facet in serialized_facets if facet["status"] in {"preparing", "running"}]
+    queued = [facet for facet in serialized_facets if facet["status"] == "queued"]
+
+    queue_position = 1
+    for facet in serialized_facets:
+        if facet["status"] == "queued":
+            facet["findings"]["queue_position"] = queue_position
+            queue_position += 1
+        else:
+            facet["findings"]["queue_position"] = None
+
+    summary["completed_facets"] = completed
+    summary["failed_facets"] = failed
+    summary["active_facets"] = len(active)
+    summary["queued_facets"] = len(queued)
+    progress_total = max(1, int(summary.get("total_facets") or len(FACETS) or 1))
+    summary["progress_percent"] = int(((completed + failed) / progress_total) * 100)
+
+    if active:
+        current = active[0]
+        summary["current_facet"] = current["facet_key"]
+        summary["current_phase"] = current["findings"].get("phase") or _normalize_analysis_phase(
+            current["status"],
+            None,
+        )
+        summary["current_stage"] = _analysis_stage_label(
+            current["findings"].get("label") or current["facet_key"],
+            summary["current_phase"],
+        )
+    elif run.status == "completed":
+        summary["current_facet"] = None
+        summary["current_phase"] = "completed"
+        summary["current_stage"] = _analysis_stage_label(None, "completed")
+    elif run.status in {"failed", "partial_failed"}:
+        summary["current_facet"] = None
+        summary["current_phase"] = "failed"
+        summary["current_stage"] = _analysis_stage_label(None, "failed")
+    elif queued:
+        summary["current_facet"] = None
+        summary["current_phase"] = "queued"
+        summary["current_stage"] = _analysis_stage_label(None, "queued", queued=len(queued))
+    elif run.status == "running":
+        summary["current_facet"] = None
+        summary["current_phase"] = "persisting"
+        summary["current_stage"] = _analysis_stage_label(None, "persisting")
+    else:
+        summary["current_facet"] = None
+        summary["current_phase"] = "queued"
+        summary["current_stage"] = _analysis_stage_label(None, "queued", queued=len(queued))
+
     return {
         "id": run.id,
         "status": run.status,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-        "summary": run.summary_json or {},
+        "summary": summary,
         "events": [_serialize_analysis_event(event) for event in ordered_events],
-        "facets": [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)],
+        "facets": serialized_facets,
     }
 
 
