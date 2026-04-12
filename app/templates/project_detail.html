@@ -432,6 +432,8 @@
             const data = JSON.parse(event.data);
             if (data.documents) {
                 let changed = false;
+                let structuralChange = false;
+                
                 data.documents.forEach(update => {
                     const docId = update.id;
                     const state = taskStates[docId];
@@ -441,18 +443,100 @@
                     const newProgress = update.task ? update.task.progress_percent : 0;
                     
                     if (state.status !== newStatus || state.progress !== newProgress || JSON.stringify(state.task) !== JSON.stringify(update.task)) {
+                        const oldCol = getColumn(state);
+                        
                         state.status = newStatus;
                         state.progress = newProgress;
                         state.task = update.task;
+                        
+                        const newCol = getColumn(state);
+                        if (oldCol !== newCol) {
+                            structuralChange = true;
+                        } else {
+                            updateDocumentCard(docId, state);
+                        }
                         changed = true;
                     }
                 });
-                if (changed) {
+                
+                if (structuralChange) {
                     renderDocuments();
+                }
+                if (changed) {
                     updateStats();
                 }
             }
         };
+
+        function getColumn(state) {
+            const stage = state.task && state.task.status ? state.task.status : state.status;
+            if (state.status === 'failed') return 'failed';
+            if (state.status === 'ready' || stage === 'completed') return 'completed';
+            if (state.status === 'queued' || stage === 'queued') return 'queued';
+            if (state.status === 'processing' || ['parsing', 'extracting', 'chunking', 'embedding', 'storing'].includes(stage)) return 'processing';
+            return 'unprocessed';
+        }
+
+        function updateDocumentCard(docId, state) {
+            const card = document.querySelector(`.doc-card[data-doc-id="${docId}"]`);
+            if (!card) return;
+            
+            const col = getColumn(state);
+            let displayProgress = state.progress || 0;
+            if (state.task && state.task.stages) {
+                const st = state.task.stages;
+                if (st.embedding_total) displayProgress = (st.embedding_processed || 0) / st.embedding_total * 100;
+                else if (st.total) displayProgress = (st.extracting || 0) / st.total * 100;
+                else if (st.chunk_count) displayProgress = 100;
+            }
+            if (displayProgress > 100) displayProgress = 100;
+            if (displayProgress < 0) displayProgress = 0;
+
+            const statusClass = getStatusClass(state.status, state.task);
+            const statusLabel = getStatusLabel(state.status, state.task);
+            const progressText = getProgressText(state.task);
+            
+            let indicatorTitle = statusLabel;
+            if (col === 'processing' || col === 'queued') {
+                let details = [];
+                if (state.progress !== undefined) details.push(Math.round(state.progress) + '%');
+                if (progressText) details.push(progressText);
+                if (details.length > 0) indicatorTitle += ' (' + details.join(', ') + ')';
+            }
+
+            const indicator = card.querySelector('.doc-status-indicator');
+            if (indicator) {
+                indicator.className = `doc-status-indicator ${statusClass}`;
+                indicator.title = indicatorTitle;
+            }
+
+            let textEl = card.querySelector('.doc-progress-text');
+            if (progressText) {
+                if (!textEl) {
+                    textEl = document.createElement('div');
+                    textEl.className = 'doc-progress-text';
+                    card.querySelector('.doc-info').appendChild(textEl);
+                }
+                textEl.textContent = progressText;
+            } else if (textEl) {
+                textEl.remove();
+            }
+
+            if (col === 'processing') {
+                let barContainer = card.querySelector('.doc-progress-bar-container');
+                if (!barContainer) {
+                    barContainer = document.createElement('div');
+                    barContainer.className = 'doc-progress-bar-container';
+                    barContainer.innerHTML = '<div class="doc-progress-fill"></div>';
+                    card.querySelector('.doc-card-inner').appendChild(barContainer);
+                }
+                const fill = barContainer.querySelector('.doc-progress-fill');
+                if (fill) fill.style.width = `${displayProgress}%`;
+            } else {
+                const barContainer = card.querySelector('.doc-progress-bar-container');
+                if (barContainer) barContainer.remove();
+            }
+        }
 
         ws.onclose = () => {
             setTimeout(startPolling, 3000);

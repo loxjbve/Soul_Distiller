@@ -921,17 +921,6 @@ class AnalysisEngine:
                         findings = dict(facet_record.findings_json or {})
                         findings["llm_live_text"] = text[:RAW_TEXT_PREVIEW_LIMIT]
                         facet_record.findings_json = findings
-                    repository.add_analysis_event(
-                        session,
-                        run_id,
-                        event_type="llm_delta",
-                        message=f"{facet.label} streaming response.",
-                        payload_json={
-                            "facet_key": facet.key,
-                            "delta": delta[-1200:],
-                            "text": text[:RAW_TEXT_PREVIEW_LIMIT],
-                        },
-                    )
                 return True
             except Exception:
                 import time

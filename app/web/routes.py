@@ -1182,7 +1182,7 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
     project = _ensure_project(session, project_id)
     documents = repository.list_project_documents(session, project_id, limit=document_limit, offset=document_offset)
     doc_counts = repository.count_project_documents(session, project_id)
-    latest_run = repository.get_latest_analysis_run(session, project_id)
+    latest_run = repository.get_latest_analysis_run(session, project_id, load_facets=False, load_events=False)
     latest_draft = repository.get_latest_skill_draft(session, project_id)
     latest_version = repository.get_latest_skill_version(session, project_id)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
@@ -1631,15 +1631,19 @@ async def websocket_document_status(websocket: WebSocket, project_id: str):
     await websocket.accept()
     task_manager = websocket.app.state.ingest_task_manager
     try:
+        from sqlalchemy import select
+        from app.models import DocumentRecord
         while True:
             with websocket.app.state.db.session() as session:
-                documents = repository.list_project_documents(session, project_id)
+                stmt = select(DocumentRecord.id, DocumentRecord.ingest_status).where(DocumentRecord.project_id == project_id)
+                rows = session.execute(stmt).all()
+                
                 payload = []
-                for doc in documents:
-                    task = task_manager.get_by_document(doc.id)
+                for doc_id, ingest_status in rows:
+                    task = task_manager.get_by_document(doc_id)
                     payload.append({
-                        "id": doc.id,
-                        "ingest_status": doc.ingest_status,
+                        "id": doc_id,
+                        "ingest_status": ingest_status,
                         "task": task
                     })
             await websocket.send_json({"documents": payload})
