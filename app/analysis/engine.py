@@ -1135,18 +1135,21 @@ def _analyze_with_llm(
             if callable(flush_remaining):
                 flush_remaining()
             try:
-                parsed = parse_json_response(completion.content, fallback=True)
+                parsed = parse_json_response(completion.content, fallback=False)
+                llm_success = True
             except LLMError as exc:
-                raise LLMError(
-                    str(exc),
-                    raw_text=completion.content[:RAW_TEXT_PREVIEW_LIMIT],
-                    request_url=completion.request_url,
-                    request_payload=completion.request_payload or request_payload,
-                ) from exc
+                parsed = parse_json_response(completion.content, fallback=True)
+                llm_success = False
+                llm_error_text = str(exc)
             normalized = _normalize_facet_payload(parsed, chunks)
+            if not llm_success:
+                normalized["notes"] = (
+                    f"{normalized.get('notes') or ''}\n"
+                    "LLM returned non-JSON text, so the facet was recovered with fallback parsing."
+                ).strip()
             normalized["_meta"] = {
                 "llm_called": True,
-                "llm_success": True,
+                "llm_success": llm_success,
                 "llm_attempts": attempts,
                 "provider_kind": config.provider_kind,
                 "api_mode": normalize_api_mode(config.api_mode),
@@ -1158,6 +1161,7 @@ def _analyze_with_llm(
                 "request_url": completion.request_url,
                 "request_payload": completion.request_payload or request_payload,
                 "raw_text": completion.content[:RAW_TEXT_PREVIEW_LIMIT],
+                "llm_error": None if llm_success else llm_error_text,
                 "log_path": llm_log_path,
             }
             return normalized

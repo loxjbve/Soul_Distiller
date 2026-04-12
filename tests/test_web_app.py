@@ -12,6 +12,7 @@ from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
 from app.main import create_app
 from app.models import TextChunk
+from app.schemas import AssetBundle
 from app.storage import repository
 
 
@@ -231,6 +232,105 @@ def test_analysis_llm_parse_failure_is_logged_and_visible(client, app, monkeypat
     log_text = app.state.config.llm_log_path.read_text(encoding="utf-8")
     assert "https://example.com/v1/responses" in log_text
     assert "this is not valid json" in log_text
+
+
+def test_analysis_api_truncates_large_preview_fields(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Preview Limits"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"progress_percent": 100, "total_facets": 1, "completed_facets": 1, "failed_facets": 0},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.7,
+            findings_json={
+                "label": "Personality",
+                "summary": "S" * 900,
+                "bullets": [],
+                "llm_live_text": "L" * 5000,
+                "llm_response_text": "R" * 4200,
+                "llm_request_payload": {"messages": ["M" * 3000]},
+            },
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="llm_response",
+            message="Large payload",
+            payload_json={"response_text": "E" * 3500, "request_payload": {"body": "Q" * 2000}},
+        )
+        run_id = run.id
+
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+
+    facet = payload["facets"][0]
+    assert facet["findings"]["summary_truncated"] is True
+    assert len(facet["findings"]["summary"]) < 900
+    assert facet["findings"]["llm_live_text_truncated"] is True
+    assert len(facet["findings"]["llm_live_text"]) < 5000
+    assert facet["findings"]["llm_response_text_truncated"] is True
+    assert "llm_request_payload" not in facet["findings"]
+
+    event_payload = payload["events"][0]["payload"]
+    assert event_payload["response_text_truncated"] is True
+    assert "request_payload" not in event_payload
+
+
+def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Asset Stream"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "Tester", "analysis_context": "stream asset status"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={"label": "Personality", "summary": "ready", "bullets": []},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    def fake_build(asset_kind, project, facets, config, **kwargs):
+        progress_callback = kwargs.get("progress_callback")
+        stream_callback = kwargs.get("stream_callback")
+        if callable(progress_callback):
+            progress_callback({"phase": "synthesis", "progress_percent": 52, "message": "LLM 正在生成结构化草稿"})
+        if callable(stream_callback):
+            stream_callback("partial output")
+        return AssetBundle(
+            asset_kind=asset_kind,
+            markdown_text="# Draft",
+            json_payload={"headline": "Preview"},
+            prompt_text="Prompt",
+        )
+
+    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+
+    response = client.post(f"/api/projects/{project_id}/assets/generate/stream", json={"asset_kind": "profile_report"})
+    assert response.status_code == 200
+    assert "event: status" in response.text
+    assert "event: delta" in response.text
+    assert "event: done" in response.text
 
 
 def test_document_delete_removes_record(client, app):

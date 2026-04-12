@@ -39,6 +39,13 @@ ASSET_KIND_OPTIONS = (
 )
 
 
+ANALYSIS_EVENT_LIMIT = 48
+ANALYSIS_SUMMARY_PREVIEW_LIMIT = 420
+ANALYSIS_LIVE_TEXT_PREVIEW_LIMIT = 3200
+ANALYSIS_RESPONSE_TEXT_PREVIEW_LIMIT = 2400
+ANALYSIS_REQUEST_PAYLOAD_PREVIEW_LIMIT = 1600
+
+
 class ProjectCreatePayload(BaseModel):
     name: str
     description: str | None = None
@@ -899,13 +906,33 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
 
 @router.post("/api/projects/{project_id}/assets/generate/stream")
 def generate_asset_stream_api(request: Request, project_id: str, payload: AssetGeneratePayload):
-    from queue import Queue, Empty
+    from queue import Queue
     from threading import Thread
     
     events: Queue[dict[str, Any] | None] = Queue()
+    asset_kind = _normalize_asset_kind(payload.asset_kind)
+
+    def emit_status(
+        phase: str,
+        progress_percent: int,
+        message: str,
+        *,
+        status: str = "running",
+    ) -> None:
+        events.put(
+            {
+                "type": "status",
+                "status": status,
+                "phase": phase,
+                "progress_percent": progress_percent,
+                "message": message,
+                "asset_kind": asset_kind,
+            }
+        )
     
     def worker():
         try:
+            emit_status("prepare", 6, f"开始生成{_asset_label(asset_kind)}草稿")
             with request.app.state.db.session() as session:
                 project = _ensure_project(session, project_id)
                 run = repository.get_latest_analysis_run(session, project_id)
@@ -918,22 +945,38 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     return
                 chat_config = repository.get_service_config(session, "chat_service")
                 summary = run.summary_json or {}
-                
+
+                emit_status("load", 14, "正在读取最新分析结果")
+
                 def stream_callback(chunk: str):
                     events.put({"type": "delta", "chunk": chunk})
+
+                def progress_callback(progress: dict[str, Any]):
+                    events.put(
+                        {
+                            "type": "status",
+                            "status": "running",
+                            "phase": progress.get("phase", "running"),
+                            "progress_percent": int(progress.get("progress_percent", 0) or 0),
+                            "message": str(progress.get("message", "") or ""),
+                            "asset_kind": asset_kind,
+                        }
+                    )
                 
                 bundle = request.app.state.asset_synthesizer.build(
-                    _normalize_asset_kind(payload.asset_kind),
+                    asset_kind,
                     project,
                     facets,
                     chat_config,
                     target_role=summary.get("target_role"),
                     analysis_context=summary.get("analysis_context"),
                     stream_callback=stream_callback,
+                    progress_callback=progress_callback,
                     session=session,
                     retrieval_service=request.app.state.retrieval,
                 )
-                
+
+                emit_status("persist", 94, "正在保存草稿和导出文件")
                 draft = repository.create_asset_draft(
                     session,
                     project_id=project_id,
@@ -953,7 +996,17 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     draft.json_payload,
                     draft.system_prompt,
                 )
-                events.put({"type": "done", "draft_id": draft.id})
+                events.put(
+                    {
+                        "type": "done",
+                        "status": "completed",
+                        "phase": "done",
+                        "progress_percent": 100,
+                        "message": "草稿生成完成，正在跳转。",
+                        "draft_id": draft.id,
+                        "asset_kind": asset_kind,
+                    }
+                )
         except Exception as e:
             events.put({"type": "error", "message": str(e)})
         finally:
@@ -1498,37 +1551,119 @@ def _serialize_document(document: DocumentRecord) -> dict[str, Any]:
     }
 
 
+def _truncate_preview(
+    value: Any,
+    limit: int,
+    *,
+    mode: str = "head",
+) -> tuple[str, bool]:
+    text = "" if value is None else str(value)
+    if limit <= 0 or len(text) <= limit:
+        return text, False
+
+    marker = "\n...\n" if "\n" in text else " ... "
+    if len(marker) >= limit:
+        return text[:limit], True
+
+    if mode == "tail":
+        keep = max(1, limit - len(marker))
+        return f"{marker}{text[-keep:]}", True
+    if mode == "middle":
+        head_keep = max(1, (limit - len(marker)) // 2)
+        tail_keep = max(1, limit - len(marker) - head_keep)
+        return f"{text[:head_keep]}{marker}{text[-tail_keep:]}", True
+
+    keep = max(1, limit - len(marker))
+    return f"{text[:keep]}{marker}", True
+
+
+def _serialize_analysis_event(event) -> dict[str, Any]:
+    payload = dict(event.payload_json or {})
+
+    if payload.get("response_text"):
+        preview, truncated = _truncate_preview(
+            payload.get("response_text"),
+            ANALYSIS_RESPONSE_TEXT_PREVIEW_LIMIT,
+            mode="middle",
+        )
+        payload["response_text"] = preview
+        payload["response_text_truncated"] = truncated
+
+    if payload.get("request_payload") is not None:
+        preview, truncated = _truncate_preview(
+            json.dumps(payload.get("request_payload"), ensure_ascii=False, indent=2),
+            ANALYSIS_REQUEST_PAYLOAD_PREVIEW_LIMIT,
+            mode="middle",
+        )
+        payload.pop("request_payload", None)
+        payload["request_payload_preview"] = preview
+        payload["request_payload_truncated"] = truncated
+
+    return {
+        "id": event.id,
+        "event_type": event.event_type,
+        "level": event.level,
+        "message": event.message,
+        "payload": payload,
+        "created_at": event.created_at.isoformat(),
+    }
+
+
+def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
+    findings = dict(facet.findings_json or {})
+    summary_preview, summary_truncated = _truncate_preview(
+        findings.get("summary"),
+        ANALYSIS_SUMMARY_PREVIEW_LIMIT,
+        mode="head",
+    )
+    live_text_preview, live_text_truncated = _truncate_preview(
+        findings.get("llm_live_text"),
+        ANALYSIS_LIVE_TEXT_PREVIEW_LIMIT,
+        mode="tail",
+    )
+    response_preview, response_truncated = _truncate_preview(
+        findings.get("llm_response_text"),
+        ANALYSIS_RESPONSE_TEXT_PREVIEW_LIMIT,
+        mode="middle",
+    )
+    findings["summary"] = summary_preview
+    findings["summary_truncated"] = summary_truncated
+    findings["llm_live_text"] = live_text_preview
+    findings["llm_live_text_truncated"] = live_text_truncated
+    findings["llm_response_text"] = response_preview
+    findings["llm_response_text_truncated"] = response_truncated
+    if findings.get("llm_request_payload") is not None:
+        preview, truncated = _truncate_preview(
+            json.dumps(findings.get("llm_request_payload"), ensure_ascii=False, indent=2),
+            ANALYSIS_REQUEST_PAYLOAD_PREVIEW_LIMIT,
+            mode="middle",
+        )
+        findings.pop("llm_request_payload", None)
+        findings["llm_request_payload_preview"] = preview
+        findings["llm_request_payload_truncated"] = truncated
+
+    return {
+        "facet_key": facet.facet_key,
+        "status": facet.status,
+        "accepted": bool(facet.accepted),
+        "confidence": facet.confidence,
+        "findings": findings,
+        "evidence": facet.evidence_json or [],
+        "conflicts": facet.conflicts_json or [],
+        "error_message": facet.error_message,
+    }
+
+
 def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
+    ordered_events = sorted(run.events, key=lambda item: item.created_at, reverse=True)[:ANALYSIS_EVENT_LIMIT]
     return {
         "id": run.id,
         "status": run.status,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "summary": run.summary_json or {},
-        "events": [
-            {
-                "id": event.id,
-                "event_type": event.event_type,
-                "level": event.level,
-                "message": event.message,
-                "payload": event.payload_json or {},
-                "created_at": event.created_at.isoformat(),
-            }
-            for event in sorted(run.events, key=lambda item: item.created_at, reverse=True)
-        ],
-        "facets": [
-            {
-                "facet_key": facet.facet_key,
-                "status": facet.status,
-                "accepted": bool(facet.accepted),
-                "confidence": facet.confidence,
-                "findings": facet.findings_json or {},
-                "evidence": facet.evidence_json or [],
-                "conflicts": facet.conflicts_json or [],
-                "error_message": facet.error_message,
-            }
-            for facet in _ordered_facets(run.facets)
-        ],
+        "events": [_serialize_analysis_event(event) for event in ordered_events],
+        "facets": [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)],
     }
 
 

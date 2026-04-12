@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
     setupDropUploads();
     setupAnalysisMonitor();
+    setupAssetGenerator();
 });
 
 function setupDropUploads() {
@@ -62,6 +63,12 @@ function setupDropUploads() {
 
 const analysisUiState = {
     detailOpen: new Map(),
+    renderCache: {
+        runId: null,
+        statusSignature: "",
+        eventSignature: "",
+        facetSignatures: new Map(),
+    },
 };
 
 function setupAnalysisMonitor() {
@@ -84,16 +91,34 @@ function setupAnalysisMonitor() {
         payload = null;
     }
 
+    let latestPayload = payload;
+    let renderQueued = false;
+    let pollId = null;
+
+    const scheduleRender = (nextPayload) => {
+        latestPayload = nextPayload;
+        if (renderQueued || !latestPayload) {
+            return;
+        }
+        renderQueued = true;
+        window.requestAnimationFrame(() => {
+            renderQueued = false;
+            renderAnalysis(latestPayload, projectId);
+        });
+    };
+
     if (payload) {
-        renderAnalysis(payload, projectId);
+        scheduleRender(payload);
     }
 
     const stream = new EventSource(`/api/projects/${projectId}/analysis/stream?run_id=${encodeURIComponent(runId)}`);
-    let pollId = null;
 
     stream.addEventListener("snapshot", (event) => {
-        const nextPayload = JSON.parse(event.data);
-        renderAnalysis(nextPayload, projectId);
+        const nextPayload = safeParseJson(event.data);
+        if (!nextPayload) {
+            return;
+        }
+        scheduleRender(nextPayload);
         if (!["queued", "running"].includes(nextPayload.status)) {
             stream.close();
             stopPolling();
@@ -110,14 +135,18 @@ function setupAnalysisMonitor() {
             return;
         }
         pollId = window.setInterval(async () => {
-            const response = await fetch(`/api/projects/${projectId}/analysis?run_id=${encodeURIComponent(runId)}`);
-            if (!response.ok) {
-                return;
-            }
-            const nextPayload = await response.json();
-            renderAnalysis(nextPayload, projectId);
-            if (!["queued", "running"].includes(nextPayload.status)) {
-                stopPolling();
+            try {
+                const response = await fetch(`/api/projects/${projectId}/analysis?run_id=${encodeURIComponent(runId)}`);
+                if (!response.ok) {
+                    return;
+                }
+                const nextPayload = await response.json();
+                scheduleRender(nextPayload);
+                if (!["queued", "running"].includes(nextPayload.status)) {
+                    stopPolling();
+                }
+            } catch {
+                // Ignore transient polling failures.
             }
         }, 1500);
     };
@@ -132,46 +161,137 @@ function setupAnalysisMonitor() {
 
 function renderAnalysis(payload, projectId) {
     captureDetailStates();
+    resetAnalysisRenderCacheIfNeeded(payload.id);
 
-    updateText("analysis-run-title", `Analysis Run ${payload.id.slice(0, 8)}`);
-    updateText("analysis-status-chip", payload.status);
-    updateText("analysis-role-chip", payload.summary?.target_role || "Not set");
-    updateText("analysis-stage", payload.summary?.current_stage || "Queued");
-    updateText("analysis-percent", `${payload.summary?.progress_percent || 0}%`);
-    updateText("metric-completed", payload.summary?.completed_facets || 0);
-    updateText("metric-failed", payload.summary?.failed_facets || 0);
-    updateText("metric-llm-success", payload.summary?.llm_successes || 0);
-    updateText("metric-llm-failure", payload.summary?.llm_failures || 0);
-    updateText("metric-input-tokens", payload.summary?.prompt_tokens || 0);
-    updateText("metric-output-tokens", payload.summary?.completion_tokens || 0);
-    updateText("metric-total-tokens", payload.summary?.total_tokens || 0);
-    updateText("metric-current-facet", payload.summary?.current_facet || "-");
+    const summary = payload.summary || {};
+    const facets = payload.facets || [];
+    const events = payload.events || [];
+    const totalFacets = Number(summary.total_facets || facets.length || 0);
+    const completedFacets = Number(summary.completed_facets || 0);
+    const failedFacets = Number(summary.failed_facets || 0);
+    const runningCount = facets.filter((facet) => (facet.status || "") === "running").length;
+    const latestEvent = events[0] || null;
+    const percent = clampPercent(summary.progress_percent || 0);
+
+    updateText("analysis-run-title", `分析运行 ${payload.id.slice(0, 8)}`);
+    updateText("analysis-role-chip", summary.target_role || "未指定角色");
+    updateText("analysis-stage", summary.current_stage || "排队中");
+    updateText("analysis-percent", `${percent}%`);
+    updateText("analysis-progress-caption", `${completedFacets + failedFacets} / ${totalFacets} 维`);
+    updateText(
+        "analysis-active-message",
+        runningCount
+            ? `${summary.current_facet || "当前维度"} 正在生成中`
+            : (summary.current_stage || "等待任务开始")
+    );
+    updateText("analysis-progress-detail", buildAnalysisDetail(summary, facets, events));
+    updateText(
+        "analysis-latest-event",
+        latestEvent ? trimText(`${latestEvent.event_type} · ${latestEvent.message || "状态更新"}`, 80) : "暂无事件"
+    );
+    updateText("analysis-running-count", runningCount || 0);
+    updateText("analysis-last-updated", formatTime(payload.finished_at || latestEvent?.created_at || payload.started_at));
+    updateText("metric-completed", completedFacets);
+    updateText("metric-failed", failedFacets);
+    updateText("metric-llm-success", summary.llm_successes || 0);
+    updateText("metric-llm-failure", summary.llm_failures || 0);
+    updateText("metric-input-tokens", summary.prompt_tokens || 0);
+    updateText("metric-output-tokens", summary.completion_tokens || 0);
+    updateText("metric-total-tokens", summary.total_tokens || 0);
+    updateText("metric-current-facet", summary.current_facet || "-");
 
     const progressFill = document.getElementById("analysis-progress-fill");
     if (progressFill) {
-        progressFill.style.width = `${payload.summary?.progress_percent || 0}%`;
+        progressFill.style.width = `${percent}%`;
     }
 
-    const facetStatusList = document.getElementById("facet-status-list");
-    if (facetStatusList) {
-        facetStatusList.innerHTML = payload.facets.map((facet) => renderFacetStatusCard(facet, payload.status)).join("");
-    }
-
-    const eventList = document.getElementById("analysis-events");
-    if (eventList) {
-        eventList.innerHTML = payload.events.length
-            ? payload.events.map(renderEventItem).join("")
-            : `<details class="event-item" open><summary class="event-item-summary"><strong>No Events Yet</strong></summary><div class="event-item-body"><p>Run logs will appear here when analysis starts.</p></div></details>`;
-    }
-
-    const resultList = document.getElementById("analysis-result-list");
-    if (resultList) {
-        resultList.innerHTML = payload.facets.map((facet) => renderFacetResult(facet, payload.status)).join("");
-    }
+    setStatusToken("analysis-status-chip", payload.status, payload.status);
+    renderFacetStatusList(facets, payload.status);
+    renderEventList(events);
+    renderFacetResultList(facets, payload.status);
 
     bindFacetRerunActions(projectId);
     bindDetailToggleState();
     scrollLiveTextToBottom();
+}
+
+function renderFacetStatusList(facets, runStatus) {
+    const facetStatusList = document.getElementById("facet-status-list");
+    if (!facetStatusList) {
+        return;
+    }
+
+    const signature = facets
+        .map((facet) => {
+            const findings = facet.findings || {};
+            return [
+                facet.facet_key,
+                facet.status,
+                findings.summary || "",
+                findings.total_tokens || 0,
+                findings.llm_success,
+                runStatus,
+            ].join("|");
+        })
+        .join("::");
+
+    if (analysisUiState.renderCache.statusSignature === signature) {
+        return;
+    }
+    analysisUiState.renderCache.statusSignature = signature;
+    facetStatusList.innerHTML = facets.map((facet) => renderFacetStatusCard(facet, runStatus)).join("");
+}
+
+function renderEventList(events) {
+    const eventList = document.getElementById("analysis-events");
+    if (!eventList) {
+        return;
+    }
+
+    const signature = events.map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
+    if (analysisUiState.renderCache.eventSignature === signature) {
+        return;
+    }
+    analysisUiState.renderCache.eventSignature = signature;
+
+    eventList.innerHTML = events.length
+        ? events.map(renderEventItem).join("")
+        : `<details class="event-item" open><summary class="event-item-summary"><strong>暂无事件</strong></summary><div class="event-item-body"><p>分析开始后，这里会持续写入运行日志。</p></div></details>`;
+}
+
+function renderFacetResultList(facets, runStatus) {
+    const resultList = document.getElementById("analysis-result-list");
+    if (!resultList) {
+        return;
+    }
+
+    const existingChildren = Array.from(resultList.children);
+    const needsFullRender =
+        existingChildren.length !== facets.length ||
+        existingChildren.some((node, index) => node.getAttribute("data-facet-key") !== (facets[index]?.facet_key || ""));
+
+    if (needsFullRender) {
+        resultList.innerHTML = facets.map((facet) => renderFacetResult(facet, runStatus)).join("");
+        analysisUiState.renderCache.facetSignatures.clear();
+        facets.forEach((facet) => {
+            analysisUiState.renderCache.facetSignatures.set(
+                facet.facet_key,
+                buildFacetRenderSignature(facet, runStatus)
+            );
+        });
+        return;
+    }
+
+    facets.forEach((facet, index) => {
+        const signature = buildFacetRenderSignature(facet, runStatus);
+        const previousSignature = analysisUiState.renderCache.facetSignatures.get(facet.facet_key);
+        if (previousSignature === signature) {
+            return;
+        }
+        const nextNode = createNodeFromHtml(renderFacetResult(facet, runStatus));
+        existingChildren[index].replaceWith(nextNode);
+        analysisUiState.renderCache.facetSignatures.set(facet.facet_key, signature);
+    });
 }
 
 function bindFacetRerunActions(projectId) {
@@ -190,7 +310,6 @@ function bindFacetRerunActions(projectId) {
                     const errorPayload = await response.json().catch(() => ({}));
                     throw new Error(errorPayload.detail || "Rerun failed");
                 }
-                // Reload page to start streaming the rerun
                 window.location.reload();
             } catch (error) {
                 window.alert(error instanceof Error ? error.message : "Rerun failed");
@@ -205,20 +324,23 @@ function renderFacetStatusCard(facet, runStatus) {
     const promptTokens = Number(findings.prompt_tokens || 0);
     const completionTokens = Number(findings.completion_tokens || 0);
     const totalTokens = Number(findings.total_tokens || 0);
+    const hitCount = Number(findings.hit_count || 0);
     const llmLine = findings.llm_called
-        ? `LLM ${findings.llm_success ? "ok" : "failed"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
-        : "LLM not used";
+        ? `LLM ${findings.llm_success ? "成功" : "降级"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
+        : "尚未调用 LLM";
     const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
+    const preview = trimText(findings.summary || "等待结果返回…", 110);
+
     return `
-        <article class="facet-status-card status-${escapeHtml(facet.status || "pending")}">
+        <article class="facet-status-card status-${escapeHtml(normalizeStatus(facet.status || "pending"))}">
             <div class="facet-status-head">
                 <strong>${escapeHtml(findings.label || facet.facet_key)}</strong>
                 <span class="status-pill">${escapeHtml(facet.status || "pending")}</span>
             </div>
-            <p>${escapeHtml(findings.summary || "Waiting for result...")}</p>
-            <small>${escapeHtml(llmLine)}</small>
+            <p>${escapeHtml(preview)}</p>
+            <small>${escapeHtml(`${llmLine} · 命中 ${hitCount} 条证据`)}</small>
             <div class="inline-actions top-gap">
-                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>Rerun</button>
+                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>重新跑这一维</button>
             </div>
         </article>
     `;
@@ -228,10 +350,12 @@ function renderEventItem(event) {
     const payload = event.payload || {};
     const level = (event.level || "info").toLowerCase();
     let payloadHtml = "";
-    if (event.event_type === "llm_delta") {
-        payloadHtml = `<pre class="trace-box">${escapeHtml(payload.text || payload.delta || "")}</pre>`;
-    } else if (event.event_type === "llm_response" && payload.response_text) {
+
+    if (event.event_type === "llm_response" && payload.response_text) {
         payloadHtml = `<pre class="trace-box">${escapeHtml(payload.response_text)}</pre>`;
+        if (payload.response_text_truncated) {
+            payloadHtml += `<p class="muted">响应文本过长，当前只展示预览；更完整内容可在对应维度的实时输出里继续查看。</p>`;
+        }
     } else if (event.event_type === "retrieval") {
         const trace = payload.retrieval_trace || {};
         const summary = [
@@ -270,7 +394,7 @@ function renderEventItem(event) {
                 <span class="event-time">${formatTime(event.created_at)}</span>
             </summary>
             <div class="event-item-body">
-                ${payloadHtml || `<p class="muted">No payload.</p>`}
+                ${payloadHtml || `<p class="muted">没有附带 payload。</p>`}
             </div>
         </details>
     `;
@@ -282,6 +406,7 @@ function renderFacetResult(facet, runStatus) {
     const rerunDisabled = ["queued", "running"].includes(runStatus) ? "disabled" : "";
     const facetOpenDefault = ["running", "failed"].includes(facet.status || "");
     const hasError = Boolean(facet.error_message || findings.llm_error);
+    const summaryText = findings.summary || "等待分析输出…";
 
     const bullets = (findings.bullets || [])
         .map((item) => `<li>${escapeHtml(item)}</li>`)
@@ -309,7 +434,7 @@ function renderFacetResult(facet, runStatus) {
         .join("");
 
     const notesBody = `
-        ${conflicts || `<p class="muted">No conflicts recorded.</p>`}
+        ${conflicts || `<p class="muted">没有记录到冲突项。</p>`}
         ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
         ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
     `;
@@ -318,40 +443,47 @@ function renderFacetResult(facet, runStatus) {
         ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
     `;
     const liveTextBody = findings.llm_live_text
-        ? `<pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>`
-        : `<p class="muted">No live text yet.</p>`;
+        ? `
+            ${findings.llm_live_text_truncated ? `<p class="muted">流式文本过长，当前展示最近一段预览。</p>` : ""}
+            <pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>
+        `
+        : `<p class="muted">还没有实时文本。</p>`;
 
-    // LLM Live Text should default open if the facet is running
-    const isRunning = (facet.status || "") === "running";
-    // We want LLM Live Text to be opened by default ALWAYS, not just when running, 
-    // to give user a better observation of the streaming
-    const defaultOpenLive = true;
-    
     return `
-        <details class="facet-panel facet-panel-details status-${escapeHtml(facet.status || "pending")}" data-detail-key="facet:${escapeHtml(facetKey)}" ${detailOpenAttr(`facet:${facetKey}`, facetOpenDefault)}>
+        <details
+            class="facet-panel facet-panel-details status-${escapeHtml(normalizeStatus(facet.status || "pending"))}"
+            data-detail-key="facet:${escapeHtml(facetKey)}"
+            data-facet-key="${escapeHtml(facetKey)}"
+            ${detailOpenAttr(`facet:${facetKey}`, facetOpenDefault)}
+        >
             <summary class="facet-panel-summary">
-                <div>
+                <div class="facet-panel-copy">
                     <p class="eyebrow">${escapeHtml(facetKey)}</p>
                     <h2>${escapeHtml(findings.label || facetKey)}</h2>
-                    <p class="facet-summary">${escapeHtml(findings.summary || "Waiting for analysis output...")}</p>
+                    <p class="facet-summary">${escapeHtml(summaryText)}</p>
+                    ${
+                        findings.summary_truncated
+                            ? `<p class="summary-clamp-note">顶部摘要已自动截断，展开卡片可继续查看流式文本与细节。</p>`
+                            : ""
+                    }
                 </div>
                 <div class="facet-meta">
                     <span>Status ${escapeHtml(facet.status || "pending")}</span>
-                    <span>Confidence ${(facet.confidence || 0).toFixed(2)}</span>
+                    <span>Confidence ${Number(facet.confidence || 0).toFixed(2)}</span>
                     <span>${facet.accepted ? "Accepted" : "Pending"}</span>
                 </div>
             </summary>
             <div class="facet-panel-body">
                 <div class="inline-actions">
-                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>Rerun This Facet</button>
+                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>重新运行这一维</button>
                 </div>
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
-                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">No evidence captured yet.</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">还没有证据。</p>`, false)}
                 ${renderSubDetails(`facet:${facetKey}:notes`, "Notes", notesBody, hasError)}
                 ${(findings.llm_request_url || findings.llm_error)
                     ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
                     : ""}
-                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, defaultOpenLive)}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, true)}
             </div>
         </details>
     `;
@@ -407,6 +539,361 @@ function scrollLiveTextToBottom() {
     });
 }
 
+function resetAnalysisRenderCacheIfNeeded(runId) {
+    if (analysisUiState.renderCache.runId === runId) {
+        return;
+    }
+    analysisUiState.renderCache.runId = runId;
+    analysisUiState.renderCache.statusSignature = "";
+    analysisUiState.renderCache.eventSignature = "";
+    analysisUiState.renderCache.facetSignatures.clear();
+}
+
+function buildFacetRenderSignature(facet, runStatus) {
+    return JSON.stringify({
+        runStatus,
+        facetKey: facet.facet_key || "",
+        status: facet.status || "",
+        accepted: Boolean(facet.accepted),
+        confidence: Number(facet.confidence || 0).toFixed(2),
+        errorMessage: facet.error_message || "",
+        findings: facet.findings || {},
+        evidence: facet.evidence || [],
+        conflicts: facet.conflicts || [],
+    });
+}
+
+function buildAnalysisDetail(summary, facets, events) {
+    const totalFacets = Number(summary.total_facets || facets.length || 0);
+    const completedFacets = Number(summary.completed_facets || 0);
+    const failedFacets = Number(summary.failed_facets || 0);
+    const latestEvent = events[0];
+    const latestHint = latestEvent ? `最近事件：${latestEvent.message || latestEvent.event_type}` : "事件流会在分析开始后出现。";
+    return `${summary.current_stage || "排队中"} · 已完成 ${completedFacets}/${totalFacets}，失败 ${failedFacets}。${latestHint}`;
+}
+
+function setupAssetGenerator() {
+    const root = document.querySelector("[data-asset-generator]");
+    if (!root) {
+        return;
+    }
+
+    const form = root.querySelector("[data-generate-form]");
+    const button = document.getElementById("generate-btn");
+    const shell = document.getElementById("asset-generation-shell");
+    const output = document.getElementById("generation-output");
+    const projectId = root.dataset.projectId;
+    const assetKind = root.dataset.assetKind;
+    const assetLabel = root.dataset.assetLabel || assetKind || "asset";
+    if (!form || !button || !shell || !output || !projectId || !assetKind) {
+        return;
+    }
+
+    const state = {
+        active: false,
+        status: "idle",
+        phase: "idle",
+        stage: "等待开始",
+        message: "点击开始生成。",
+        percent: 0,
+        chunkCount: 0,
+        charCount: 0,
+        outputBuffer: "",
+        renderQueued: false,
+        redirectTimer: null,
+    };
+
+    const scheduleRender = () => {
+        if (state.renderQueued) {
+            return;
+        }
+        state.renderQueued = true;
+        window.requestAnimationFrame(() => {
+            state.renderQueued = false;
+            renderAssetGenerationState(state, assetLabel, output);
+        });
+    };
+
+    const resetState = () => {
+        state.active = true;
+        state.status = "running";
+        state.phase = "prepare";
+        state.stage = `开始生成 ${assetLabel}`;
+        state.message = "正在建立流式连接。";
+        state.percent = 2;
+        state.chunkCount = 0;
+        state.charCount = 0;
+        state.outputBuffer = "";
+        if (state.redirectTimer) {
+            clearTimeout(state.redirectTimer);
+            state.redirectTimer = null;
+        }
+        output.textContent = "";
+    };
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (state.active) {
+            return;
+        }
+
+        resetState();
+        shell.hidden = false;
+        button.disabled = true;
+        scheduleRender();
+
+        try {
+            const response = await fetch(`/api/projects/${projectId}/assets/generate/stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ asset_kind: assetKind }),
+            });
+
+            if (!response.ok || !response.body) {
+                throw new Error(`Failed to start ${assetLabel} generation.`);
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let done = false;
+            let buffer = "";
+
+            while (!done) {
+                const { value, done: readerDone } = await reader.read();
+                done = readerDone;
+                if (!value) {
+                    continue;
+                }
+                buffer += decoder.decode(value, { stream: !done });
+                const blocks = buffer.split("\n\n");
+                buffer = blocks.pop() || "";
+
+                blocks.forEach((block) => {
+                    const parsed = parseSseBlock(block);
+                    if (!parsed) {
+                        return;
+                    }
+                    handleAssetStreamEvent(parsed.eventType, parsed.data);
+                });
+            }
+        } catch (error) {
+            state.active = false;
+            state.status = "failed";
+            state.phase = "failed";
+            state.stage = "生成失败";
+            state.message = error instanceof Error ? error.message : `无法启动 ${assetLabel} 生成`;
+            button.disabled = false;
+            state.outputBuffer += `\n\n[error] ${state.message}`;
+            scheduleRender();
+        }
+    });
+
+    function handleAssetStreamEvent(eventType, data) {
+        if (eventType === "status") {
+            state.active = true;
+            state.status = data.status || "running";
+            state.phase = data.phase || state.phase;
+            state.stage = data.message || phaseLabelFromState(data.phase) || state.stage;
+            state.message = data.message || state.message;
+            if (typeof data.progress_percent === "number") {
+                state.percent = Math.max(state.percent, clampPercent(data.progress_percent));
+            }
+        } else if (eventType === "delta") {
+            const chunk = String(data.chunk || "");
+            if (!chunk) {
+                return;
+            }
+            state.active = true;
+            state.status = "running";
+            state.phase = "streaming";
+            state.stage = "正在接收模型输出";
+            state.message = "模型正在持续返回内容。";
+            state.chunkCount += 1;
+            state.charCount += chunk.length;
+            state.outputBuffer += chunk;
+            state.percent = Math.max(state.percent, 56);
+            if (state.chunkCount % 4 === 0) {
+                state.percent = Math.min(88, state.percent + 1);
+            }
+        } else if (eventType === "done") {
+            state.active = false;
+            state.status = "completed";
+            state.phase = "done";
+            state.stage = data.message || "草稿生成完成";
+            state.message = "草稿已生成完成，正在跳转到编辑页。";
+            state.percent = 100;
+            button.disabled = false;
+            if (data.draft_id) {
+                state.redirectTimer = window.setTimeout(() => {
+                    window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}&draft=${encodeURIComponent(data.draft_id)}`;
+                }, 900);
+            }
+        } else if (eventType === "error") {
+            state.active = false;
+            state.status = "failed";
+            state.phase = "failed";
+            state.stage = "生成失败";
+            state.message = data.message || `无法生成 ${assetLabel}`;
+            state.outputBuffer += `\n\n[error] ${state.message}`;
+            button.disabled = false;
+        }
+
+        scheduleRender();
+    }
+}
+
+function renderAssetGenerationState(state, assetLabel, output) {
+    updateText("asset-current-stage", state.stage);
+    updateText("asset-current-percent", `${state.percent}%`);
+    updateText("asset-progress-percent", `${state.percent}%`);
+    updateText("asset-generation-state", assetStatusLabel(state.status));
+    updateText("asset-generation-message", state.message);
+    updateText("asset-chunk-count", state.chunkCount);
+    updateText("asset-char-count", state.charCount);
+    updateText(
+        "asset-generation-hint",
+        state.status === "completed"
+            ? `${assetLabel} 草稿已经生成完成。`
+            : state.status === "failed"
+                ? state.message
+                : `${assetLabel} 正在生成中，实时输出会持续追加。`
+    );
+    updateText("asset-output-status", assetOutputStatus(state.status));
+    setStatusToken("asset-stage-chip", assetStatusLabel(state.status), state.status);
+
+    const progressFill = document.getElementById("asset-progress-fill");
+    if (progressFill) {
+        progressFill.style.width = `${state.percent}%`;
+    }
+
+    if (state.outputBuffer) {
+        const shouldStick = shouldAutoScroll(output);
+        output.textContent += state.outputBuffer;
+        state.outputBuffer = "";
+        if (shouldStick) {
+            output.scrollTop = output.scrollHeight;
+        }
+    }
+}
+
+function parseSseBlock(block) {
+    const lines = String(block || "")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean);
+    if (!lines.length) {
+        return null;
+    }
+
+    const eventLine = lines.find((line) => line.startsWith("event:"));
+    const dataLines = lines.filter((line) => line.startsWith("data:"));
+    if (!eventLine || !dataLines.length) {
+        return null;
+    }
+
+    const eventType = eventLine.replace("event:", "").trim();
+    const rawData = dataLines.map((line) => line.replace("data:", "").trim()).join("\n");
+    return {
+        eventType,
+        data: safeParseJson(rawData) || {},
+    };
+}
+
+function createNodeFromHtml(html) {
+    const template = document.createElement("template");
+    template.innerHTML = html.trim();
+    return template.content.firstElementChild;
+}
+
+function setStatusToken(id, text, status) {
+    const node = document.getElementById(id);
+    if (!node) {
+        return;
+    }
+    node.textContent = String(text);
+    ["status-pending", "status-queued", "status-running", "status-completed", "status-failed", "status-partial_failed"]
+        .forEach((className) => node.classList.remove(className));
+    node.classList.add(`status-${normalizeStatus(status || "pending")}`);
+}
+
+function normalizeStatus(status) {
+    const normalized = String(status || "pending").toLowerCase().replaceAll(" ", "_");
+    return normalized === "partial_failed" ? "failed" : normalized;
+}
+
+function assetStatusLabel(status) {
+    switch (normalizeStatus(status)) {
+        case "running":
+            return "生成中";
+        case "completed":
+            return "已完成";
+        case "failed":
+            return "失败";
+        case "queued":
+            return "排队中";
+        default:
+            return "待命";
+    }
+}
+
+function assetOutputStatus(status) {
+    switch (normalizeStatus(status)) {
+        case "running":
+            return "流式输出中";
+        case "completed":
+            return "输出完成";
+        case "failed":
+            return "输出中断";
+        default:
+            return "等待数据";
+    }
+}
+
+function phaseLabelFromState(phase) {
+    switch (String(phase || "")) {
+        case "prepare":
+            return "准备生成";
+        case "load":
+            return "读取分析结果";
+        case "personality_context":
+            return "补充人格证据";
+        case "memory_context":
+            return "补充经历证据";
+        case "synthesis":
+            return "生成结构化草稿";
+        case "normalize":
+            return "规范化字段";
+        case "render":
+            return "整理结构";
+        case "bundle":
+            return "渲染 Markdown 与 Prompt";
+        case "persist":
+            return "保存草稿";
+        case "done":
+            return "生成完成";
+        default:
+            return "";
+    }
+}
+
+function shouldAutoScroll(node) {
+    const remaining = node.scrollHeight - node.scrollTop - node.clientHeight;
+    return remaining < 48;
+}
+
+function clampPercent(value) {
+    const number = Number(value || 0);
+    return Math.max(0, Math.min(100, Math.round(number)));
+}
+
+function trimText(value, limit) {
+    const text = String(value || "");
+    if (text.length <= limit) {
+        return text;
+    }
+    return `${text.slice(0, Math.max(0, limit - 1))}…`;
+}
+
 function updateText(id, value) {
     const node = document.getElementById(id);
     if (node) {
@@ -415,6 +902,9 @@ function updateText(id, value) {
 }
 
 function formatTime(value) {
+    if (!value) {
+        return "--";
+    }
     try {
         return new Intl.DateTimeFormat("zh-CN", {
             month: "2-digit",
@@ -425,6 +915,14 @@ function formatTime(value) {
         }).format(new Date(value));
     } catch {
         return value;
+    }
+}
+
+function safeParseJson(value) {
+    try {
+        return JSON.parse(value || "null");
+    } catch {
+        return null;
     }
 }
 

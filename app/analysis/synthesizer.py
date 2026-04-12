@@ -22,10 +22,17 @@ class AssetSynthesizer:
         target_role: str | None = None,
         analysis_context: str | None = None,
         stream_callback: Any | None = None,
+        progress_callback: Any | None = None,
         session: Any | None = None,
         retrieval_service: Any | None = None,
     ) -> AssetBundle:
         normalized_kind = asset_kind if asset_kind in ASSET_KINDS else "skill"
+        self._emit_progress(
+            progress_callback,
+            phase="prepare",
+            progress_percent=12,
+            message="正在读取多维分析结果",
+        )
         structured = (
             self._with_llm(
                 normalized_kind,
@@ -35,6 +42,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 stream_callback=stream_callback,
+                progress_callback=progress_callback,
                 session=session,
                 retrieval_service=retrieval_service,
             )
@@ -47,12 +55,31 @@ class AssetSynthesizer:
                 analysis_context=analysis_context,
             )
         )
+        if not config:
+            self._emit_progress(
+                progress_callback,
+                phase="heuristic",
+                progress_percent=72,
+                message="未配置 LLM，已使用本地规则合成草稿",
+            )
+        self._emit_progress(
+            progress_callback,
+            phase="render",
+            progress_percent=86,
+            message="正在整理结构化字段",
+        )
         if normalized_kind == "skill":
             markdown = self._render_skill_markdown(project.name, structured)
             prompt_text = self._render_skill_prompt(project.name, structured)
         else:
             markdown = self._render_profile_report_markdown(project.name, structured)
             prompt_text = self._render_profile_report_prompt(project.name, structured)
+        self._emit_progress(
+            progress_callback,
+            phase="bundle",
+            progress_percent=92,
+            message="正在生成 Markdown 和 Prompt",
+        )
         return AssetBundle(
             asset_kind=normalized_kind,
             markdown_text=markdown,
@@ -70,6 +97,7 @@ class AssetSynthesizer:
         target_role: str | None,
         analysis_context: str | None,
         stream_callback: Any | None = None,
+        progress_callback: Any | None = None,
         session: Any | None = None,
         retrieval_service: Any | None = None,
     ) -> dict[str, Any]:
@@ -96,6 +124,12 @@ class AssetSynthesizer:
             embedding_config = repository.get_service_config(session, "embedding_service")
             
             try:
+                self._emit_progress(
+                    progress_callback,
+                    phase="personality_context",
+                    progress_percent=24,
+                    message="正在补充人格证据",
+                )
                 p_chunks, _, _ = retrieval_service.search(
                     session,
                     project_id=project.id,
@@ -113,6 +147,12 @@ class AssetSynthesizer:
                 pass
 
             try:
+                self._emit_progress(
+                    progress_callback,
+                    phase="memory_context",
+                    progress_percent=36,
+                    message="正在补充经历与记忆证据",
+                )
                 m_chunks, _, _ = retrieval_service.search(
                     session,
                     project_id=project.id,
@@ -137,6 +177,12 @@ class AssetSynthesizer:
             analysis_context=analysis_context,
         )
         try:
+            self._emit_progress(
+                progress_callback,
+                phase="synthesis",
+                progress_percent=52,
+                message="LLM 正在生成结构化草稿",
+            )
             response = client.chat_completion_result(
                 messages, model=config.model, temperature=0.2, stream_handler=stream_callback
             )
@@ -144,7 +190,13 @@ class AssetSynthesizer:
             flush_remaining = getattr(stream_callback, "_flush_remaining", None)
             if callable(flush_remaining):
                 flush_remaining()
-                
+
+            self._emit_progress(
+                progress_callback,
+                phase="normalize",
+                progress_percent=78,
+                message="正在规范化模型返回字段",
+            )
             parsed = parse_json_response(response.content, fallback=True)
             
             if asset_kind == "skill":
@@ -168,6 +220,12 @@ class AssetSynthesizer:
                 analysis_context=analysis_context,
             )
         except (LLMError, ValueError, KeyError, TypeError):
+            self._emit_progress(
+                progress_callback,
+                phase="fallback",
+                progress_percent=68,
+                message="模型输出不可用，正在回退为本地规则草稿",
+            )
             return self._heuristic(
                 asset_kind,
                 project,
@@ -175,6 +233,24 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
             )
+
+    @staticmethod
+    def _emit_progress(
+        progress_callback: Any | None,
+        *,
+        phase: str,
+        progress_percent: int,
+        message: str,
+    ) -> None:
+        if not callable(progress_callback):
+            return
+        progress_callback(
+            {
+                "phase": phase,
+                "progress_percent": progress_percent,
+                "message": message,
+            }
+        )
 
     def _heuristic(
         self,
