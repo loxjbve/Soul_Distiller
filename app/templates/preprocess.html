@@ -1,46 +1,45 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} Preprocess{% endblock %}
+{% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
 
 {% block extra_head %}
 <link rel="stylesheet" href="{{ request.url_for('static', path='preprocess.css') }}">
 {% endblock %}
 
 {% block content %}
-<section class="project-hero">
-    <div class="project-hero-copy">
-        <p class="eyebrow">预处理工作区</p>
-        <h1>{{ project.name }} 预分析工作区</h1>
-        <p class="hero-note">
-            使用 `@文件名` 或 `@"带空格的文件名"` 指定目标文件。AI 可以调用原生 tools 读取文件、搜索内容、运行 Python 转换并生成产物。
-        </p>
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">{{ ui.eyebrow }}</p>
+        <h1>{{ project.name }} · {{ ui.title }}</h1>
+        <p class="hero-note">{{ ui.hero_note }}</p>
     </div>
-    <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}">返回项目</a>
+    <div class="hero-actions">
+        <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
     </div>
 </section>
 
 <section class="preprocess-shell" data-preprocess-shell data-project-id="{{ project.id }}">
     <script type="application/json" id="preprocess-bootstrap">{{ bootstrap | safe }}</script>
-    <aside class="preprocess-sidebar workspace-panel slim-panel">
+
+    <aside class="preprocess-sidebar surface-card slim-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">会话</p>
-                <h2>会话</h2>
+                <p class="eyebrow">Sessions</p>
+                <h2>{{ ui.sessions }}</h2>
             </div>
-            <button type="button" class="secondary-button" data-new-session>新建</button>
+            <button type="button" class="ghost-button" data-new-session>{{ ui.new_session }}</button>
         </div>
         <div class="preprocess-session-list" data-session-list></div>
     </aside>
 
-    <main class="preprocess-main workspace-panel dark-panel">
+    <main class="preprocess-main surface-card">
         <div class="preprocess-toolbar">
             <div>
-                <p class="eyebrow">智能体</p>
-                <h2 data-session-title>未命名会话</h2>
+                <p class="eyebrow">Workspace</p>
+                <h2 data-session-title>{{ ui.untitled_session }}</h2>
             </div>
-            <div class="inline-actions">
-                <button type="button" class="secondary-button" data-rename-session>重命名</button>
-                <button type="button" class="danger-button" data-delete-session>删除</button>
+            <div class="button-row">
+                <button type="button" class="ghost-button" data-rename-session>{{ ui.rename_session }}</button>
+                <button type="button" class="ghost-button danger-button" data-delete-session>{{ ui.delete_session }}</button>
             </div>
         </div>
 
@@ -49,26 +48,26 @@
 
         <div class="preprocess-composer">
             <div class="mention-suggestions" data-mention-suggestions hidden></div>
-            <textarea data-composer rows="4" placeholder="输入问题，或用 @文件名 指定要分析的文件。按 Enter 发送，Shift+Enter 换行。"></textarea>
+            <textarea data-composer rows="4" placeholder="{{ ui.composer_placeholder }}"></textarea>
             <div class="preprocess-composer-actions">
-                <span class="muted" data-composer-hint>支持多文件上下文、搜索、Python 转换和产物导出。</span>
-                <button type="button" data-send-message>发送</button>
+                <span class="muted" data-composer-hint>{{ ui.composer_hint }}</span>
+                <button type="button" class="primary-button" data-send-message>{{ ui.send }}</button>
             </div>
         </div>
     </main>
 
-    <aside class="preprocess-context workspace-panel slim-panel">
+    <aside class="preprocess-context surface-card slim-panel">
         <div class="stack">
             <div>
-                <p class="eyebrow">工作区</p>
-                <h2>文件</h2>
+                <p class="eyebrow">Documents</p>
+                <h2>{{ ui.documents }}</h2>
             </div>
             <div class="context-list" data-document-list></div>
         </div>
         <div class="stack top-gap">
             <div>
-                <p class="eyebrow">生成产物</p>
-                <h2>生成文件</h2>
+                <p class="eyebrow">Artifacts</p>
+                <h2>{{ ui.artifacts }}</h2>
             </div>
             <div class="context-list" data-artifact-list></div>
         </div>
@@ -77,5 +76,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script defer src="{{ request.url_for('static', path='preprocess.js') }}"></script>
+<script type="module" src="{{ request.url_for('static', path='preprocess.js') }}"></script>
 {% endblock %}

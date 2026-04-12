@@ -123,19 +123,25 @@ def count_project_documents(session: Session, project_id: str) -> dict[str, int]
     total = session.scalar(
         select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
     ) or 0
-    ready = session.scalar(
-        select(func.count()).select_from(DocumentRecord).where(
-            DocumentRecord.project_id == target_project_id,
-            DocumentRecord.ingest_status == "ready",
-        )
-    ) or 0
-    failed = session.scalar(
-        select(func.count()).select_from(DocumentRecord).where(
-            DocumentRecord.project_id == target_project_id,
-            DocumentRecord.ingest_status == "failed",
-        )
-    ) or 0
-    return {"total": total, "ready": ready, "failed": failed}
+    grouped = session.execute(
+        select(DocumentRecord.ingest_status, func.count())
+        .where(DocumentRecord.project_id == target_project_id)
+        .group_by(DocumentRecord.ingest_status)
+    ).all()
+    counts = {str(status or ""): int(count or 0) for status, count in grouped}
+    ready = counts.get("ready", 0)
+    failed = counts.get("failed", 0)
+    queued = counts.get("queued", 0)
+    processing = counts.get("processing", 0)
+    pending = max(total - ready - failed - queued - processing, 0)
+    return {
+        "total": total,
+        "ready": ready,
+        "failed": failed,
+        "queued": queued,
+        "processing": processing,
+        "pending": pending,
+    }
 
 
 def list_project_documents_by_ids(
@@ -159,11 +165,12 @@ def list_project_documents_by_ids(
 
 
 def search_project_documents(session: Session, project_id: str, query: str, *, limit: int = 8) -> list[DocumentRecord]:
+    target_project_id = get_target_project_id(session, project_id)
     needle = f"%{query.strip()}%"
     stmt = (
         select(DocumentRecord)
         .where(
-            DocumentRecord.project_id == project_id,
+            DocumentRecord.project_id == target_project_id,
             or_(
                 DocumentRecord.filename.ilike(needle),
                 DocumentRecord.title.ilike(needle),

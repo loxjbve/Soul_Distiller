@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.analysis.prompts import build_asset_messages
 from app.llm.client import LLMError, OpenAICompatibleClient, parse_json_response
 from app.models import AnalysisFacet, Project
 from app.schemas import ASSET_KINDS, AssetBundle, ServiceConfig
+
+SYNTHESIS_SUMMARY_LIMIT = 360
+SYNTHESIS_BULLET_LIMIT = 5
+SYNTHESIS_BULLET_TEXT_LIMIT = 180
+SYNTHESIS_CONFLICT_LIMIT = 3
+SYNTHESIS_CONFLICT_TITLE_LIMIT = 80
+SYNTHESIS_CONFLICT_DETAIL_LIMIT = 180
+SYNTHESIS_SEARCH_CHUNK_LIMIT = 420
+SYNTHESIS_SEARCH_RESULT_LIMIT = 5
 
 
 class AssetSynthesizer:
@@ -110,10 +120,7 @@ class AssetSynthesizer:
                 analysis_context=analysis_context,
             )
         client = OpenAICompatibleClient(config, log_path=self.log_path)
-        facet_dump = "\n\n".join(
-            f"{facet.facet_key}: findings={facet.findings_json or {}} conflicts={facet.conflicts_json or []}"
-            for facet in facets
-        )
+        facet_dump = self._build_facet_dump(facets)
         
         personality_data = {}
         memories_data = {}
@@ -137,11 +144,11 @@ class AssetSynthesizer:
                     embedding_config=embedding_config,
                     limit=5,
                 )
-                p_context = "\n".join(f"- {c.content}" for c in p_chunks)
+                p_context = self._build_search_context(p_chunks)
                 p_msgs = build_personality_messages(
                     project.name, facet_dump, p_context, target_role=target_role, analysis_context=analysis_context
                 )
-                p_res = client.chat_completion_result(p_msgs, model=config.model, temperature=0.2)
+                p_res = client.chat_completion_result(p_msgs, model=config.model, temperature=0.2, max_tokens=None)
                 personality_data = parse_json_response(p_res.content, fallback=True)
             except Exception:
                 pass
@@ -160,11 +167,11 @@ class AssetSynthesizer:
                     embedding_config=embedding_config,
                     limit=5,
                 )
-                m_context = "\n".join(f"- {c.content}" for c in m_chunks)
+                m_context = self._build_search_context(m_chunks)
                 m_msgs = build_memories_messages(
                     project.name, facet_dump, m_context, target_role=target_role, analysis_context=analysis_context
                 )
-                m_res = client.chat_completion_result(m_msgs, model=config.model, temperature=0.2)
+                m_res = client.chat_completion_result(m_msgs, model=config.model, temperature=0.2, max_tokens=None)
                 memories_data = parse_json_response(m_res.content, fallback=True)
             except Exception:
                 pass
@@ -184,7 +191,11 @@ class AssetSynthesizer:
                 message="LLM 正在生成结构化草稿",
             )
             response = client.chat_completion_result(
-                messages, model=config.model, temperature=0.2, stream_handler=stream_callback
+                messages,
+                model=config.model,
+                temperature=0.2,
+                max_tokens=None,
+                stream_handler=stream_callback,
             )
             
             flush_remaining = getattr(stream_callback, "_flush_remaining", None)
@@ -251,6 +262,53 @@ class AssetSynthesizer:
                 "message": message,
             }
         )
+
+    def _build_facet_dump(self, facets: list[AnalysisFacet]) -> str:
+        compact_facets = [self._compact_facet_for_prompt(facet) for facet in facets]
+        return json.dumps(compact_facets, ensure_ascii=False, indent=2)
+
+    def _compact_facet_for_prompt(self, facet: AnalysisFacet) -> dict[str, Any]:
+        findings = dict(facet.findings_json or {})
+        conflicts = list(facet.conflicts_json or [])
+        return {
+            "facet_key": facet.facet_key,
+            "label": str(findings.get("label") or facet.facet_key),
+            "status": str(facet.status or ""),
+            "confidence": round(float(facet.confidence or 0.0), 3),
+            "summary": self._truncate_text(findings.get("summary"), SYNTHESIS_SUMMARY_LIMIT),
+            "bullets": [
+                self._truncate_text(item, SYNTHESIS_BULLET_TEXT_LIMIT)
+                for item in (findings.get("bullets") or [])[:SYNTHESIS_BULLET_LIMIT]
+                if str(item or "").strip()
+            ],
+            "conflicts": [
+                {
+                    "title": self._truncate_text(item.get("title"), SYNTHESIS_CONFLICT_TITLE_LIMIT),
+                    "detail": self._truncate_text(item.get("detail"), SYNTHESIS_CONFLICT_DETAIL_LIMIT),
+                }
+                for item in conflicts[:SYNTHESIS_CONFLICT_LIMIT]
+                if isinstance(item, dict)
+            ],
+        }
+
+    def _build_search_context(self, chunks: list[Any]) -> str:
+        lines: list[str] = []
+        for chunk in chunks[:SYNTHESIS_SEARCH_RESULT_LIMIT]:
+            content = self._truncate_text(getattr(chunk, "content", ""), SYNTHESIS_SEARCH_CHUNK_LIMIT)
+            if not content:
+                continue
+            source = getattr(chunk, "document_title", None) or getattr(chunk, "filename", None) or "source"
+            lines.append(f"- [{source}] {content}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _truncate_text(value: Any, limit: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        if limit <= 3:
+            return text[:limit]
+        return f"{text[: limit - 3]}..."
 
     def _heuristic(
         self,

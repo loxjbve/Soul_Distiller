@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from queue import Empty
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -10,15 +11,22 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 import asyncio
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact, utcnow
-from app.schemas import ASSET_KINDS, ServiceConfig
+from app.schemas import (
+    ASSET_KINDS,
+    DEFAULT_ANALYSIS_CONCURRENCY,
+    MAX_ANALYSIS_CONCURRENCY,
+    MIN_ANALYSIS_CONCURRENCY,
+    ServiceConfig,
+)
 from app.storage import repository
+from app.web.ui_strings import DEFAULT_LOCALE, page_strings
 
 
 router = APIRouter()
@@ -38,6 +46,17 @@ ASSET_KIND_OPTIONS = (
     {"value": "profile_report", "label": "用户剖析报告"},
 )
 
+
+PROVIDER_OPTIONS = (
+    {"value": "openai", "label": "OpenAI 官方"},
+    {"value": "xai", "label": "xAI 官方"},
+    {"value": "gemini", "label": "Gemini 官方"},
+    {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
+)
+ASSET_KIND_OPTIONS = (
+    {"value": "skill", "label": "Skill"},
+    {"value": "profile_report", "label": "用户画像报告"},
+)
 
 ANALYSIS_EVENT_LIMIT = 48
 ANALYSIS_SUMMARY_PREVIEW_LIMIT = 420
@@ -60,7 +79,7 @@ class ChatPayload(BaseModel):
 class AnalysisRequestPayload(BaseModel):
     target_role: str | None = None
     analysis_context: str | None = None
-    concurrency: int | None = None
+    concurrency: int | None = Field(default=None, ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -101,16 +120,41 @@ def get_session(request: Request):
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+def _page_context(page_name: str, **kwargs: Any) -> dict[str, Any]:
+    return {
+        "locale": DEFAULT_LOCALE,
+        "ui": page_strings(page_name),
+        **kwargs,
+    }
+
+
+def _ok_response(message: str, **payload: Any) -> dict[str, Any]:
+    return {"status": "ok", "message": message, **payload}
+
+
+def _task_response(message: str, task: dict[str, Any], **payload: Any) -> dict[str, Any]:
+    return {
+        **task,
+        "request_status": "ok",
+        "message": message,
+        "task": task,
+        "task_id": task.get("task_id"),
+        "progress_percent": task.get("progress_percent", 0),
+        **payload,
+    }
+
+
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, session: SessionDep):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
-        context={
-            "projects": repository.list_projects(session),
-            "chat_configured": repository.get_service_config(session, "chat_service") is not None,
-            "embedding_configured": repository.get_service_config(session, "embedding_service") is not None,
-        },
+        context=_page_context(
+            "index",
+            projects=repository.list_projects(session),
+            chat_configured=repository.get_service_config(session, "chat_service") is not None,
+            embedding_configured=repository.get_service_config(session, "embedding_service") is not None,
+        ),
     )
 
 
@@ -141,7 +185,11 @@ def create_profile_form(
 @router.get("/projects/{project_id}", response_class=HTMLResponse)
 def project_detail(request: Request, project_id: str, session: SessionDep):
     context = _project_context(session, project_id)
-    return templates.TemplateResponse(request=request, name="project_detail.html", context=context)
+    return templates.TemplateResponse(
+        request=request,
+        name="project_detail.html",
+        context=_page_context("project", **context),
+    )
 
 
 @router.post("/projects/{project_id}/update")
@@ -181,15 +229,7 @@ async def upload_documents_form(
 ):
     _ensure_project(session, project_id)
     ingest = request.app.state.ingest_service
-    for upload in files:
-        content = await upload.read()
-        ingest.ingest_bytes(
-            session,
-            project_id=project_id,
-            filename=upload.filename or "upload.bin",
-            content=content,
-            mime_type=upload.content_type,
-        )
+    await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
 
@@ -222,7 +262,7 @@ def analyze_project_form(
     session: SessionDep,
     target_role: Annotated[str | None, Form()] = None,
     analysis_context: Annotated[str | None, Form()] = None,
-    concurrency: Annotated[int | None, Form()] = None,
+    concurrency: Annotated[int | None, Form(ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)] = None,
 ):
     run = _enqueue_analysis(
         request,
@@ -248,13 +288,14 @@ def analysis_page(
     return templates.TemplateResponse(
         request=request,
         name="analysis.html",
-        context={
-            "project": project,
-            "run": run,
-            "serialized_run": json.dumps(serialized_run, ensure_ascii=False) if serialized_run else "null",
-            "run_id": run.id if run else "",
-            "facet_catalog": FACETS,
-        },
+        context=_page_context(
+            "analysis",
+            project=project,
+            run=run,
+            serialized_run=json.dumps(serialized_run, ensure_ascii=False) if serialized_run else "null",
+            run_id=run.id if run else "",
+            facet_catalog=FACETS,
+        ),
     )
 
 
@@ -337,16 +378,20 @@ def assets_page(
     return templates.TemplateResponse(
         request=request,
         name="assets.html",
-        context={
-            "project": project,
-            "asset_kind": asset_kind,
-            "asset_label": _asset_label(asset_kind),
-            "asset_options": ASSET_KIND_OPTIONS,
-            "draft": draft,
-            "versions": versions,
-            "latest_run": latest_run,
-            "draft_json_pretty": json.dumps(draft.json_payload, ensure_ascii=False, indent=2) if draft else "{}",
-        },
+        context=_page_context(
+            "assets",
+            project=project,
+            asset_kind=asset_kind,
+            asset_label=_asset_label(asset_kind),
+            asset_options=(
+                {"value": "skill", "label": "Skill"},
+                {"value": "profile_report", "label": "用户画像报告"},
+            ),
+            draft=draft,
+            versions=versions,
+            latest_run=latest_run,
+            draft_json_pretty=json.dumps(draft.json_payload, ensure_ascii=False, indent=2) if draft else "{}",
+        ),
     )
 
 
@@ -481,12 +526,13 @@ def playground_page(request: Request, project_id: str, session: SessionDep):
     return templates.TemplateResponse(
         request=request,
         name="playground.html",
-        context={
-            "project": project,
-            "version": version,
-            "chat_session": chat_session,
-            "turns": turns,
-        },
+        context=_page_context(
+            "playground",
+            project=project,
+            version=version,
+            chat_session=chat_session,
+            turns=turns,
+        ),
     )
 
 
@@ -517,7 +563,7 @@ def preprocess_page(
                 session,
                 project_id=project_id,
                 session_kind="preprocess",
-                title="New Preprocess Session",
+                title="新建预分析会话",
             )
         ]
     selected_session = sessions[0]
@@ -532,14 +578,17 @@ def preprocess_page(
         "selected_session": _serialize_preprocess_session_detail(selected_session),
         "documents": [_serialize_document(item) for item in context["documents"]],
         "initial_mention": mention or "",
+        "locale": DEFAULT_LOCALE,
+        "ui_strings": page_strings("preprocess"),
     }
     return templates.TemplateResponse(
         request=request,
         name="preprocess.html",
-        context={
-            "project": context["project"],
-            "bootstrap": json.dumps(bootstrap, ensure_ascii=False),
-        },
+        context=_page_context(
+            "preprocess",
+            project=context["project"],
+            bootstrap=json.dumps(bootstrap, ensure_ascii=False),
+        ),
     )
 
 
@@ -550,15 +599,21 @@ def settings_page(request: Request, session: SessionDep):
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
-        context={
-            "chat_setting": _settings_payload(chat_setting.value_json if chat_setting else {}, default_provider="openai"),
-            "embedding_setting": _settings_payload(
+        context=_page_context(
+            "settings",
+            chat_setting=_settings_payload(chat_setting.value_json if chat_setting else {}, default_provider="openai"),
+            embedding_setting=_settings_payload(
                 embedding_setting.value_json if embedding_setting else {},
                 default_provider="openai",
             ),
-            "provider_options": PROVIDER_OPTIONS,
-            "api_mode_options": API_MODE_OPTIONS,
-        },
+            provider_options=(
+                {"value": "openai", "label": "OpenAI 官方"},
+                {"value": "xai", "label": "xAI 官方"},
+                {"value": "gemini", "label": "Gemini 官方"},
+                {"value": "openai-compatible", "label": "OpenAI Compatible 自定义"},
+            ),
+            api_mode_options=API_MODE_OPTIONS,
+        ),
     )
 
 
@@ -573,11 +628,11 @@ def save_service_settings(
     api_mode: Annotated[str | None, Form()] = None,
 ):
     if service_name not in {"chat", "embedding"}:
-        raise HTTPException(status_code=404, detail="Unknown service.")
+        raise HTTPException(status_code=404, detail="未知服务类型。")
     normalized_provider = normalize_provider_kind(provider_kind)
     normalized_base_url = (base_url or "").strip()
     if normalized_provider == "openai-compatible" and not normalized_base_url:
-        raise HTTPException(status_code=400, detail="Base URL is required for custom OpenAI-compatible providers.")
+        raise HTTPException(status_code=400, detail="自定义 OpenAI Compatible 服务必须填写 Base URL。")
     repository.upsert_setting(
         session,
         f"{service_name}_service",
@@ -595,7 +650,13 @@ def save_service_settings(
 @router.post("/api/projects")
 def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
     project = repository.create_project(session, payload.name, payload.description, mode=payload.mode)
-    return {"id": project.id, "name": project.name, "description": project.description, "mode": project.mode}
+    return _ok_response(
+        "项目已创建。",
+        id=project.id,
+        name=project.name,
+        description=project.description,
+        mode=project.mode,
+    )
 
 
 @router.delete("/api/projects/{project_id}")
@@ -603,7 +664,7 @@ def delete_project_api(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     _delete_project_resources(request, session, project.id)
     session.commit()
-    return {"ok": True, "project_id": project.id}
+    return _ok_response("项目已删除。", ok=True, project_id=project.id)
 
 
 @router.post("/api/projects/{project_id}/documents")
@@ -615,35 +676,8 @@ async def upload_documents_api(
 ):
     _ensure_project(session, project_id)
     ingest = request.app.state.ingest_service
-    created = []
-    
-    from uuid import uuid4
-    from pathlib import Path
-    import shutil
-    
-    for upload in files:
-        document_id = str(uuid4())
-        filename = upload.filename or "upload.bin"
-        ext = Path(filename).suffix.lower()
-        upload_dir = ingest._config.upload_dir / project_id
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        storage_path = upload_dir / f"{document_id}{ext}"
-        
-        with storage_path.open("wb") as f:
-            while chunk := await upload.read(1024 * 1024):
-                f.write(chunk)
-                
-        document = ingest.ingest_file(
-            session,
-            project_id=project_id,
-            document_id=document_id,
-            filename=filename,
-            storage_path=storage_path,
-            mime_type=upload.content_type,
-        )
-        session.commit()
-        created.append(_serialize_document(document))
-    return {"documents": created}
+    created = await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
+    return _ok_response("文档上传完成。", documents=[_serialize_document(document) for document in created])
 
 
 
@@ -655,10 +689,15 @@ def list_documents_api(project_id: str, session: SessionDep, offset: int = 0, li
     documents = repository.list_project_documents(session, project_id, limit=limit, offset=offset)
     doc_counts = repository.count_project_documents(session, project_id)
     return {
+        "status": "ok",
+        "message": "已返回文档列表。",
         "documents": [_serialize_document(doc) for doc in documents],
         "total": doc_counts["total"],
         "ready": doc_counts["ready"],
         "failed": doc_counts["failed"],
+        "queued": doc_counts.get("queued", 0),
+        "processing": doc_counts.get("processing", 0),
+        "pending": doc_counts.get("pending", 0),
         "has_more": offset + len(documents) < doc_counts["total"],
         "offset": offset,
         "limit": limit,
@@ -669,14 +708,14 @@ def list_documents_api(project_id: str, session: SessionDep, offset: int = 0, li
 def get_document_task_status(request: Request, project_id: str, document_id: str):
     task = request.app.state.ingest_task_manager.get_by_document(document_id)
     if not task:
-        return {"task_id": None, "status": "not_found", "progress_percent": 0}
-    return task
+        return {"task_id": None, "status": "missing", "progress_percent": 0, "message": "当前文档没有活动任务。"}
+    return _task_response("已返回文档任务状态。", task)
 
 
 @router.get("/api/projects/{project_id}/tasks")
 def get_project_tasks(request: Request, project_id: str):
     tasks = request.app.state.ingest_task_manager.get_by_project(project_id)
-    return {"tasks": tasks}
+    return _ok_response("已返回项目任务列表。", tasks=tasks)
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}/process")
@@ -693,7 +732,7 @@ def process_document_api(request: Request, project_id: str, document_id: str, se
         storage_path=document.storage_path,
         mime_type=None,
     )
-    return {"task": task}
+    return _task_response("文档已加入处理队列。", task)
 
 
 @router.post("/api/projects/{project_id}/process-all")
@@ -717,7 +756,7 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
             doc.ingest_status = "queued"
             submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
     session.commit()
-    return {"submitted": submitted}
+    return _ok_response("批量处理任务已提交。", submitted=submitted)
 
 
 @router.post("/api/projects/{project_id}/retry-all")
@@ -747,7 +786,7 @@ def retry_all_documents_api(request: Request, project_id: str, session: SessionD
             doc.ingest_status = "queued"
             submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
     session.commit()
-    return {"submitted": submitted}
+    return _ok_response("重试任务已提交。", submitted=submitted)
 
 
 @router.post("/api/projects/{project_id}/stop-processing")
@@ -755,7 +794,7 @@ def stop_processing_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
     task_manager = request.app.state.ingest_task_manager
     task_manager.stop_project_tasks(project_id)
-    return {"status": "stopped"}
+    return _ok_response("当前项目的处理任务已停止。", stopped=True)
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}")
@@ -767,7 +806,7 @@ def update_document_api(
 ):
     document = _get_project_document(session, project_id, document_id)
     repository.update_document(session, document, title=payload.title, source_type=payload.source_type, user_note=payload.user_note)
-    return _serialize_document(document)
+    return _ok_response("文档信息已更新。", **_serialize_document(document))
 
 
 @router.post("/api/projects/{project_id}/documents/{document_id}/delete")
@@ -775,7 +814,7 @@ def delete_document_api(project_id: str, document_id: str, session: SessionDep):
     document = _get_project_document(session, project_id, document_id)
     _delete_document_with_file(document)
     repository.delete_document(session, document)
-    return {"ok": True, "document_id": document_id}
+    return _ok_response("文档已删除。", ok=True, document_id=document_id)
 
 
 @router.get("/api/projects/{project_id}/documents/mentions")
@@ -806,7 +845,8 @@ def analyze_project_api(
         analysis_context=payload.analysis_context,
         concurrency=payload.concurrency,
     )
-    return _serialize_analysis_run(run)
+    serialized = _serialize_analysis_run(run)
+    return _ok_response("分析任务已创建。", **serialized)
 
 
 @router.get("/api/projects/{project_id}/analysis")
@@ -817,41 +857,51 @@ def get_analysis_api(
 ):
     run = _resolve_run(session, project_id, run_id)
     if not run:
-        raise HTTPException(status_code=404, detail="No analysis run found.")
-    return _serialize_analysis_run(run)
+        raise HTTPException(status_code=404, detail="未找到分析记录。")
+    payload = _serialize_analysis_run(run)
+    return {"status": "ok", "message": "已返回分析状态。", **payload}
 
 
 @router.get("/api/projects/{project_id}/analysis/stream")
 def stream_analysis_api(request: Request, project_id: str, session: SessionDep, run_id: str | None = Query(default=None)):
     run = _resolve_run(session, project_id, run_id)
     if not run:
-        raise HTTPException(status_code=404, detail="No analysis run found.")
+        raise HTTPException(status_code=404, detail="未找到分析记录。")
+
+    hub = request.app.state.analysis_stream_hub
+    subscription = hub.subscribe(run.id)
 
     async def generate():
         last_snapshot = ""
-        while True:
-            def fetch_payload():
-                with request.app.state.db.session() as live_session:
-                    live_run = _resolve_run(live_session, project_id, run_id or run.id)
-                    if not live_run:
-                        return None
-                    return _serialize_analysis_run(live_run)
-            
-            from starlette.concurrency import run_in_threadpool
-            import asyncio
-            
-            payload = await run_in_threadpool(fetch_payload)
-            if not payload:
-                break
-            
-            encoded = json.dumps(payload, ensure_ascii=False)
-            if encoded != last_snapshot:
-                last_snapshot = encoded
-                yield _format_sse("snapshot", payload)
-            if payload["status"] not in {"queued", "running"}:
-                yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
-                break
-            await asyncio.sleep(0.35)
+        from starlette.concurrency import run_in_threadpool
+
+        def fetch_payload():
+            with request.app.state.db.session() as live_session:
+                live_run = _resolve_run(live_session, project_id, run_id or run.id)
+                if not live_run:
+                    return None
+                return _serialize_analysis_run(live_run)
+
+        try:
+            while True:
+                try:
+                    await run_in_threadpool(subscription.get, True, 15.0)
+                except Empty:
+                    pass
+
+                payload = await run_in_threadpool(fetch_payload)
+                if not payload:
+                    break
+
+                encoded = json.dumps(payload, ensure_ascii=False)
+                if encoded != last_snapshot:
+                    last_snapshot = encoded
+                    yield _format_sse("snapshot", payload)
+                if payload["status"] not in {"queued", "running"}:
+                    yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
+                    break
+        finally:
+            hub.unsubscribe(run.id, subscription)
 
     return StreamingResponse(
         generate(),
@@ -865,7 +915,7 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
     run = repository.get_active_analysis_run(session, project_id)
     if run:
         if request.app.state.analysis_runner.is_tracking(run.id):
-            raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+            raise HTTPException(status_code=409, detail="当前项目已有分析任务正在运行。")
         _mark_run_as_stale(
             session,
             run,
@@ -873,11 +923,11 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
         )
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
-        raise HTTPException(status_code=404, detail="No analysis run found.")
+        raise HTTPException(status_code=404, detail="未找到分析记录。")
     request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
     session.expire_all()
     refreshed = repository.get_analysis_run(session, latest_run.id) or latest_run
-    return _serialize_analysis_run(refreshed)
+    return _ok_response("维度重跑任务已提交。", **_serialize_analysis_run(refreshed))
 
 
 @router.post("/api/projects/{project_id}/rechunk")
@@ -886,13 +936,14 @@ def start_rechunk_api(request: Request, project_id: str, session: SessionDep):
     embedding_config = repository.get_service_config(session, "embedding_service")
     manager = request.app.state.rechunk_manager
     try:
-        return manager.submit(project_id=project_id, embedding_config=embedding_config)
+        task = manager.submit(project_id=project_id, embedding_config=embedding_config)
+        return _task_response("重分块任务已提交。", task)
     except ValueError as exc:
         task_id = str(exc)
         raise HTTPException(
             status_code=409,
             detail={
-                "message": "A rechunk task is already running for this project.",
+                "message": "当前项目已有重分块任务在运行。",
                 "task_id": task_id,
                 "task": manager.get(task_id),
             },
@@ -904,8 +955,8 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
     _ensure_project(session, project_id)
     task = request.app.state.rechunk_manager.get(task_id)
     if not task or task.get("project_id") != project_id:
-        raise HTTPException(status_code=404, detail="Rechunk task not found.")
-    return task
+        raise HTTPException(status_code=404, detail="未找到重分块任务。")
+    return _task_response("已返回重分块任务状态。", task)
 
 
 @router.post("/api/projects/{project_id}/assets/generate/stream")
@@ -941,11 +992,11 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                 project = _ensure_project(session, project_id)
                 run = repository.get_latest_analysis_run(session, project_id)
                 if not run or run.status in {"queued", "running"}:
-                    events.put({"type": "error", "message": "Analysis is not ready."})
+                    events.put({"type": "error", "message": "分析结果尚未就绪。"})
                     return
                 facets = run.facets or []
                 if not facets:
-                    events.put({"type": "error", "message": "No facets to synthesize."})
+                    events.put({"type": "error", "message": "当前分析没有可合成的维度结果。"})
                     return
                 chat_config = repository.get_service_config(session, "chat_service")
                 summary = run.summary_json or {}
@@ -989,7 +1040,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     markdown_text=bundle.markdown_text,
                     json_payload=bundle.json_payload,
                     prompt_text=bundle.prompt_text,
-                    notes="Auto-generated draft. Review before publishing.",
+                    notes="系统自动生成草稿，发布前请先复核。",
                 )
                 _persist_asset_files(
                     request,
@@ -1035,7 +1086,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
 @router.post("/api/projects/{project_id}/assets/generate")
 def generate_asset_api(request: Request, project_id: str, payload: AssetGeneratePayload, session: SessionDep):
     draft = _generate_asset_draft(request, session, project_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
-    return _serialize_draft(draft)
+    return {**_serialize_draft(draft), "request_status": "ok", "message": "资产草稿已生成。"}
 
 
 @router.post("/api/projects/{project_id}/assets/{draft_id}/save")
@@ -1048,7 +1099,7 @@ def save_asset_api(
 ):
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
     if not draft or draft.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Draft not found.")
+        raise HTTPException(status_code=404, detail="未找到资产草稿。")
     draft.markdown_text = payload.markdown_text
     draft.json_payload = payload.json_payload
     draft.system_prompt = payload.prompt_text
@@ -1062,7 +1113,7 @@ def save_asset_api(
         draft.json_payload,
         draft.system_prompt,
     )
-    return _serialize_draft(draft)
+    return {**_serialize_draft(draft), "request_status": "ok", "message": "资产草稿已保存。"}
 
 
 @router.post("/api/projects/{project_id}/assets/{draft_id}/publish")
@@ -1075,7 +1126,7 @@ def publish_asset_api(
 ):
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
     if not draft or draft.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Draft not found.")
+        raise HTTPException(status_code=404, detail="未找到资产草稿。")
     version = repository.publish_asset_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -1091,20 +1142,22 @@ def publish_asset_api(
         "asset_kind": version.asset_kind,
         "version_number": version.version_number,
         "published_at": version.published_at.isoformat(),
+        "request_status": "ok",
+        "message": "资产版本已发布。",
     }
 
 
 @router.post("/api/projects/{project_id}/skills/generate")
 def generate_skill_api(request: Request, project_id: str, session: SessionDep):
     draft = _generate_asset_draft(request, session, project_id, asset_kind="skill")
-    return _serialize_draft(draft)
+    return {**_serialize_draft(draft), "request_status": "ok", "message": "Skill 草稿已生成。"}
 
 
 @router.post("/api/projects/{project_id}/skills/{draft_id}/publish")
 def publish_skill_api(request: Request, project_id: str, draft_id: str, session: SessionDep):
     draft = repository.get_skill_draft(session, draft_id)
     if not draft:
-        raise HTTPException(status_code=404, detail="Draft not found.")
+        raise HTTPException(status_code=404, detail="未找到 Skill 草稿。")
     version = repository.publish_skill_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -1120,19 +1173,21 @@ def publish_skill_api(request: Request, project_id: str, draft_id: str, session:
         "asset_kind": version.asset_kind,
         "version_number": version.version_number,
         "published_at": version.published_at.isoformat(),
+        "request_status": "ok",
+        "message": "Skill 版本已发布。",
     }
 
 
 @router.post("/api/projects/{project_id}/playground/chat")
 def playground_chat_api(request: Request, project_id: str, payload: ChatPayload, session: SessionDep):
-    return _chat_with_persona(request, session, project_id, payload.message, payload.session_id)
+    return _ok_response("试聊回复已生成。", **_chat_with_persona(request, session, project_id, payload.message, payload.session_id))
 
 
 @router.get("/api/projects/{project_id}/preprocess/sessions")
 def list_preprocess_sessions_api(project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
     sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
-    return {"sessions": [_serialize_chat_session(item) for item in sessions]}
+    return _ok_response("已返回预分析会话列表。", sessions=[_serialize_chat_session(item) for item in sessions])
 
 
 @router.post("/api/projects/{project_id}/preprocess/sessions")
@@ -1142,17 +1197,17 @@ def create_preprocess_session_api(project_id: str, payload: PreprocessSessionCre
         session,
         project_id=project_id,
         session_kind="preprocess",
-        title=payload.title or "New Preprocess Session",
+        title=payload.title or "新建预分析会话",
     )
-    return _serialize_chat_session(chat_session)
+    return _ok_response("预分析会话已创建。", **_serialize_chat_session(chat_session))
 
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}")
 def get_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
     chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
     if not chat_session or chat_session.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Preprocess session not found.")
-    return _serialize_preprocess_session_detail(chat_session)
+        raise HTTPException(status_code=404, detail="未找到预分析会话。")
+    return _ok_response("已返回预分析会话详情。", **_serialize_preprocess_session_detail(chat_session))
 
 
 @router.patch("/api/projects/{project_id}/preprocess/sessions/{session_id}")
@@ -1164,18 +1219,18 @@ def update_preprocess_session_api(
 ):
     chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
     if not chat_session or chat_session.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Preprocess session not found.")
+        raise HTTPException(status_code=404, detail="未找到预分析会话。")
     repository.rename_chat_session(session, chat_session, title=payload.title)
-    return _serialize_chat_session(chat_session)
+    return _ok_response("预分析会话已更新。", **_serialize_chat_session(chat_session))
 
 
 @router.delete("/api/projects/{project_id}/preprocess/sessions/{session_id}")
 def delete_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
     chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
     if not chat_session or chat_session.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Preprocess session not found.")
+        raise HTTPException(status_code=404, detail="未找到预分析会话。")
     repository.delete_chat_session(session, chat_session)
-    return {"ok": True, "session_id": session_id}
+    return _ok_response("预分析会话已删除。", ok=True, session_id=session_id)
 
 
 @router.post("/api/projects/{project_id}/preprocess/sessions/{session_id}/messages")
@@ -1193,7 +1248,7 @@ def create_preprocess_message_api(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return result
+    return _ok_response("预分析消息已提交。", **result)
 
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
@@ -1202,7 +1257,7 @@ def stream_preprocess_events_api(request: Request, project_id: str, session_id: 
     try:
         generator = request.app.state.preprocess_service.stream_events(stream_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail="Stream not found.") from exc
+        raise HTTPException(status_code=404, detail="未找到预分析流。") from exc
     return StreamingResponse(
         generator,
         media_type="text/event-stream",
@@ -1229,10 +1284,10 @@ def list_models_api(
 ):
     config = repository.get_service_config(session, f"{service}_service")
     if not config:
-        raise HTTPException(status_code=400, detail=f"{service} service is not configured.")
+        raise HTTPException(status_code=400, detail=f"{service} 服务尚未配置。")
     client = OpenAICompatibleClient(config, log_path=str(request.app.state.config.llm_log_path))
     try:
-        return {"service": service, "models": client.list_models()}
+        return _ok_response("已返回模型列表。", service=service, models=client.list_models())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1258,6 +1313,28 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "project": project,
         "profiles": profiles,
         "documents": documents,
+        "project_bootstrap": json.dumps(
+            {
+                "project": {"id": project.id, "name": project.name, "mode": project.mode},
+                "documents": [_serialize_document(item) for item in documents],
+                "pagination": {
+                    "limit": document_limit,
+                    "offset": document_offset,
+                    "has_more": document_offset + len(documents) < doc_counts["total"],
+                },
+                "stats": {
+                    "document_count": doc_counts["total"],
+                    "ready_count": doc_counts["ready"],
+                    "failed_count": doc_counts["failed"],
+                    "queued_count": doc_counts.get("queued", 0),
+                    "processing_count": doc_counts.get("processing", 0),
+                    "pending_count": doc_counts.get("pending", 0),
+                },
+                "locale": DEFAULT_LOCALE,
+                "ui_strings": page_strings("project"),
+            },
+            ensure_ascii=False,
+        ),
         "latest_run": latest_run,
         "latest_draft": latest_draft,
         "latest_version": latest_version,
@@ -1266,6 +1343,9 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
             "document_count": doc_counts["total"],
             "ready_count": doc_counts["ready"],
             "failed_count": doc_counts["failed"],
+            "queued_count": doc_counts.get("queued", 0),
+            "processing_count": doc_counts.get("processing", 0),
+            "pending_count": doc_counts.get("pending", 0),
         },
         "document_pagination": {
             "limit": document_limit,
@@ -1275,8 +1355,9 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "analysis_defaults": {
             "target_role": latest_summary.get("target_role") or project.name,
             "analysis_context": latest_summary.get("analysis_context") or project.description or "",
-            "concurrency": latest_summary.get("concurrency") or 4,
+            "concurrency": latest_summary.get("concurrency") or DEFAULT_ANALYSIS_CONCURRENCY,
         },
+        "analysis_concurrency_default": DEFAULT_ANALYSIS_CONCURRENCY,
     }
 
 
@@ -1555,6 +1636,8 @@ def _serialize_document(document: DocumentRecord) -> dict[str, Any]:
         "ingest_status": document.ingest_status,
         "error_message": document.error_message,
         "metadata_json": metadata,
+        "created_at": document.created_at.isoformat() if getattr(document, "created_at", None) else None,
+        "updated_at": document.updated_at.isoformat() if getattr(document, "updated_at", None) else None,
     }
 
 
@@ -1582,6 +1665,55 @@ def _truncate_preview(
 
     keep = max(1, limit - len(marker))
     return f"{text[:keep]}{marker}", True
+
+
+def _normalize_analysis_status(value: Any) -> str:
+    normalized = str(value or "queued").strip().lower().replace(" ", "_")
+    if normalized in {"", "pending"}:
+        return "queued"
+    if normalized not in {"queued", "preparing", "running", "completed", "failed"}:
+        return "queued"
+    return normalized
+
+
+def _normalize_analysis_phase(status: str, value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace(" ", "_")
+    if normalized:
+        return normalized
+    return {
+        "queued": "queued",
+        "preparing": "retrieving",
+        "running": "analyzing",
+        "completed": "completed",
+        "failed": "failed",
+    }.get(status, "queued")
+
+
+def _normalize_analysis_concurrency(value: Any) -> int:
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        candidate = DEFAULT_ANALYSIS_CONCURRENCY
+    return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+
+
+def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
+    label = facet_label or "Analysis"
+    if phase == "retrieving":
+        return f"{label}: retrieving evidence"
+    if phase == "llm":
+        return f"{label}: generating with LLM"
+    if phase == "analyzing":
+        return f"{label}: analyzing"
+    if phase == "completed":
+        return "Analysis completed"
+    if phase == "failed":
+        return "Analysis finished with failures"
+    if phase == "persisting":
+        return "Finalizing analysis"
+    if queued:
+        return f"{queued} facet(s) waiting for a slot"
+    return "Waiting to start"
 
 
 def _serialize_analysis_event(event) -> dict[str, Any]:
@@ -1617,7 +1749,15 @@ def _serialize_analysis_event(event) -> dict[str, Any]:
 
 
 def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
+    status = _normalize_analysis_status(facet.status)
     findings = dict(facet.findings_json or {})
+    findings["label"] = findings.get("label") or facet.facet_key
+    findings["phase"] = _normalize_analysis_phase(status, findings.get("phase"))
+    findings["queue_position"] = findings.get("queue_position")
+    findings["started_at"] = findings.get("started_at")
+    findings["finished_at"] = findings.get("finished_at")
+    if status != "queued":
+        findings["queue_position"] = None
     summary_preview, summary_truncated = _truncate_preview(
         findings.get("summary"),
         ANALYSIS_SUMMARY_PREVIEW_LIMIT,
@@ -1651,7 +1791,7 @@ def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
 
     return {
         "facet_key": facet.facet_key,
-        "status": facet.status,
+        "status": status,
         "accepted": bool(facet.accepted),
         "confidence": facet.confidence,
         "findings": findings,
@@ -1663,14 +1803,71 @@ def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
 
 def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     ordered_events = sorted(run.events, key=lambda item: item.created_at, reverse=True)[:ANALYSIS_EVENT_LIMIT]
+    serialized_facets = [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)]
+    summary = dict(run.summary_json or {})
+    summary["total_facets"] = int(summary.get("total_facets") or len(FACETS))
+    summary["concurrency"] = _normalize_analysis_concurrency(summary.get("concurrency"))
+
+    completed = sum(1 for facet in serialized_facets if facet["status"] == "completed")
+    failed = sum(1 for facet in serialized_facets if facet["status"] == "failed")
+    active = [facet for facet in serialized_facets if facet["status"] in {"preparing", "running"}]
+    queued = [facet for facet in serialized_facets if facet["status"] == "queued"]
+
+    queue_position = 1
+    for facet in serialized_facets:
+        if facet["status"] == "queued":
+            facet["findings"]["queue_position"] = queue_position
+            queue_position += 1
+        else:
+            facet["findings"]["queue_position"] = None
+
+    summary["completed_facets"] = completed
+    summary["failed_facets"] = failed
+    summary["active_facets"] = len(active)
+    summary["queued_facets"] = len(queued)
+    progress_total = max(1, int(summary.get("total_facets") or len(FACETS) or 1))
+    summary["progress_percent"] = int(((completed + failed) / progress_total) * 100)
+
+    if active:
+        current = active[0]
+        summary["current_facet"] = current["facet_key"]
+        summary["current_phase"] = current["findings"].get("phase") or _normalize_analysis_phase(
+            current["status"],
+            None,
+        )
+        summary["current_stage"] = _analysis_stage_label(
+            current["findings"].get("label") or current["facet_key"],
+            summary["current_phase"],
+        )
+    elif run.status == "completed":
+        summary["current_facet"] = None
+        summary["current_phase"] = "completed"
+        summary["current_stage"] = _analysis_stage_label(None, "completed")
+    elif run.status in {"failed", "partial_failed"}:
+        summary["current_facet"] = None
+        summary["current_phase"] = "failed"
+        summary["current_stage"] = _analysis_stage_label(None, "failed")
+    elif queued:
+        summary["current_facet"] = None
+        summary["current_phase"] = "queued"
+        summary["current_stage"] = _analysis_stage_label(None, "queued", queued=len(queued))
+    elif run.status == "running":
+        summary["current_facet"] = None
+        summary["current_phase"] = "persisting"
+        summary["current_stage"] = _analysis_stage_label(None, "persisting")
+    else:
+        summary["current_facet"] = None
+        summary["current_phase"] = "queued"
+        summary["current_stage"] = _analysis_stage_label(None, "queued", queued=len(queued))
+
     return {
         "id": run.id,
         "status": run.status,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-        "summary": run.summary_json or {},
+        "summary": summary,
         "events": [_serialize_analysis_event(event) for event in ordered_events],
-        "facets": [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)],
+        "facets": serialized_facets,
     }
 
 
@@ -1692,7 +1889,7 @@ def _serialize_chat_session(chat_session) -> dict[str, Any]:
     return {
         "id": chat_session.id,
         "session_kind": chat_session.session_kind,
-        "title": chat_session.title or "Untitled Session",
+        "title": chat_session.title or "未命名会话",
         "created_at": chat_session.created_at.isoformat() if chat_session.created_at else None,
         "last_active_at": chat_session.last_active_at.isoformat() if chat_session.last_active_at else None,
         "turn_count": len(turns),
@@ -1754,6 +1951,243 @@ def _normalize_asset_kind(value: str | None) -> str:
 
 def _asset_label(asset_kind: str) -> str:
     return "用户剖析报告" if asset_kind == "profile_report" else "Skill"
+
+
+def _enqueue_analysis(
+    request: Request,
+    session: Session,
+    project_id: str,
+    *,
+    target_role: str | None,
+    analysis_context: str | None,
+    concurrency: int | None = None,
+) -> AnalysisRun:
+    _ensure_project(session, project_id)
+    documents = repository.list_project_documents(session, project_id)
+    ready_documents = [document for document in documents if document.ingest_status == "ready"]
+    if not ready_documents:
+        raise HTTPException(status_code=400, detail="请先完成至少一份文档的解析处理。")
+    existing_run = repository.get_active_analysis_run(session, project_id)
+    if existing_run:
+        if request.app.state.analysis_runner.is_tracking(existing_run.id):
+            return existing_run
+        _mark_run_as_stale(
+            session,
+            existing_run,
+            reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
+        )
+        session.flush()
+    run = request.app.state.analysis_engine.create_run(
+        session,
+        project_id,
+        target_role=(target_role or "").strip() or None,
+        analysis_context=(analysis_context or "").strip() or None,
+        concurrency=concurrency,
+    )
+    session.commit()
+    request.app.state.analysis_runner.submit(run.id)
+    session.expire_all()
+    return repository.get_analysis_run(session, run.id) or run
+
+
+def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> None:
+    summary = dict(run.summary_json or {})
+    summary["current_stage"] = "检测到旧任务卡住，已自动恢复为失败状态"
+    summary["current_facet"] = None
+    summary["finished_at"] = utcnow().isoformat()
+    run.summary_json = summary
+    run.status = "failed"
+    run.finished_at = utcnow()
+    repository.add_analysis_event(
+        session,
+        run.id,
+        event_type="lifecycle",
+        level="warning",
+        message="检测到旧分析任务没有活动 worker，已自动标记为失败。",
+        payload_json={"stale_recovered": True, "reason": reason},
+    )
+
+
+def _resolve_run(session: Session, project_id: str, run_id: str | None) -> AnalysisRun | None:
+    if run_id:
+        run = repository.get_analysis_run(session, run_id)
+        if not run or run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="未找到分析记录。")
+        return run
+    return repository.get_latest_analysis_run(session, project_id)
+
+
+def _generate_asset_draft(request: Request, session: Session, project_id: str, *, asset_kind: str):
+    project = _ensure_project(session, project_id)
+    run = repository.get_latest_analysis_run(session, project_id)
+    if not run:
+        raise HTTPException(status_code=400, detail="请先完成一次分析，再生成资产。")
+    if run.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="当前分析仍在进行中，请等待完成后再生成资产。")
+    facets = run.facets or []
+    if not facets:
+        raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
+    chat_config = repository.get_service_config(session, "chat_service")
+    summary = run.summary_json or {}
+    bundle = request.app.state.asset_synthesizer.build(
+        asset_kind,
+        project,
+        facets,
+        chat_config,
+        target_role=summary.get("target_role"),
+        analysis_context=summary.get("analysis_context"),
+        session=session,
+        retrieval_service=request.app.state.retrieval,
+    )
+    draft = repository.create_asset_draft(
+        session,
+        project_id=project_id,
+        run_id=run.id,
+        asset_kind=bundle.asset_kind,
+        markdown_text=bundle.markdown_text,
+        json_payload=bundle.json_payload,
+        prompt_text=bundle.prompt_text,
+        notes="系统自动生成草稿，发布前请先复核。",
+    )
+    _persist_asset_files(
+        request,
+        project_id,
+        draft.asset_kind,
+        f"draft_{draft.id}",
+        draft.markdown_text,
+        draft.json_payload,
+        draft.system_prompt,
+    )
+    return draft
+
+
+def _chat_with_persona(
+    request: Request,
+    session: Session,
+    project_id: str,
+    message: str,
+    session_id: str | None = None,
+):
+    version = repository.get_latest_skill_version(session, project_id)
+    if not version:
+        raise HTTPException(status_code=400, detail="请先发布一个 Skill 版本，再进入试聊。")
+    chat_config = repository.get_service_config(session, "chat_service")
+    if session_id:
+        chat_session = repository.get_chat_session(session, session_id, session_kind="playground")
+        if not chat_session:
+            raise HTTPException(status_code=404, detail="未找到试聊会话。")
+    else:
+        chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
+    history = sorted(chat_session.turns, key=lambda item: item.created_at)
+    repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
+
+    assistant_reply, llm_meta = _generate_chat_reply(
+        chat_config,
+        version.system_prompt,
+        history,
+        message,
+        "",
+        log_path=str(request.app.state.config.llm_log_path),
+    )
+    trace = {
+        "skill_version_id": version.id,
+        "skill_version_number": version.version_number,
+        "prompt_excerpt": f"SKILL:\n{version.system_prompt[:1800]}",
+        "llm": llm_meta,
+    }
+    assistant_turn = repository.add_chat_turn(
+        session,
+        session_id=chat_session.id,
+        role="assistant",
+        content=assistant_reply,
+        trace_json=trace,
+    )
+    return {
+        "session_id": chat_session.id,
+        "assistant_turn_id": assistant_turn.id,
+        "response": assistant_reply,
+        "trace": trace,
+    }
+
+
+def _generate_chat_reply(
+    config: ServiceConfig | None,
+    system_prompt: str,
+    history: list[Any],
+    message: str,
+    evidence_block: str,
+    *,
+    log_path: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if not config:
+        prefix = "当前未配置外部 LLM，系统正在使用本地降级模式。"
+        return (
+            (
+                f"{prefix}\n\n"
+                "我会尽量按照已发布 Skill 中的语气与立场来回应。\n\n"
+                f"你刚才说的是：{message}"
+            ),
+            {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
+        )
+
+    client = OpenAICompatibleClient(config, log_path=log_path)
+    messages = [{"role": "system", "content": system_prompt}]
+    if evidence_block:
+        messages.append({"role": "system", "content": f"来源文档证据：\n{evidence_block}"})
+    for turn in history[-8:]:
+        messages.append({"role": turn.role, "content": turn.content})
+    messages.append({"role": "user", "content": message})
+    try:
+        result = client.chat_completion_result(messages, model=config.model, temperature=0.7, max_tokens=900)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"对话生成失败：{exc}") from exc
+    return (
+        result.content,
+        {
+            "provider_kind": config.provider_kind,
+            "api_mode": config.api_mode,
+            "model": result.model,
+            "usage": result.usage,
+            "request_url": result.request_url,
+        },
+    )
+
+
+def _ensure_project(session: Session, project_id: str):
+    project = repository.get_project(session, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="未找到项目。")
+    return project
+
+
+def _get_project_document(session: Session, project_id: str, document_id: str) -> DocumentRecord:
+    document = repository.get_document(session, document_id)
+    if not document or document.project_id != project_id:
+        raise HTTPException(status_code=404, detail="未找到文档。")
+    return document
+
+
+def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
+    label = facet_label or "分析任务"
+    if phase == "retrieving":
+        return f"{label}：检索证据中"
+    if phase == "llm":
+        return f"{label}：调用 LLM 生成中"
+    if phase == "analyzing":
+        return f"{label}：分析中"
+    if phase == "completed":
+        return "分析已完成"
+    if phase == "failed":
+        return "分析已结束，但存在失败维度"
+    if phase == "persisting":
+        return "正在整理最终结果"
+    if queued:
+        return f"还有 {queued} 个维度等待空闲槽位"
+    return "等待开始"
+
+
+def _asset_label(asset_kind: str) -> str:
+    return "用户画像报告" if asset_kind == "profile_report" else "Skill"
 
 
 @router.websocket("/api/projects/{project_id}/documents/ws")

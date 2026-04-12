@@ -1,21 +1,29 @@
-﻿document.addEventListener("DOMContentLoaded", () => {
-    const shell = document.querySelector("[data-preprocess-shell]");
-    if (!shell) {
-        return;
-    }
+import {
+    escapeHtml,
+    fetchJson,
+    renderMarkdownInto,
+    safeParseJson,
+    setButtonBusy,
+    shouldAutoScroll,
+} from "./shared.js";
 
-    const bootstrap = JSON.parse(document.getElementById("preprocess-bootstrap").textContent || "{}");
+const shell = document.querySelector("[data-preprocess-shell]");
+
+if (shell) {
+    const bootstrap = JSON.parse(document.getElementById("preprocess-bootstrap")?.textContent || "{}");
+    const ui = bootstrap.ui_strings || {};
+
     const state = {
         projectId: shell.dataset.projectId,
         sessions: bootstrap.sessions || [],
         currentSessionId: bootstrap.selected_session_id || null,
         currentSession: bootstrap.selected_session || null,
         documents: bootstrap.documents || [],
+        eventSource: null,
         liveAssistantText: "",
         liveAssistantNode: null,
-        liveToolDetails: null,
-        eventSource: null,
-        isSending: false,
+        liveToolNode: null,
+        sending: false,
     };
 
     const elements = {
@@ -24,38 +32,39 @@
         chatList: shell.querySelector("[data-chat-list]"),
         documentList: shell.querySelector("[data-document-list]"),
         artifactList: shell.querySelector("[data-artifact-list]"),
-        contextPills: shell.querySelector("[data-context-pills]"),
+        pills: shell.querySelector("[data-context-pills]"),
         composer: shell.querySelector("[data-composer]"),
-        sendButton: shell.querySelector("[data-send-message]"),
+        composerHint: shell.querySelector("[data-composer-hint]"),
+        send: shell.querySelector("[data-send-message]"),
         suggestions: shell.querySelector("[data-mention-suggestions]"),
         newSession: shell.querySelector("[data-new-session]"),
         renameSession: shell.querySelector("[data-rename-session]"),
         deleteSession: shell.querySelector("[data-delete-session]"),
     };
 
+    elements.send.textContent = ui.send || "发送";
     if (bootstrap.initial_mention) {
-        elements.composer.value = normalizeMention(bootstrap.initial_mention) + " ";
+        elements.composer.value = `${normalizeMention(bootstrap.initial_mention)} `;
     }
 
-    renderAll();
-    updateComposerState();
     bindEvents();
+    renderAll();
 
     function bindEvents() {
         elements.newSession.addEventListener("click", async () => {
             const payload = await fetchJson(`/api/projects/${state.projectId}/preprocess/sessions`, {
                 method: "POST",
-                body: JSON.stringify({ title: "New Preprocess Session" }),
+                body: JSON.stringify({ title: ui.new_session || "新建会话" }),
             });
-            state.sessions.unshift(payload);
+            syncSessionSummary(payload);
             await loadSession(payload.id);
         });
 
         elements.renameSession.addEventListener("click", async () => {
-            if (!state.currentSession) {
+            if (!state.currentSessionId) {
                 return;
             }
-            const nextTitle = window.prompt("杈撳叆鏂扮殑浼氳瘽鏍囬", state.currentSession.title || "");
+            const nextTitle = window.prompt(ui.rename_prompt || "输入新的会话标题", state.currentSession?.title || "");
             if (nextTitle === null) {
                 return;
             }
@@ -64,12 +73,18 @@
                 body: JSON.stringify({ title: nextTitle }),
             });
             syncSessionSummary(payload);
-            state.currentSession.title = payload.title;
-            renderAll();
+            if (state.currentSession) {
+                state.currentSession.title = payload.title;
+            }
+            renderSessions();
+            elements.sessionTitle.textContent = payload.title || ui.untitled_session || "未命名会话";
         });
 
         elements.deleteSession.addEventListener("click", async () => {
-            if (!state.currentSessionId || !window.confirm("确定删除这个预分析会话吗？")) {
+            if (!state.currentSessionId) {
+                return;
+            }
+            if (!window.confirm(ui.common?.confirm_delete_session || "确定删除这个会话吗？")) {
                 return;
             }
             await fetchJson(`/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}`, {
@@ -79,43 +94,52 @@
             if (!state.sessions.length) {
                 const created = await fetchJson(`/api/projects/${state.projectId}/preprocess/sessions`, {
                     method: "POST",
-                    body: JSON.stringify({ title: "New Preprocess Session" }),
+                    body: JSON.stringify({ title: ui.new_session || "新建会话" }),
                 });
+                syncSessionSummary(created);
                 state.sessions = [created];
             }
             await loadSession(state.sessions[0].id);
         });
 
-        elements.sendButton.addEventListener("click", sendMessage);
+        elements.send.addEventListener("click", () => sendMessage());
         elements.composer.addEventListener("keydown", (event) => {
             if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                sendMessage();
+                void sendMessage();
             }
         });
-        elements.composer.addEventListener("input", handleMentionAutocomplete);
+        elements.composer.addEventListener("input", () => {
+            void handleMentionAutocomplete();
+        });
     }
 
     async function sendMessage() {
         const message = elements.composer.value.trim();
-        if (!message || !state.currentSessionId || state.isSending) {
+        if (!message || !state.currentSessionId || state.sending) {
             return;
         }
+
         closeStream();
-        const optimisticTurn = {
-            id: `local-user-${Date.now()}`,
+        const chatShouldStick = shouldAutoScroll(elements.chatList.parentElement);
+        state.currentSession.turns.push({
+            id: `local-${Date.now()}`,
             role: "user",
             content: message,
             trace: {},
             created_at: new Date().toISOString(),
-        };
+        });
         elements.composer.value = "";
         hideSuggestions();
-        state.currentSession.turns.push(optimisticTurn);
-        state.isSending = true;
-        updateComposerState();
+        state.sending = true;
+        setButtonBusy(elements.send, true, ui.sending || "发送中…");
+        elements.composer.disabled = true;
         renderChat();
-        addContextPill("妫€绱腑...");
+        addContextPill(ui.working || "处理中…");
+        if (chatShouldStick) {
+            scrollChatToBottom();
+        }
+
         try {
             const payload = await fetchJson(
                 `/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}/messages`,
@@ -124,84 +148,80 @@
                     body: JSON.stringify({ message }),
                 }
             );
-            if (!payload.stream_id) {
-                throw new Error("Missing stream id from server");
-            }
             openStream(payload.stream_id);
         } catch (error) {
-            state.currentSession.turns = (state.currentSession.turns || []).filter((turn) => turn.id !== optimisticTurn.id);
-            elements.composer.value = message;
-            addContextPill("send failed");
-            appendLocalError(error instanceof Error ? error.message : "Request failed");
-            state.isSending = false;
-            updateComposerState();
+            appendLocalError(error.message);
+            restoreComposer();
             renderChat();
         }
     }
 
     function openStream(streamId) {
+        state.liveAssistantText = "";
+        state.liveAssistantNode = null;
+        state.liveToolNode = null;
+
         const source = new EventSource(
             `/api/projects/${state.projectId}/preprocess/sessions/${state.currentSessionId}/streams/${streamId}`
         );
         state.eventSource = source;
-        state.liveAssistantText = "";
-        state.liveAssistantNode = null;
-        state.liveToolDetails = null;
 
         source.addEventListener("status", (event) => {
-            const payload = JSON.parse(event.data);
-            addContextPill(payload.label);
+            const payload = safeParseJson(event.data, {});
+            addContextPill(payload.label || ui.ready_context || "准备上下文");
             ensureLiveAssistantRow();
         });
+
         source.addEventListener("tool_call", (event) => {
-            const payload = JSON.parse(event.data);
+            const payload = safeParseJson(event.data, {});
             ensureLiveAssistantRow();
-            state.liveToolDetails = appendToolCall(elements.chatList, payload.name, payload.arguments);
+            state.liveToolNode = appendToolBlock(payload.name || "tool_call", payload.arguments, false);
             scrollChatToBottom();
         });
+
         source.addEventListener("tool_result", (event) => {
-            const payload = JSON.parse(event.data);
+            const payload = safeParseJson(event.data, {});
             ensureLiveAssistantRow();
-            if (state.liveToolDetails) {
-                const body = state.liveToolDetails.querySelector("pre");
-                body.textContent = JSON.stringify(payload.output, null, 2);
+            if (state.liveToolNode) {
+                const body = state.liveToolNode.querySelector("pre");
+                if (body) {
+                    body.textContent = JSON.stringify(payload.output, null, 2);
+                }
             } else {
-                appendToolCall(elements.chatList, payload.name, payload.output, true);
+                appendToolBlock(payload.name || "tool_result", payload.output, true);
             }
             scrollChatToBottom();
         });
+
         source.addEventListener("assistant_delta", (event) => {
-            const payload = JSON.parse(event.data);
+            const payload = safeParseJson(event.data, {});
             ensureLiveAssistantRow();
             state.liveAssistantText += payload.delta || "";
             renderMarkdownInto(state.liveAssistantNode, state.liveAssistantText);
             scrollChatToBottom();
         });
+
         source.addEventListener("assistant_done", async () => {
             closeStream();
             await loadSession(state.currentSessionId);
         });
-        const handleStreamFailure = async (event) => {
+
+        const handleFailure = async (message) => {
             closeStream();
-            const payload = safeParseJson(event.data);
-            appendLocalError(payload?.message || "Execution failed");
-            addContextPill("execution failed");
+            appendLocalError(message || ui.execution_failed || "执行失败");
             await loadSession(state.currentSessionId);
         };
-        source.addEventListener("stream_error", handleStreamFailure);
-        source.addEventListener("error", async (event) => {
-            if (!event.data) {
-                return;
-            }
-            await handleStreamFailure(event);
+
+        source.addEventListener("stream_error", async (event) => {
+            const payload = safeParseJson(event.data, {});
+            await handleFailure(payload.message);
         });
-        source.onerror = () => {
+
+        source.onerror = async () => {
             if (state.eventSource !== source) {
                 return;
             }
-            addContextPill("connection interrupted");
-            state.isSending = false;
-            updateComposerState();
+            await handleFailure(ui.connection_interrupted || "连接已中断");
         };
     }
 
@@ -210,7 +230,162 @@
         state.currentSessionId = sessionId;
         state.currentSession = payload;
         syncSessionSummary(payload);
+        restoreComposer();
         renderAll();
+    }
+
+    function renderAll() {
+        renderSessions();
+        renderChat();
+        renderDocuments();
+        renderArtifacts();
+        elements.sessionTitle.textContent = state.currentSession?.title || ui.untitled_session || "未命名会话";
+    }
+
+    function renderSessions() {
+        elements.sessionList.innerHTML = "";
+        state.sessions.forEach((item) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
+            button.innerHTML = `<strong>${escapeHtml(item.title || ui.untitled_session || "未命名会话")}</strong><small>${item.turn_count || 0} 轮消息</small>`;
+            button.addEventListener("click", () => loadSession(item.id));
+            elements.sessionList.appendChild(button);
+        });
+    }
+
+    function renderChat() {
+        elements.chatList.innerHTML = "";
+        clearPills();
+        (state.currentSession?.turns || []).forEach((turn) => {
+            elements.chatList.appendChild(renderTurn(turn));
+        });
+        scrollChatToBottom();
+    }
+
+    function renderTurn(turn) {
+        const row = document.createElement("article");
+        row.className = `chat-row chat-row--${turn.role === "user" ? "user" : "assistant"}`;
+
+        if (turn.role === "assistant") {
+            normalizeTraceBlocks(turn.trace || {}).forEach((block) => {
+                row.appendChild(renderTraceBlock(block));
+            });
+        }
+
+        const bubble = document.createElement("div");
+        bubble.className = `chat-bubble chat-bubble--${turn.role === "user" ? "user" : "assistant"}`;
+        if (turn.role === "assistant") {
+            renderMarkdownInto(bubble, turn.content || "");
+        } else {
+            bubble.textContent = turn.content || "";
+        }
+        row.appendChild(bubble);
+
+        const meta = document.createElement("div");
+        meta.className = "chat-meta";
+        meta.textContent = formatTime(turn.created_at);
+        row.appendChild(meta);
+        return row;
+    }
+
+    function renderTraceBlock(block) {
+        if (block.type === "status") {
+            const pill = document.createElement("div");
+            pill.className = "turn-pill";
+            pill.textContent = block.label || block.message || ui.working || "处理中…";
+            return pill;
+        }
+        if (block.type === "artifact") {
+            const card = document.createElement("a");
+            card.className = "artifact-card";
+            card.href = `/api/projects/${state.projectId}/preprocess/artifacts/${block.id}/download`;
+            card.innerHTML = `<strong>${escapeHtml(block.filename || "artifact")}</strong><small>${escapeHtml(block.summary || ui.artifacts || "生成文件")}</small>`;
+            return card;
+        }
+        const details = document.createElement("details");
+        details.className = "tool-call";
+        details.innerHTML = `
+            <summary><span>&gt;_ ${escapeHtml(block.name || block.type)}</span><span>${block.type === "tool_call" ? "调用中" : "已完成"}</span></summary>
+            <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify(block.output || block.arguments || block, null, 2))}</pre></div>
+        `;
+        return details;
+    }
+
+    function renderDocuments() {
+        elements.documentList.innerHTML = "";
+        if (!state.documents.length) {
+            const empty = document.createElement("p");
+            empty.className = "muted";
+            empty.textContent = ui.document_empty || "当前项目还没有可引用文档。";
+            elements.documentList.appendChild(empty);
+            return;
+        }
+        state.documents.forEach((item) => {
+            const card = document.createElement("div");
+            card.className = "context-card";
+            const mention = normalizeMention(item.filename);
+            card.innerHTML = `<strong>${escapeHtml(item.title || item.filename)}</strong><small>${escapeHtml(item.filename)}</small>`;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "ghost-button top-gap";
+            button.textContent = `${ui.mention_insert || "插入"} ${mention}`;
+            button.addEventListener("click", () => insertMention(mention));
+            card.appendChild(button);
+            elements.documentList.appendChild(card);
+        });
+    }
+
+    function renderArtifacts() {
+        elements.artifactList.innerHTML = "";
+        const artifacts = state.currentSession?.artifacts || [];
+        if (!artifacts.length) {
+            const empty = document.createElement("p");
+            empty.className = "muted";
+            empty.textContent = ui.artifact_empty || "当前会话还没有生成文件。";
+            elements.artifactList.appendChild(empty);
+            return;
+        }
+        artifacts.forEach((artifact) => {
+            const link = document.createElement("a");
+            link.className = "artifact-card";
+            link.href = artifact.download_url;
+            link.innerHTML = `<strong>${escapeHtml(artifact.filename)}</strong><small>${escapeHtml(artifact.summary || "下载文件")}</small>`;
+            elements.artifactList.appendChild(link);
+        });
+    }
+
+    async function handleMentionAutocomplete() {
+        const token = getCurrentMentionToken(elements.composer);
+        if (!token) {
+            hideSuggestions();
+            return;
+        }
+        const payload = await fetchJson(`/api/projects/${state.projectId}/documents/mentions?q=${encodeURIComponent(token.query)}`);
+        if (!payload.items?.length) {
+            hideSuggestions();
+            return;
+        }
+
+        elements.suggestions.innerHTML = "";
+        payload.items.forEach((item) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "mention-suggestion";
+            button.innerHTML = `<strong>${escapeHtml(item.title || item.filename)}</strong><small>${escapeHtml(item.filename)}</small>`;
+            button.addEventListener("click", () => {
+                replaceCurrentMention(elements.composer, token, normalizeMention(item.filename));
+                hideSuggestions();
+            });
+            elements.suggestions.appendChild(button);
+        });
+        elements.suggestions.hidden = false;
+    }
+
+    function insertMention(mention) {
+        const before = elements.composer.value;
+        elements.composer.value = `${before}${before.endsWith(" ") || !before ? "" : " "}${mention} `;
+        elements.composer.focus();
     }
 
     function syncSessionSummary(detail) {
@@ -230,158 +405,6 @@
         }
     }
 
-    function renderAll() {
-        renderSessions();
-        renderChat();
-        renderDocuments();
-        renderArtifacts();
-        elements.sessionTitle.textContent = state.currentSession?.title || "Untitled Session";
-    }
-
-    function renderSessions() {
-        elements.sessionList.innerHTML = "";
-        state.sessions.forEach((item) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = `session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
-            button.innerHTML = `<strong>${escapeHtml(item.title || "Untitled Session")}</strong><small>${item.turn_count || 0} turns</small>`;
-            button.addEventListener("click", () => loadSession(item.id));
-            elements.sessionList.appendChild(button);
-        });
-    }
-
-    function renderChat() {
-        elements.chatList.innerHTML = "";
-        clearContextPills();
-        (state.currentSession?.turns || []).forEach((turn) => {
-            elements.chatList.appendChild(renderTurn(turn));
-        });
-        scrollChatToBottom();
-    }
-
-    function renderTurn(turn) {
-        const row = document.createElement("article");
-        row.className = `chat-row chat-row--${turn.role === "user" ? "user" : "assistant"}`;
-        if (turn.role === "assistant") {
-            const traceBlocks = normalizeTraceBlocks(turn.trace || {});
-            traceBlocks.forEach((block) => row.appendChild(renderTraceBlock(block)));
-        }
-        const bubble = document.createElement("div");
-        bubble.className = `chat-bubble chat-bubble--${turn.role === "user" ? "user" : "assistant"}`;
-        if (turn.role === "user") {
-            bubble.textContent = turn.content;
-        } else {
-            renderMarkdownInto(bubble, turn.content || "");
-        }
-        row.appendChild(bubble);
-        const meta = document.createElement("div");
-        meta.className = "chat-meta";
-        meta.textContent = formatTime(turn.created_at);
-        row.appendChild(meta);
-        return row;
-    }
-
-    function renderTraceBlock(block) {
-        if (block.type === "status") {
-            const pill = document.createElement("div");
-            pill.className = "turn-pill";
-            pill.textContent = block.label || block.message || "处理中";
-            return pill;
-        }
-        if (block.type === "artifact") {
-            const card = document.createElement("a");
-            card.className = "artifact-card";
-            card.href = `/api/projects/${state.projectId}/preprocess/artifacts/${block.id}/download`;
-            card.innerHTML = `<strong>${escapeHtml(block.filename || "artifact")}</strong><small>${escapeHtml(block.summary || "鐢熸垚鏂囦欢")}</small>`;
-            return card;
-        }
-        const details = document.createElement("details");
-        details.className = "tool-call";
-        const summary = document.createElement("summary");
-        summary.innerHTML = `<span>&gt;_ ${escapeHtml(block.name || block.type)}</span><span>${block.type === "tool_call" ? "pending" : "done"}</span>`;
-        const body = document.createElement("div");
-        body.className = "tool-call__body";
-        const pre = document.createElement("pre");
-        pre.textContent = JSON.stringify(block.output || block.arguments || block, null, 2);
-        body.appendChild(pre);
-        details.appendChild(summary);
-        details.appendChild(body);
-        return details;
-    }
-
-    function renderDocuments() {
-        elements.documentList.innerHTML = "";
-        state.documents.forEach((document) => {
-            const card = document.createElement("div");
-            card.className = "context-card";
-            const mention = normalizeMention(document.filename);
-            card.innerHTML = `<strong>${escapeHtml(document.title || document.filename)}</strong><small>${escapeHtml(document.filename)}</small>`;
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "secondary-button top-gap";
-            button.textContent = `鎻掑叆 ${mention}`;
-            button.addEventListener("click", () => insertMention(mention));
-            card.appendChild(button);
-            elements.documentList.appendChild(card);
-        });
-    }
-
-    function renderArtifacts() {
-        elements.artifactList.innerHTML = "";
-        const artifacts = state.currentSession?.artifacts || [];
-        if (!artifacts.length) {
-            const empty = document.createElement("p");
-            empty.className = "muted";
-            empty.textContent = "当前会话还没有生成文件。";
-            elements.artifactList.appendChild(empty);
-            return;
-        }
-        artifacts.forEach((artifact) => {
-            const link = document.createElement("a");
-            link.className = "artifact-card";
-            link.href = artifact.download_url;
-            link.innerHTML = `<strong>${escapeHtml(artifact.filename)}</strong><small>${escapeHtml(artifact.summary || "涓嬭浇浜х墿")}</small>`;
-            elements.artifactList.appendChild(link);
-        });
-    }
-
-    async function handleMentionAutocomplete() {
-        const token = getCurrentMentionToken(elements.composer);
-        if (!token) {
-            hideSuggestions();
-            return;
-        }
-        const payload = await fetchJson(`/api/projects/${state.projectId}/documents/mentions?q=${encodeURIComponent(token.query)}`);
-        if (!payload.items?.length) {
-            hideSuggestions();
-            return;
-        }
-        elements.suggestions.innerHTML = "";
-        payload.items.forEach((item) => {
-            const button = document.createElement("button");
-            button.type = "button";
-            button.className = "mention-suggestion";
-            button.innerHTML = `<strong>${escapeHtml(item.title || item.filename)}</strong><small>${escapeHtml(item.filename)}</small>`;
-            button.addEventListener("click", () => {
-                replaceCurrentMention(elements.composer, token, normalizeMention(item.filename));
-                hideSuggestions();
-            });
-            elements.suggestions.appendChild(button);
-        });
-        elements.suggestions.hidden = false;
-    }
-
-    function insertMention(mention) {
-        const textarea = elements.composer;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const before = textarea.value.slice(0, start);
-        const after = textarea.value.slice(end);
-        const spacer = before && !before.endsWith(" ") && !before.endsWith("\n") ? " " : "";
-        textarea.value = `${before}${spacer}${mention} ${after}`;
-        textarea.focus();
-    }
-
     function ensureLiveAssistantRow() {
         if (state.liveAssistantNode) {
             return;
@@ -395,25 +418,28 @@
         state.liveAssistantNode = bubble;
     }
 
+    function appendToolBlock(name, payload, done) {
+        const details = document.createElement("details");
+        details.className = "tool-call";
+        details.open = !!done;
+        details.innerHTML = `
+            <summary><span>&gt;_ ${escapeHtml(name || "tool")}</span><span>${done ? "已完成" : "调用中"}</span></summary>
+            <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></div>
+        `;
+        elements.chatList.appendChild(details);
+        return details;
+    }
+
     function addContextPill(label) {
         const pill = document.createElement("div");
         pill.className = "turn-pill";
         pill.textContent = label;
-        elements.contextPills.innerHTML = "";
-        elements.contextPills.appendChild(pill);
+        elements.pills.innerHTML = "";
+        elements.pills.appendChild(pill);
     }
 
-    function clearContextPills() {
-        elements.contextPills.innerHTML = "";
-    }
-
-    function appendToolCall(container, name, payload, isResult = false) {
-        const details = document.createElement("details");
-        details.className = "tool-call";
-        details.open = !!isResult;
-        details.innerHTML = `<summary><span>&gt;_ ${escapeHtml(name)}</span><span>${isResult ? "done" : "calling"}</span></summary><div class="tool-call__body"><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></div>`;
-        container.appendChild(details);
-        return details;
+    function clearPills() {
+        elements.pills.innerHTML = "";
     }
 
     function closeStream() {
@@ -422,49 +448,48 @@
             state.eventSource = null;
         }
         state.liveAssistantNode = null;
+        state.liveToolNode = null;
         state.liveAssistantText = "";
-        state.liveToolDetails = null;
-        state.isSending = false;
-        updateComposerState();
     }
 
-    function updateComposerState() {
-        elements.sendButton.disabled = state.isSending;
-        elements.composer.disabled = state.isSending;
+    function restoreComposer() {
+        closeStream();
+        state.sending = false;
+        elements.composer.disabled = false;
+        setButtonBusy(elements.send, false);
     }
 
     function appendLocalError(message) {
         state.currentSession.turns.push({
-            id: `local-error-${Date.now()}`,
+            id: `error-${Date.now()}`,
             role: "assistant",
-            content: `Request failed:\n\n${message}`,
-            trace: { blocks: [{ type: "status", label: "execution failed" }] },
+            content: `${ui.execution_failed || "执行失败"}：\n\n${message}`,
+            trace: { blocks: [{ type: "status", label: ui.execution_failed || "执行失败" }] },
             created_at: new Date().toISOString(),
         });
     }
 
+    function hideSuggestions() {
+        elements.suggestions.hidden = true;
+        elements.suggestions.innerHTML = "";
+    }
+
     function scrollChatToBottom() {
-        elements.chatList.parentElement.scrollTop = elements.chatList.parentElement.scrollHeight;
+        const container = elements.chatList.parentElement;
+        container.scrollTop = container.scrollHeight;
     }
-});
 
-async function fetchJson(url, options = {}) {
-    const response = await fetch(url, {
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        ...options,
-    });
-    const payload = await response.json();
-    if (!response.ok) {
-        throw new Error(payload.detail || "Request failed");
-    }
-    return payload;
-}
-
-function safeParseJson(text) {
-    try {
-        return JSON.parse(text || "null");
-    } catch {
-        return null;
+    function formatTime(value) {
+        try {
+            return new Intl.DateTimeFormat("zh-CN", {
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+            }).format(new Date(value));
+        } catch {
+            return value || "--";
+        }
     }
 }
 
@@ -474,11 +499,7 @@ function normalizeTraceBlocks(trace) {
     for (let index = 0; index < blocks.length; index += 1) {
         const current = blocks[index];
         const next = blocks[index + 1];
-        if (
-            current?.type === "tool_call" &&
-            next?.type === "tool_result" &&
-            current.name === next.name
-        ) {
+        if (current?.type === "tool_call" && next?.type === "tool_result" && current.name === next.name) {
             normalized.push({
                 type: "tool_result",
                 name: current.name,
@@ -493,123 +514,28 @@ function normalizeTraceBlocks(trace) {
     return normalized;
 }
 
-function renderMarkdownInto(node, source) {
-    node.innerHTML = markdownToHtml(source || "");
-    node.classList.add("markdown-body");
-    node.querySelectorAll("[data-copy-code]").forEach((button) => {
-        button.addEventListener("click", async () => {
-            const pre = button.parentElement.querySelector("pre");
-            await navigator.clipboard.writeText(pre.textContent || "");
-            button.textContent = "Copied";
-            window.setTimeout(() => {
-                button.textContent = "Copy";
-            }, 1200);
-        });
-    });
-}
-
-function markdownToHtml(source) {
-    const codeBlocks = [];
-    let text = source.replace(/```([\w-]+)?\n([\s\S]*?)```/g, (_, lang, code) => {
-        const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
-        codeBlocks.push(
-            `<div class="md-code"><button type="button" class="secondary-button" data-copy-code>Copy</button><pre><code data-lang="${escapeHtml(lang || "")}">${escapeHtml(code.trimEnd())}</code></pre></div>`
-        );
-        return placeholder;
-    });
-    const sections = text.split(/\n{2,}/).filter(Boolean);
-    const html = sections
-        .map((section) => {
-            const trimmed = section.trim();
-            if (/^###\s+/.test(trimmed)) {
-                return `<h3>${renderInline(trimmed.replace(/^###\s+/, ""))}</h3>`;
-            }
-            if (/^##\s+/.test(trimmed)) {
-                return `<h2>${renderInline(trimmed.replace(/^##\s+/, ""))}</h2>`;
-            }
-            if (/^#\s+/.test(trimmed)) {
-                return `<h1>${renderInline(trimmed.replace(/^#\s+/, ""))}</h1>`;
-            }
-            if (/^[-*]\s+/m.test(trimmed)) {
-                const items = trimmed
-                    .split("\n")
-                    .filter((line) => /^[-*]\s+/.test(line.trim()))
-                    .map((line) => `<li>${renderInline(line.trim().replace(/^[-*]\s+/, ""))}</li>`)
-                    .join("");
-                return `<ul>${items}</ul>`;
-            }
-            return `<p>${renderInline(trimmed).replace(/\n/g, "<br>")}</p>`;
-        })
-        .join("");
-    return restoreCodeBlocks(html, codeBlocks);
-}
-
-function restoreCodeBlocks(html, codeBlocks) {
-    let nextHtml = html;
-    codeBlocks.forEach((block, index) => {
-        nextHtml = nextHtml.replace(`__CODE_BLOCK_${index}__`, block);
-    });
-    return nextHtml;
-}
-
-function renderInline(text) {
-    return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
-}
-
-function escapeHtml(value) {
-    return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#39;");
-}
-
-function formatTime(value) {
-    try {
-        return new Intl.DateTimeFormat("zh-CN", {
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-        }).format(new Date(value));
-    } catch {
-        return value;
-    }
-}
-
 function normalizeMention(filename) {
-    if (filename.startsWith("@")) {
-        return filename;
-    }
     return /\s/.test(filename) ? `@"${filename}"` : `@${filename}`;
 }
 
 function getCurrentMentionToken(textarea) {
-    const before = textarea.value.slice(0, textarea.selectionStart);
-    const match = before.match(/(?:^|\s)@(?:"([^"]*)|([^\s@"]*))$/);
+    const cursor = textarea.selectionStart;
+    const before = textarea.value.slice(0, cursor);
+    const match = before.match(/(?:^|\s)(@(?:"[^"]*|[^\s@]*))$/);
     if (!match) {
         return null;
     }
+    const raw = match[1];
+    const query = raw.startsWith('@"') ? raw.slice(2) : raw.slice(1);
     return {
-        query: match[1] || match[2] || "",
-        raw: match[0].trimStart(),
-        start: textarea.selectionStart - match[0].trimStart().length,
-        end: textarea.selectionStart,
+        raw,
+        query,
+        start: cursor - raw.length,
+        end: cursor,
     };
 }
 
-function replaceCurrentMention(textarea, token, mention) {
-    textarea.value = `${textarea.value.slice(0, token.start)}${mention} ${textarea.value.slice(token.end)}`;
+function replaceCurrentMention(textarea, token, replacement) {
+    textarea.value = `${textarea.value.slice(0, token.start)}${replacement}${textarea.value.slice(token.end)} `;
     textarea.focus();
 }
-
-function hideSuggestions() {
-    const popup = document.querySelector("[data-mention-suggestions]");
-    if (!popup) {
-        return;
-    }
-    popup.hidden = true;
-    popup.innerHTML = "";
-}
-

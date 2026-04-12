@@ -8,11 +8,12 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
+from app.analysis.facets import FACETS
 from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
 from app.main import create_app
 from app.models import TextChunk
-from app.schemas import AssetBundle
+from app.schemas import AssetBundle, DEFAULT_ANALYSIS_CONCURRENCY, ExtractedSegment, ExtractionResult, RetrievedChunk
 from app.storage import repository
 
 
@@ -33,6 +34,18 @@ def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float
         time.sleep(0.05)
         payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
     return payload
+
+
+def _collect_analysis_snapshots(client, project_id: str, run_id: str, *, timeout_s: float = 8.0) -> list[dict]:
+    deadline = time.time() + timeout_s
+    snapshots: list[dict] = []
+    while time.time() < deadline:
+        payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+        snapshots.append(payload)
+        if payload["status"] not in {"queued", "running"}:
+            break
+        time.sleep(0.02)
+    return snapshots
 
 
 def _wait_for_rechunk(client, project_id: str, task_id: str, *, timeout_s: float = 8.0) -> dict:
@@ -287,6 +300,232 @@ def test_analysis_api_truncates_large_preview_fields(client, app):
     assert "request_payload" not in event_payload
 
 
+def test_analysis_api_backfills_queue_fields_for_legacy_runs(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Legacy Queue"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="queued",
+            summary_json={"current_stage": "legacy"},
+        )
+        for facet in FACETS:
+            repository.upsert_facet(
+                session,
+                run.id,
+                facet.key,
+                status="pending",
+                confidence=0.0,
+                findings_json={"label": facet.label, "summary": ""},
+                evidence_json=[],
+                conflicts_json=[],
+                error_message=None,
+            )
+        run_id = run.id
+
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+
+    assert payload["summary"]["concurrency"] == DEFAULT_ANALYSIS_CONCURRENCY
+    assert payload["summary"]["active_facets"] == 0
+    assert payload["summary"]["queued_facets"] == len(FACETS)
+    assert payload["summary"]["current_phase"] == "queued"
+    assert [facet["findings"]["queue_position"] for facet in payload["facets"]] == list(range(1, len(FACETS) + 1))
+    assert all(facet["status"] == "queued" for facet in payload["facets"])
+    assert all("phase" in facet["findings"] for facet in payload["facets"])
+    assert all("started_at" in facet["findings"] for facet in payload["facets"])
+    assert all("finished_at" in facet["findings"] for facet in payload["facets"])
+
+
+def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
+    import app.analysis.engine as analysis_engine_module
+
+    project_payload = client.post("/api/projects", json={"name": "Serial Run"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Serial analysis test content."), "text/plain")},
+    )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    app.state.analysis_runner.run_inline = False
+
+    def fake_retrieve(session, project_id, facet, **kwargs):
+        del session, project_id, kwargs
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=f"{facet.key}-chunk",
+                    document_id="doc-1",
+                    document_title="Memo",
+                    filename="memo.txt",
+                    source_type="text",
+                    content=f"Evidence for {facet.key}",
+                    score=1.0,
+                    page_number=None,
+                    metadata={},
+                    anchor_chunk_id=f"{facet.key}-chunk",
+                    anchor_chunk_index=0,
+                    context_span={"left": 0, "right": 0, "total_chars": 32},
+                )
+            ],
+            "keyword",
+            {"query": facet.key},
+        )
+
+    def fake_worker(
+        facet,
+        project_name,
+        chunks,
+        llm_config,
+        llm_log_path,
+        target_role,
+        analysis_context,
+        stream_callback=None,
+    ):
+        del project_name, chunks, llm_config, llm_log_path, target_role, analysis_context, stream_callback
+        time.sleep(0.12)
+        return {
+            "facet_key": facet.key,
+            "status": "completed",
+            "confidence": 0.75,
+            "summary": f"{facet.key} complete",
+            "bullets": [f"{facet.key} bullet"],
+            "evidence": [],
+            "conflicts": [],
+            "notes": None,
+            "raw_payload": {
+                "_meta": {
+                    "llm_called": False,
+                    "llm_success": False,
+                    "llm_attempts": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "duration_ms": 120,
+                }
+            },
+        }
+
+    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Strict serial", "concurrency": 1},
+    )
+    run_id = analyze_response.json()["id"]
+    snapshots = _collect_analysis_snapshots(client, project_id, run_id)
+
+    assert snapshots
+    assert max(snapshot["summary"]["active_facets"] for snapshot in snapshots) <= 1
+    assert all(
+        sum(1 for facet in snapshot["facets"] if facet["status"] in {"preparing", "running"}) <= 1
+        for snapshot in snapshots
+    )
+    assert any(
+        snapshot["summary"]["active_facets"] == 1 and snapshot["summary"]["queued_facets"] >= 1
+        for snapshot in snapshots
+        if snapshot["status"] == "running"
+    )
+    assert snapshots[-1]["summary"]["concurrency"] == 1
+    assert snapshots[-1]["status"] == "completed"
+
+
+def test_analysis_concurrency_two_caps_active_slots(client, app, monkeypatch):
+    import app.analysis.engine as analysis_engine_module
+
+    project_payload = client.post("/api/projects", json={"name": "Parallel Cap"}).json()
+    project_id = project_payload["id"]
+    client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"Parallel analysis test content."), "text/plain")},
+    )
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    app.state.analysis_runner.run_inline = False
+
+    def fake_retrieve(session, project_id, facet, **kwargs):
+        del session, project_id, kwargs
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=f"{facet.key}-chunk",
+                    document_id="doc-1",
+                    document_title="Memo",
+                    filename="memo.txt",
+                    source_type="text",
+                    content=f"Evidence for {facet.key}",
+                    score=1.0,
+                    page_number=None,
+                    metadata={},
+                    anchor_chunk_id=f"{facet.key}-chunk",
+                    anchor_chunk_index=0,
+                    context_span={"left": 0, "right": 0, "total_chars": 32},
+                )
+            ],
+            "keyword",
+            {"query": facet.key},
+        )
+
+    def fake_worker(
+        facet,
+        project_name,
+        chunks,
+        llm_config,
+        llm_log_path,
+        target_role,
+        analysis_context,
+        stream_callback=None,
+    ):
+        del project_name, chunks, llm_config, llm_log_path, target_role, analysis_context, stream_callback
+        time.sleep(0.12)
+        return {
+            "facet_key": facet.key,
+            "status": "completed",
+            "confidence": 0.75,
+            "summary": f"{facet.key} complete",
+            "bullets": [f"{facet.key} bullet"],
+            "evidence": [],
+            "conflicts": [],
+            "notes": None,
+            "raw_payload": {
+                "_meta": {
+                    "llm_called": False,
+                    "llm_success": False,
+                    "llm_attempts": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "duration_ms": 120,
+                }
+            },
+        }
+
+    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
+
+    analyze_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"target_role": "Tester", "analysis_context": "Cap active slots", "concurrency": 2},
+    )
+    run_id = analyze_response.json()["id"]
+    snapshots = _collect_analysis_snapshots(client, project_id, run_id)
+
+    assert snapshots
+    assert max(snapshot["summary"]["active_facets"] for snapshot in snapshots) <= 2
+    assert all(
+        sum(1 for facet in snapshot["facets"] if facet["status"] in {"preparing", "running"}) <= 2
+        for snapshot in snapshots
+    )
+    assert any(snapshot["summary"]["active_facets"] == 2 for snapshot in snapshots if snapshot["status"] == "running")
+    assert snapshots[-1]["summary"]["concurrency"] == 2
+    assert snapshots[-1]["status"] == "completed"
+
+
 def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
     project_payload = client.post("/api/projects", json={"name": "Asset Stream"}).json()
     project_id = project_payload["id"]
@@ -415,12 +654,21 @@ def test_analysis_stream_and_rerun_api(client, app):
     stream_response = client.get(f"/api/projects/{project_id}/analysis/stream", params={"run_id": run_id})
     assert stream_response.status_code == 200
     assert "event: snapshot" in stream_response.text
+    assert '"active_facets"' in stream_response.text
+    assert '"queued_facets"' in stream_response.text
+    assert '"current_phase"' in stream_response.text
 
     rerun_response = client.post(f"/api/projects/{project_id}/analysis/personality/rerun")
     assert rerun_response.status_code == 200
     rerun_payload = rerun_response.json()
     assert rerun_payload["id"] == run_id
     assert len(rerun_payload["facets"]) == 10
+    assert "active_facets" in rerun_payload["summary"]
+    assert "queued_facets" in rerun_payload["summary"]
+    assert "current_phase" in rerun_payload["summary"]
+    assert all("phase" in facet["findings"] for facet in rerun_payload["facets"])
+    assert all("started_at" in facet["findings"] for facet in rerun_payload["facets"])
+    assert all("finished_at" in facet["findings"] for facet in rerun_payload["facets"])
 
 
 def test_analysis_run_survives_single_facet_retrieval_failure(client, app, monkeypatch):
@@ -560,3 +808,132 @@ def test_custom_provider_requires_base_url(client):
         follow_redirects=False,
     )
     assert response.status_code == 400
+
+
+def test_pages_render_simplified_chinese_and_lang(client):
+    project_id = client.post("/api/projects", json={"name": "页面检查"}).json()["id"]
+
+    pages = {
+        "/": "项目总览",
+        f"/projects/{project_id}": "项目控制中心",
+        f"/projects/{project_id}/analysis": "分析监控",
+        f"/projects/{project_id}/assets?kind=skill": "资产输出工作台",
+        f"/projects/{project_id}/playground": "沉浸式对话验证",
+        f"/projects/{project_id}/preprocess": "预分析工作区",
+        "/settings": "配置 Chat LLM 与 Embedding 服务",
+    }
+
+    for path, expected_text in pages.items():
+        response = client.get(path)
+        assert response.status_code == 200
+        assert b'lang="zh-CN"' in response.content
+        assert expected_text.encode("utf-8") in response.content
+        assert b"\xef\xbf\xbd" not in response.content
+        assert b"zh-Hant" not in response.content
+
+
+def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
+    create_payload = client.post("/api/projects", json={"name": "接口本地化"}).json()
+    project_id = create_payload["id"]
+    assert create_payload["status"] == "ok"
+    assert "项目已创建" in create_payload["message"]
+
+    upload_payload = client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"localized api payload"), "text/plain")},
+    ).json()
+    assert upload_payload["status"] == "ok"
+    assert "文档上传完成" in upload_payload["message"]
+
+    session_payload = client.post(
+        f"/api/projects/{project_id}/preprocess/sessions",
+        json={"title": "接口消息会话"},
+    ).json()
+    assert session_payload["status"] == "ok"
+    assert "预分析会话已创建" in session_payload["message"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "测试角色", "analysis_context": "接口文案检查"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={"label": "Personality", "summary": "ready", "bullets": []},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    def fake_build(asset_kind, project, facets, config, **kwargs):
+        return AssetBundle(
+            asset_kind=asset_kind,
+            markdown_text="# Draft",
+            json_payload={"headline": "Preview"},
+            prompt_text="Prompt",
+        )
+
+    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+
+    draft_payload = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "skill"},
+    ).json()
+    assert draft_payload["request_status"] == "ok"
+    assert "资产草稿已生成" in draft_payload["message"]
+
+    publish_payload = client.post(f"/api/projects/{project_id}/skills/{draft_payload['id']}/publish").json()
+    assert publish_payload["request_status"] == "ok"
+    assert "Skill 版本已发布" in publish_payload["message"]
+
+    chat_payload = client.post(
+        f"/api/projects/{project_id}/playground/chat",
+        json={"message": "你好，介绍一下自己。"},
+    ).json()
+    assert chat_payload["status"] == "ok"
+    assert "试聊回复已生成" in chat_payload["message"]
+
+
+def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch):
+    import app.pipeline.ingest_task as ingest_task_module
+
+    calls = []
+
+    def fake_extract_text(filename: str, content: bytes):
+        calls.append((filename, content))
+        return ExtractionResult(
+            raw_text="原始抽取文本",
+            clean_text="清洗后的文本",
+            title="提取标题",
+            author_guess=None,
+            created_at_guess=None,
+            language="zh",
+            metadata={"format": "fake"},
+            segments=[ExtractedSegment(text="第一段", metadata={})],
+        )
+
+    monkeypatch.setattr(ingest_task_module, "extract_text", fake_extract_text)
+
+    project_id = client.post("/api/projects", json={"name": "抽取回归"}).json()["id"]
+    raw_bytes = b"\xff\xfe\x00real extractor path"
+    upload_payload = client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("broken.txt", io.BytesIO(raw_bytes), "text/plain")},
+    ).json()
+    document_id = upload_payload["documents"][0]["id"]
+
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    assert calls == [("broken.txt", raw_bytes)]
+    with app.state.db.session() as session:
+        document = repository.get_document(session, document_id)
+        assert document is not None
+        assert document.title == "提取标题"
+        assert document.clean_text == "清洗后的文本"

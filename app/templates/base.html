@@ -1,37 +1,41 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="{{ locale or 'zh-CN' }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Persona Distiller{% endblock %}</title>
+    <title>{% block title %}{{ ui.common.app_name }}{% endblock %}</title>
     <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}">
     {% block extra_head %}{% endblock %}
-    <script defer src="{{ request.url_for('static', path='app.js') }}"></script>
-    {% block extra_scripts_head %}{% endblock %}
 </head>
-<body>
-    <div class="page-aura"></div>
-    <div class="ambient-glow-1"></div>
-    <div class="ambient-glow-2"></div>
-    <div class="cursor-glow" id="cursor-glow"></div>
+<body data-locale="{{ locale or 'zh-CN' }}">
+    <div class="screen-noise" aria-hidden="true"></div>
+    <div class="screen-grid" aria-hidden="true"></div>
+    <div class="screen-aura screen-aura-left" aria-hidden="true"></div>
+    <div class="screen-aura screen-aura-right" aria-hidden="true"></div>
+    <div class="cursor-glow" id="cursor-glow" aria-hidden="true"></div>
+
+    {% set path = request.url.path %}
     <header class="site-header">
-        <div class="header-inner">
-            <a class="brand-lockup" href="/">
-                <span class="brand-mark"></span>
-                <span>
-                    <strong>角色提取器</strong>
-                    <small>语料转技能</small>
+        <div class="site-shell header-shell">
+            <a class="brand-lockup" href="/" aria-label="{{ ui.common.app_name }}">
+                <span class="brand-mark">PD</span>
+                <span class="brand-copy">
+                    <strong>{{ ui.common.brand_name }}</strong>
+                    <small>{{ ui.common.brand_tagline }}</small>
                 </span>
             </a>
-            <nav class="nav-links">
-                <a href="/">项目</a>
-                <a href="/settings">设置</a>
+            <nav class="nav-links" aria-label="主导航">
+                <a href="/" class="{% if path == '/' or path.startswith('/projects') %}is-active{% endif %}">{{ ui.common.nav_projects }}</a>
+                <a href="/settings" class="{% if path.startswith('/settings') %}is-active{% endif %}">{{ ui.common.nav_settings }}</a>
             </nav>
         </div>
     </header>
-    <main class="page-shell">
+
+    <main class="site-shell page-shell {% block page_class %}{% endblock %}">
         {% block content %}{% endblock %}
     </main>
+
+    <script type="module" src="{{ request.url_for('static', path='shared.js') }}"></script>
     {% block extra_scripts %}{% endblock %}
 </body>
 </html>

@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 
 from app.analysis.engine import AnalysisEngine
 from app.analysis.runner import AnalysisTaskRunner
+from app.analysis.streaming import AnalysisStreamHub
 from app.analysis.synthesizer import AssetSynthesizer
 from app.config import AppConfig, default_config
 from app.db import Database
@@ -26,8 +27,30 @@ from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
+from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
 from app.storage import repository
 from app.web.routes import router
+
+
+def _recover_interrupted_analysis_runs(database: Database) -> None:
+    with database.session() as session:
+        active_runs = repository.list_active_analysis_runs(session)
+        for run in active_runs:
+            summary = dict(run.summary_json or {})
+            summary["current_stage"] = "服务重启，旧的后台任务已终止"
+            summary["current_facet"] = None
+            summary["finished_at"] = utcnow().isoformat()
+            run.summary_json = summary
+            run.status = "failed"
+            run.finished_at = utcnow()
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="lifecycle",
+                level="warning",
+                message="检测到服务重启，之前未完成的分析任务已标记为失败。",
+                payload_json={"recovered_after_restart": True},
+            )
 
 
 def _recover_interrupted_analysis_runs(database: Database) -> None:
@@ -58,12 +81,14 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     database.create_all()
     vector_store_manager = VectorStoreManager(config.data_dir)
     retrieval = RetrievalService(vector_store=vector_store_manager)
+    analysis_stream_hub = AnalysisStreamHub()
     analysis_engine = AnalysisEngine(
         retrieval,
         db=database,
         llm_log_path=str(config.llm_log_path),
         use_processes=False,
-        facet_max_workers=5,
+        facet_max_workers=DEFAULT_ANALYSIS_CONCURRENCY,
+        stream_hub=analysis_stream_hub,
     )
     analysis_runner = AnalysisTaskRunner(
         database,
@@ -100,6 +125,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.db = database
     app.state.retrieval = retrieval
     app.state.vector_store_manager = vector_store_manager
+    app.state.analysis_stream_hub = analysis_stream_hub
     app.state.analysis_engine = analysis_engine
     app.state.analysis_runner = analysis_runner
     app.state.ingest_service = ingest_service

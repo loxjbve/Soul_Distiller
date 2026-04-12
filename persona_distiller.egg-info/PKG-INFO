@@ -16,67 +16,28 @@ Requires-Dist: uvicorn[standard]>=0.32.0
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3.3; extra == "dev"
 
-# Persona Distiller (人物画像蒸馏器)
+# Persona Distiller
 
-本地单用户 Web 应用，用于把与某个人有关的文档集合蒸馏成可审核、可发布、可试聊验证的模仿 Skill 资产。
+本地单用户 Web 应用，用于把与某个人有关的文档集合蒸馏成可审核、可发布、可试聊验证的模仿 skill。
 
-## 🌟 核心特性 (Features)
-
-- **双模式工作区 (Dual-Mode Workspace)**
-  - 支持**单人模式**和**群组模式 (Parent-Child Architecture)**。
-  - 群组模式下，可基于共享的已索引数据集（无需重复克隆数据），快速创建多个独立用户的分析画像与 Skill 资产。
-- **高精度 Skill 资产生成**
-  - 针对性强化 Prompt 工程：在生成人物 Skill 时，**极度强调**对「角色语气语调」、「常用词汇与口癖」以及「长期/短期记忆和经历」的深度挖掘和还原。
-  - 生成结果支持草稿预览、审核编辑与最终版本发布。
-- **全方位多维分析 (10-Facet AI Analysis)**
-  - 自动并发执行 10 个维度的深度剖析（包含人物背景、性格特征等）。
-  - **支持一键导出 ZIP**，解压后可直接获取各个维度的独立 JSON 数据文件。
-- **多格式文档解析与追踪**
-  - 支持上传并解析 `html / json / docx / pdf / txt / md / log` 等格式的文档。
-  - 纯文本清洗、分段分块（Chunking），并支持完全可追溯的 Chunk 映射机制。
-- **强大的混合检索架构**
-  - 兼容 Embeddings 向量检索与 BM25 风格的降级词法检索（Lexical Retrieval）。
-  - 分析与生成过程中，提供详细的真实依据（证据引用）与内容冲突汇总。
-- **LLM 生态友好**
-  - 采用 OpenAI 兼容的 LLM 配置接口，支持底层大模型的自动发现与无缝切换。
-- **试聊验证闭环**
-  - 提供即时试聊页面（Chat UI），精准追踪回答命中的原始文档块（Chunks）。
-
-## 🚀 快速运行 (Getting Started)
-
-### 1. 环境准备
-
-建议使用 Python 3.10+ 环境，并创建独立的虚拟环境：
+## 运行
 
 ```bash
-# 创建虚拟环境
 python -m venv .venv
-
-# 激活环境 (Windows)
 .venv\Scripts\activate
-
-# 激活环境 (macOS/Linux)
-source .venv/bin/activate
-```
-
-### 2. 安装依赖
-
-```bash
 python -m pip install -e .[dev]
-```
-
-### 3. 启动服务
-
-```bash
 uvicorn app.main:app --reload
 ```
 
-服务启动后，打开浏览器访问默认地址：[http://127.0.0.1:8000](http://127.0.0.1:8000)
+默认访问 `http://127.0.0.1:8000`。
 
-## 📁 核心架构 (Architecture Overview)
+## 功能
 
-- **`app/models.py` & `app/db.py`**: SQLite 关系型数据库模型定义，包含 Project 的父子层级映射机制。
-- **`app/web/routes.py` & `app/templates/`**: FastAPI 路由控制器与 HTML/Jinja2 视图模板，提供完整的 Web UI。
-- **`app/analysis/`**: 包含指导 LLM 生成高精度资产的 Prompts 工程核心、10 维度分析引擎及 ZIP 流式导出功能。
-- **`app/retrieval/`**: 检索引擎模块，包含基于 BM25 的词法检索器和向量 Embeddings 检索器。
-- **`app/storage/`**: 资源存储库，负责数据库的增删改查，并实现了父子级项目的 Chunk 查询路由隔离。
+- 多人物项目管理
+- 文档上传与抽取：`html/json/docx/pdf/txt/md/log`
+- 纯文本清洗、分块、可追溯 chunk 映射
+- OpenAI 兼容 LLM 配置与模型自动发现
+- 可选 embeddings 检索与 BM25 风格降级检索
+- 并发多维分析、证据引用、冲突汇总
+- Skill 草稿生成、审核编辑、版本发布
+- 试聊页面与命中证据追踪
