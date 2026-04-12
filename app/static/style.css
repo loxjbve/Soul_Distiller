@@ -874,9 +874,70 @@ button:hover::before { left: 150%; }
 .facet-status-card small { color: var(--muted); font-size: 0.75rem; font-family: var(--font-mono); }
 
 .facet-status-head, .event-item-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.facet-status-title {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.facet-status-key {
+    color: var(--muted);
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+.facet-status-flags,
+.facet-result-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0 0;
+}
+.facet-status-preview {
+    margin: 10px 0 4px;
+    font-weight: 600;
+    color: var(--ink-bright);
+    font-size: 0.875rem;
+    line-height: 1.45;
+    display: -webkit-box;
+    overflow: hidden;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    min-height: 3.8em;
+    max-height: 3.8em;
+}
+.facet-inline-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--ink);
+    font-size: 0.68rem;
+    font-family: var(--font-mono);
+    line-height: 1.2;
+}
+.facet-inline-tag.tag-active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0, 240, 255, 0.1);
+}
+.facet-inline-tag.tag-warning {
+    border-color: var(--warning);
+    color: var(--warning);
+    background: rgba(245, 158, 11, 0.1);
+}
+.facet-inline-tag.tag-status {
+    border-color: rgba(255, 255, 255, 0.16);
+}
 
 /* Status Pills (Neon Style) */
 .status-completed, .level-success { border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.1); box-shadow: 0 0 8px rgba(16, 185, 129, 0.2) inset; }
+.status-preparing { border-color: var(--accent-deep); color: var(--accent-deep); background: rgba(14, 165, 233, 0.12); box-shadow: 0 0 8px rgba(14, 165, 233, 0.2) inset; }
 .status-running { border-color: var(--accent); color: var(--accent); background: rgba(0, 240, 255, 0.1); animation: pulseGlow 2s infinite; }
 .status-failed, .level-error { border-color: var(--danger); color: var(--danger); background: rgba(239, 68, 68, 0.1); box-shadow: 0 0 8px rgba(239, 68, 68, 0.2) inset; }
 .status-pending { border-color: var(--muted); color: var(--muted); background: rgba(255, 255, 255, 0.05); }
@@ -929,7 +990,7 @@ button:hover::before { left: 150%; }
 }
 
 .facet-panel-summary {
-    max-height: 15rem;
+    max-height: 13rem;
     overflow: hidden;
 }
 

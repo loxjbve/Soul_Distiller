@@ -26,6 +26,7 @@ from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
+from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
 from app.storage import repository
 from app.web.routes import router
 
@@ -63,7 +64,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         db=database,
         llm_log_path=str(config.llm_log_path),
         use_processes=False,
-        facet_max_workers=5,
+        facet_max_workers=DEFAULT_ANALYSIS_CONCURRENCY,
     )
     analysis_runner = AnalysisTaskRunner(
         database,

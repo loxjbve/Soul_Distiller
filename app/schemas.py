@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 ASSET_KINDS: tuple[str, str] = ("skill", "profile_report")
+DEFAULT_ANALYSIS_CONCURRENCY = 4
+MIN_ANALYSIS_CONCURRENCY = 1
+MAX_ANALYSIS_CONCURRENCY = 20
 
 
 @dataclass(slots=True)

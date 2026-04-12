@@ -160,6 +160,7 @@ function setupAnalysisMonitor() {
 }
 
 function renderAnalysis(payload, projectId) {
+    return renderAnalysisV2(payload, projectId);
     captureDetailStates();
     resetAnalysisRenderCacheIfNeeded(payload.id);
 
@@ -415,7 +416,7 @@ function renderFacetResult(facet, runStatus) {
         .map(
             (item) => `
                 <div class="evidence-block">
-                    <strong>${escapeHtml(item.filename || item.document_title || "Evidence")}</strong>
+                    <strong>${escapeHtml(item.filename || item.document_title || "证据")}</strong>
                     <p class="muted">${escapeHtml(item.reason || "")}</p>
                     <blockquote>${escapeHtml(item.quote || "")}</blockquote>
                 </div>
@@ -470,7 +471,7 @@ function renderFacetResult(facet, runStatus) {
                 <div class="facet-meta">
                     <span>Status ${escapeHtml(facet.status || "pending")}</span>
                     <span>Confidence ${Number(facet.confidence || 0).toFixed(2)}</span>
-                    <span>${facet.accepted ? "Accepted" : "Pending"}</span>
+                    <span>${facet.accepted ? "已采纳" : "处理中"}</span>
                 </div>
             </summary>
             <div class="facet-panel-body">
@@ -478,12 +479,12 @@ function renderFacetResult(facet, runStatus) {
                     <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>重新运行这一维</button>
                 </div>
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
-                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">还没有证据。</p>`, false)}
-                ${renderSubDetails(`facet:${facetKey}:notes`, "Notes", notesBody, hasError)}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">还没有证据。</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
                 ${(findings.llm_request_url || findings.llm_error)
-                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
+                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
                     : ""}
-                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, true)}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, true)}
             </div>
         </details>
     `;
@@ -570,6 +571,504 @@ function buildAnalysisDetail(summary, facets, events) {
     const latestEvent = events[0];
     const latestHint = latestEvent ? `最近事件：${latestEvent.message || latestEvent.event_type}` : "事件流会在分析开始后出现。";
     return `${summary.current_stage || "排队中"} · 已完成 ${completedFacets}/${totalFacets}，失败 ${failedFacets}。${latestHint}`;
+}
+
+function renderAnalysisV2(payload, projectId) {
+    captureDetailStates();
+    resetAnalysisRenderCacheIfNeeded(payload.id);
+
+    const summary = payload.summary || {};
+    const facets = sortAnalysisFacetsV2(payload.facets || []);
+    const events = payload.events || [];
+    const totalFacets = Number(summary.total_facets || facets.length || 0);
+    const completedFacets = Number(summary.completed_facets || 0);
+    const failedFacets = Number(summary.failed_facets || 0);
+    const concurrency = Math.max(1, Number(summary.concurrency || 1));
+    const activeFacets = Number(summary.active_facets || facets.filter(isFacetActiveV2).length);
+    const queuedFacets = Number(summary.queued_facets || facets.filter((facet) => normalizeStatus(facet.status) === "queued").length);
+    const currentFacet = findFacetByKeyV2(facets, summary.current_facet) || facets.find(isFacetActiveV2) || null;
+    const currentFacetName = currentFacet ? facetLabelV2(currentFacet) : "-";
+    const currentPhase = currentFacet
+        ? phaseLabelV2(currentFacet.findings?.phase || summary.current_phase || currentFacet.status)
+        : phaseLabelV2(summary.current_phase || (queuedFacets ? "queued" : payload.status));
+    const latestEvent = selectHeadlineEventV2(events, currentFacet?.facet_key || null);
+    const percent = clampPercent(summary.progress_percent || 0);
+
+    updateText("analysis-run-title", `Analysis Run ${payload.id.slice(0, 8)}`);
+    updateText("analysis-role-chip", summary.target_role || "Unspecified");
+    updateText("analysis-stage", summary.current_stage || "排队中");
+    updateText("analysis-percent", `${percent}%`);
+    updateText("analysis-progress-caption", `${completedFacets + failedFacets} / ${totalFacets} facets`);
+    updateText("analysis-actual-concurrency", concurrency);
+    updateText("analysis-slot-usage", `${activeFacets} / ${concurrency}`);
+    updateText("analysis-running-count", activeFacets);
+    updateText("analysis-active-message", currentFacetName);
+    updateText("analysis-current-phase", currentPhase);
+    updateText("analysis-queued-count", queuedFacets);
+    updateText("analysis-queue-note", buildQueueNoteV2(activeFacets, queuedFacets, concurrency));
+    updateText("analysis-progress-detail", buildAnalysisDetailV2(summary, facets, latestEvent));
+    updateText("analysis-latest-event", latestEvent ? trimTextV2(latestEvent.message || latestEvent.event_type, 88) : "暂无事件");
+    updateText(
+        "analysis-latest-event-detail",
+        latestEvent ? `${latestEvent.event_type} · ${formatTime(latestEvent.created_at)}` : "Live run events will appear here."
+    );
+    updateText("analysis-last-updated", formatTime(payload.finished_at || latestEvent?.created_at || payload.started_at));
+    updateText("metric-completed", completedFacets);
+    updateText("metric-failed", failedFacets);
+    updateText("metric-llm-success", summary.llm_successes || 0);
+    updateText("metric-llm-failure", summary.llm_failures || 0);
+    updateText("metric-input-tokens", summary.prompt_tokens || 0);
+    updateText("metric-output-tokens", summary.completion_tokens || 0);
+    updateText("metric-total-tokens", summary.total_tokens || 0);
+    updateText("metric-current-facet", currentFacetName === "-" ? "-" : currentFacetName);
+
+    const progressFill = document.getElementById("analysis-progress-fill");
+    if (progressFill) {
+        progressFill.style.width = `${percent}%`;
+    }
+
+    setStatusToken("analysis-status-chip", statusLabelV2(payload.status), payload.status);
+    renderFacetStatusListV2(facets, payload.status);
+    renderEventListV2(events);
+    renderFacetResultListV2(facets, payload.status);
+
+    bindFacetRerunActions(projectId);
+    bindDetailToggleState();
+    scrollLiveTextToBottom();
+}
+
+function renderFacetStatusListV2(facets, runStatus) {
+    const facetStatusList = document.getElementById("facet-status-list");
+    if (!facetStatusList) {
+        return;
+    }
+
+    const signature = facets
+        .map((facet) => {
+            const findings = facet.findings || {};
+            return [
+                facet.facet_key,
+                facet.status,
+                findings.phase || "",
+                findings.queue_position ?? "",
+                findings.summary || "",
+                findings.hit_count || 0,
+                findings.total_tokens || 0,
+                runStatus,
+            ].join("|");
+        })
+        .join("::");
+
+    if (analysisUiState.renderCache.statusSignature === signature) {
+        return;
+    }
+    analysisUiState.renderCache.statusSignature = signature;
+    facetStatusList.innerHTML = facets.map((facet) => renderFacetStatusCardV2(facet, runStatus)).join("");
+}
+
+function renderEventListV2(events) {
+    const eventList = document.getElementById("analysis-events");
+    if (!eventList) {
+        return;
+    }
+
+    const signature = events.map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
+    if (analysisUiState.renderCache.eventSignature === signature) {
+        return;
+    }
+    analysisUiState.renderCache.eventSignature = signature;
+
+    eventList.innerHTML = events.length
+        ? events.map(renderEventItemV2).join("")
+        : `<details class="event-item" open><summary class="event-item-summary"><strong>No events yet</strong></summary><div class="event-item-body"><p>Run events will appear here as facets move through the queue.</p></div></details>`;
+}
+
+function renderFacetResultListV2(facets, runStatus) {
+    const resultList = document.getElementById("analysis-result-list");
+    if (!resultList) {
+        return;
+    }
+
+    const existingChildren = Array.from(resultList.children);
+    const needsFullRender =
+        existingChildren.length !== facets.length ||
+        existingChildren.some((node, index) => node.getAttribute("data-facet-key") !== (facets[index]?.facet_key || ""));
+
+    if (needsFullRender) {
+        resultList.innerHTML = facets.map((facet) => renderFacetResultV2(facet, runStatus)).join("");
+        analysisUiState.renderCache.facetSignatures.clear();
+        facets.forEach((facet) => {
+            analysisUiState.renderCache.facetSignatures.set(
+                facet.facet_key,
+                buildFacetRenderSignature(facet, runStatus)
+            );
+        });
+        return;
+    }
+
+    facets.forEach((facet, index) => {
+        const signature = buildFacetRenderSignature(facet, runStatus);
+        const previousSignature = analysisUiState.renderCache.facetSignatures.get(facet.facet_key);
+        if (previousSignature === signature) {
+            return;
+        }
+        const nextNode = createNodeFromHtml(renderFacetResultV2(facet, runStatus));
+        existingChildren[index].replaceWith(nextNode);
+        analysisUiState.renderCache.facetSignatures.set(facet.facet_key, signature);
+    });
+}
+
+function renderFacetStatusCardV2(facet, runStatus) {
+    const findings = facet.findings || {};
+    const hitCount = Number(findings.hit_count || 0);
+    const promptTokens = Number(findings.prompt_tokens || 0);
+    const completionTokens = Number(findings.completion_tokens || 0);
+    const totalTokens = Number(findings.total_tokens || 0);
+    const rerunDisabled = isRunBusyV2(runStatus) ? "disabled" : "";
+    const status = normalizeStatus(facet.status || "queued");
+    const phase = phaseLabelV2(findings.phase || status);
+    const preview = buildFacetLeadV2(facet);
+    const llmLine = findings.llm_called
+        ? `LLM ${findings.llm_success ? "成功" : "回退"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
+        : "尚无已完成的 LLM 调用";
+    const tags = [];
+
+    if (status === "queued" && findings.queue_position) {
+        tags.push(renderFacetTagV2(`Queue #${findings.queue_position}`, "warning"));
+    }
+    if (status === "preparing" || status === "running") {
+        tags.push(renderFacetTagV2(phase, "active"));
+    }
+    if (hitCount) {
+        tags.push(renderFacetTagV2(`${hitCount} hits`, ""));
+    }
+    if (findings.started_at) {
+        tags.push(renderFacetTagV2(`Started ${formatTime(findings.started_at)}`, ""));
+    }
+
+    return `
+        <article class="facet-status-card status-${escapeHtml(status)}">
+            <div class="facet-status-head">
+                <div class="facet-status-title">
+                    <strong>${escapeHtml(facetLabelV2(facet))}</strong>
+                    <span class="facet-status-key">${escapeHtml(facet.facet_key || "")}</span>
+                </div>
+                <span class="status-pill">${escapeHtml(statusLabelV2(status))}</span>
+            </div>
+            <div class="facet-status-flags">${tags.join("")}</div>
+            <p class="facet-status-preview">${escapeHtml(preview)}</p>
+            <small>${escapeHtml(`${llmLine} · evidence ${hitCount}`)}</small>
+            <div class="inline-actions top-gap">
+                <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${rerunDisabled}>Rerun Facet</button>
+            </div>
+        </article>
+    `;
+}
+
+function renderEventItemV2(event) {
+    const payload = event.payload || {};
+    const level = (event.level || "info").toLowerCase();
+    let payloadHtml = "";
+
+    if (event.event_type === "llm_response" && payload.response_text) {
+        payloadHtml = `<pre class="trace-box">${escapeHtml(payload.response_text)}</pre>`;
+        if (payload.response_text_truncated) {
+            payloadHtml += `<p class="muted">The response preview was truncated to keep the event panel compact.</p>`;
+        }
+    } else if (event.event_type === "retrieval") {
+        const trace = payload.retrieval_trace || {};
+        const summary = [
+            payload.retrieval_mode ? `mode=${payload.retrieval_mode}` : "",
+            typeof payload.hit_count === "number" ? `hits=${payload.hit_count}` : "",
+            trace.embedding_url ? `embedding=${trace.embedding_url}` : "",
+            typeof trace.candidate_chunks === "number" ? `candidate_chunks=${trace.candidate_chunks}` : "",
+            typeof trace.candidate_documents === "number" ? `candidate_documents=${trace.candidate_documents}` : "",
+            typeof trace.selected_documents === "number" ? `selected_documents=${trace.selected_documents}` : "",
+            typeof trace.per_document_cap_applied === "boolean"
+                ? `per_document_cap_applied=${trace.per_document_cap_applied}`
+                : "",
+            trace.embedding_skip_reason ? `skip=${trace.embedding_skip_reason}` : "",
+            trace.fallback_reason ? `fallback=${trace.fallback_reason}` : "",
+            trace.embedding_error ? `embedding_error=${trace.embedding_error}` : "",
+            trace.error ? `error=${trace.error}` : "",
+        ]
+            .filter(Boolean)
+            .join("\n");
+        payloadHtml = summary
+            ? `<pre class="trace-box">${escapeHtml(summary)}</pre>`
+            : `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+    } else if (Object.keys(payload).length) {
+        payloadHtml = `<pre class="trace-box">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+    }
+
+    const openByDefault = level === "warning" || level === "error";
+    const detailKey = `event:${event.id || `${event.event_type}:${event.created_at}`}`;
+    return `
+        <details class="event-item level-${escapeHtml(level)}" data-detail-key="${escapeHtml(detailKey)}" ${detailOpenAttr(detailKey, openByDefault)}>
+            <summary class="event-item-summary">
+                <span class="event-main">
+                    <strong>${escapeHtml(event.event_type)}</strong>
+                    <small>${escapeHtml(event.message || "")}</small>
+                </span>
+                <span class="event-time">${formatTime(event.created_at)}</span>
+            </summary>
+            <div class="event-item-body">
+                ${payloadHtml || `<p class="muted">No payload was attached to this event.</p>`}
+            </div>
+        </details>
+    `;
+}
+
+function renderFacetResultV2(facet, runStatus) {
+    const findings = facet.findings || {};
+    const facetKey = facet.facet_key || "unknown";
+    const status = normalizeStatus(facet.status || "queued");
+    const rerunDisabled = isRunBusyV2(runStatus) ? "disabled" : "";
+    const facetOpenDefault = ["preparing", "running", "failed"].includes(status);
+    const hasError = Boolean(facet.error_message || findings.llm_error);
+    const summaryText = findings.summary || buildFacetLeadV2(facet);
+    const metaTags = [
+        renderFacetTagV2(statusLabelV2(status), "status"),
+        renderFacetTagV2(`Phase: ${phaseLabelV2(findings.phase || status)}`, isFacetActiveV2(facet) ? "active" : ""),
+        findings.queue_position ? renderFacetTagV2(`Queue #${findings.queue_position}`, "warning") : "",
+        renderFacetTagV2(`Confidence ${Number(facet.confidence || 0).toFixed(2)}`, ""),
+        renderFacetTagV2(facet.accepted ? "已采纳" : "处理中", ""),
+    ]
+        .filter(Boolean)
+        .join("");
+
+    const bullets = (findings.bullets || [])
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("");
+    const evidence = (facet.evidence || [])
+        .map(
+            (item) => `
+                <div class="evidence-block">
+                    <strong>${escapeHtml(item.filename || item.document_title || "证据")}</strong>
+                    <p class="muted">${escapeHtml(item.reason || "")}</p>
+                    <blockquote>${escapeHtml(item.quote || "")}</blockquote>
+                </div>
+            `
+        )
+        .join("");
+    const conflicts = (facet.conflicts || [])
+        .map(
+            (item) => `
+                <div class="evidence-block">
+                    <strong>${escapeHtml(item.title || "Conflict")}</strong>
+                    <p>${escapeHtml(item.detail || "")}</p>
+                </div>
+            `
+        )
+        .join("");
+
+    const notesBody = `
+        ${conflicts || `<p class="muted">No conflicts were recorded for this facet.</p>`}
+        ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
+        ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
+    `;
+    const traceBody = `
+        ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
+        ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+        ${findings.llm_request_payload_preview ? `<pre class="trace-box">${escapeHtml(findings.llm_request_payload_preview)}</pre>` : ""}
+    `;
+    const liveTextBody = findings.llm_live_text
+        ? `
+            ${findings.llm_live_text_truncated ? `<p class="muted">The live text preview was truncated to keep the card height bounded.</p>` : ""}
+            <pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>
+        `
+        : `<p class="muted">No live text has been stored for this facet yet.</p>`;
+
+    return `
+        <details
+            class="facet-panel facet-panel-details status-${escapeHtml(status)}"
+            data-detail-key="facet:${escapeHtml(facetKey)}"
+            data-facet-key="${escapeHtml(facetKey)}"
+            ${detailOpenAttr(`facet:${facetKey}`, facetOpenDefault)}
+        >
+            <summary class="facet-panel-summary">
+                <div class="facet-panel-copy">
+                    <p class="eyebrow">${escapeHtml(facetKey)}</p>
+                    <h2>${escapeHtml(facetLabelV2(facet))}</h2>
+                    <p class="facet-summary">${escapeHtml(summaryText)}</p>
+                    ${
+                        findings.summary_truncated
+                            ? `<p class="summary-clamp-note">The card preview was truncated automatically to keep queue items compact.</p>`
+                            : ""
+                    }
+                </div>
+                <div class="facet-meta facet-result-meta">${metaTags}</div>
+            </summary>
+            <div class="facet-panel-body">
+                <div class="inline-actions">
+                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>Rerun Facet</button>
+                </div>
+                ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">No evidence has been attached yet.</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
+                ${(findings.llm_request_url || findings.llm_error || findings.llm_request_payload_preview)
+                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
+                    : ""}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, status === "running")}
+            </div>
+        </details>
+    `;
+}
+
+function buildAnalysisDetailV2(summary, facets, latestEvent) {
+    const totalFacets = Number(summary.total_facets || facets.length || 0);
+    const completedFacets = Number(summary.completed_facets || 0);
+    const failedFacets = Number(summary.failed_facets || 0);
+    const activeFacets = Number(summary.active_facets || 0);
+    const queuedFacets = Number(summary.queued_facets || 0);
+    const concurrency = Math.max(1, Number(summary.concurrency || 1));
+    const latestHint = latestEvent ? `Latest: ${latestEvent.message || latestEvent.event_type}` : "等待最新事件。";
+    return `${summary.current_stage || "排队中"} · active ${activeFacets}/${concurrency}, queued ${queuedFacets}, completed ${completedFacets}/${totalFacets}, failed ${failedFacets}. ${latestHint}`;
+}
+
+function sortAnalysisFacetsV2(facets) {
+    const priority = {
+        running: 0,
+        preparing: 1,
+        queued: 2,
+        failed: 3,
+        completed: 4,
+    };
+    return facets
+        .map((facet, index) => ({ facet, index }))
+        .sort((left, right) => {
+            const leftStatus = normalizeStatus(left.facet.status || "queued");
+            const rightStatus = normalizeStatus(right.facet.status || "queued");
+            const leftPriority = priority[leftStatus] ?? 99;
+            const rightPriority = priority[rightStatus] ?? 99;
+            if (leftPriority !== rightPriority) {
+                return leftPriority - rightPriority;
+            }
+
+            const leftQueue = Number(left.facet.findings?.queue_position || 0);
+            const rightQueue = Number(right.facet.findings?.queue_position || 0);
+            if (leftStatus === "queued" && rightStatus === "queued" && leftQueue !== rightQueue) {
+                return leftQueue - rightQueue;
+            }
+
+            return left.index - right.index;
+        })
+        .map((entry) => entry.facet);
+}
+
+function isFacetActiveV2(facet) {
+    const status = normalizeStatus(facet?.status || "queued");
+    return status === "preparing" || status === "running";
+}
+
+function isRunBusyV2(runStatus) {
+    return ["queued", "running"].includes(normalizeStatus(runStatus || ""));
+}
+
+function findFacetByKeyV2(facets, facetKey) {
+    if (!facetKey) {
+        return null;
+    }
+    return facets.find((facet) => facet.facet_key === facetKey) || null;
+}
+
+function selectHeadlineEventV2(events, facetKey) {
+    if (facetKey) {
+        const matching = events.find((event) => event?.payload?.facet_key === facetKey);
+        if (matching) {
+            return matching;
+        }
+    }
+    return events[0] || null;
+}
+
+function facetLabelV2(facet) {
+    return facet?.findings?.label || facet?.facet_key || "未知维度";
+}
+
+function buildFacetLeadV2(facet) {
+    const findings = facet.findings || {};
+    if (findings.summary) {
+        return trimTextV2(findings.summary, 220);
+    }
+    const status = normalizeStatus(facet.status || "queued");
+    if (status === "queued") {
+        const queuePosition = findings.queue_position ? `Queue #${findings.queue_position}` : "排队中";
+        return `${queuePosition} and waiting for a free slot.`;
+    }
+    if (status === "preparing") {
+        return "正在检索证据并准备维度 payload。";
+    }
+    if (status === "running") {
+        return `Active phase: ${phaseLabelV2(findings.phase || "running")}.`;
+    }
+    if (status === "failed") {
+        return trimTextV2(
+            findings.notes || facet.error_message || "维度在生成结构化摘要前失败。",
+            220,
+        );
+    }
+    return "此维度未返回摘要。";
+}
+
+function buildQueueNoteV2(activeFacets, queuedFacets, concurrency) {
+    if (queuedFacets > 0) {
+        return `${queuedFacets} facet(s) are waiting while ${activeFacets}/${concurrency} slot(s) are in use.`;
+    }
+    if (activeFacets > 0) {
+        return "队列已空。活动插槽正在处理剩余维度。";
+    }
+    return "队列为空。";
+}
+
+function renderFacetTagV2(text, tone) {
+    return `<span class="facet-inline-tag ${tone ? `tag-${escapeHtml(tone)}` : ""}">${escapeHtml(text)}</span>`;
+}
+
+function statusLabelV2(status) {
+    switch (normalizeStatus(status)) {
+        case "queued":
+            return "排队中";
+        case "preparing":
+            return "准备中";
+        case "running":
+            return "运行中";
+        case "completed":
+            return "已完成";
+        case "failed":
+            return "已失败";
+        default:
+            return String(status || "排队中");
+    }
+}
+
+function phaseLabelV2(phase) {
+    switch (String(phase || "").toLowerCase()) {
+        case "queued":
+            return "排队中";
+        case "retrieving":
+            return "正在检索证据";
+        case "llm":
+            return "LLM 生成中";
+        case "analyzing":
+            return "分析中";
+        case "persisting":
+            return "处理完成";
+        case "completed":
+            return "已完成";
+        case "failed":
+            return "已失败";
+        default:
+            return String(phase || "排队中");
+    }
+}
+
+function trimTextV2(value, limit) {
+    const text = String(value || "");
+    if (text.length <= limit) {
+        return text;
+    }
+    return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 function setupAssetGenerator() {
@@ -811,14 +1310,20 @@ function setStatusToken(id, text, status) {
         return;
     }
     node.textContent = String(text);
-    ["status-pending", "status-queued", "status-running", "status-completed", "status-failed", "status-partial_failed"]
+    ["status-pending", "status-queued", "status-preparing", "status-running", "status-completed", "status-failed", "status-partial_failed"]
         .forEach((className) => node.classList.remove(className));
     node.classList.add(`status-${normalizeStatus(status || "pending")}`);
 }
 
 function normalizeStatus(status) {
     const normalized = String(status || "pending").toLowerCase().replaceAll(" ", "_");
-    return normalized === "partial_failed" ? "failed" : normalized;
+    if (normalized === "partial_failed") {
+        return "failed";
+    }
+    if (normalized === "pending") {
+        return "queued";
+    }
+    return normalized;
 }
 
 function assetStatusLabel(status) {

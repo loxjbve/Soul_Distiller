@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import traceback
-from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from time import perf_counter
 from typing import Any
@@ -16,7 +16,14 @@ from app.analysis.facets import FACETS, FacetDefinition
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, TextChunk, utcnow
 from app.retrieval.service import RetrievalService
-from app.schemas import FacetResult, RetrievedChunk, ServiceConfig
+from app.schemas import (
+    DEFAULT_ANALYSIS_CONCURRENCY,
+    MAX_ANALYSIS_CONCURRENCY,
+    MIN_ANALYSIS_CONCURRENCY,
+    FacetResult,
+    RetrievedChunk,
+    ServiceConfig,
+)
 from app.storage import repository
 from app.utils.text import top_terms
 
@@ -39,6 +46,16 @@ def _parse_confidence(val: Any, default: float) -> float:
             if "low" in s:
                 return 0.2
         return default
+
+
+def _normalize_concurrency(value: Any) -> int:
+    if value is None:
+        return DEFAULT_ANALYSIS_CONCURRENCY
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        candidate = DEFAULT_ANALYSIS_CONCURRENCY
+    return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
 
 
 def analyze_facet_worker(
@@ -143,13 +160,13 @@ class AnalysisEngine:
         db: Database | None = None,
         llm_log_path: str | None = None,
         use_processes: bool = True,
-        facet_max_workers: int = 1,
+        facet_max_workers: int = DEFAULT_ANALYSIS_CONCURRENCY,
     ) -> None:
         self.retrieval = retrieval or RetrievalService()
         self.db = db
         self.llm_log_path = llm_log_path
         self.use_processes = use_processes
-        self.facet_max_workers = max(1, facet_max_workers)
+        self.facet_max_workers = _normalize_concurrency(facet_max_workers)
 
     def create_run(
         self,
@@ -169,20 +186,19 @@ class AnalysisEngine:
             target_role=target_role,
             analysis_context=analysis_context,
         )
-        if concurrency is not None:
-            summary["concurrency"] = max(1, int(concurrency))
+        summary["concurrency"] = _normalize_concurrency(concurrency)
         run = repository.create_analysis_run(
             session,
             project_id,
             status="queued",
             summary_json=summary,
         )
-        for facet in FACETS:
+        for index, facet in enumerate(FACETS, start=1):
             repository.upsert_facet(
                 session,
                 run.id,
                 facet.key,
-                status="pending",
+                status="queued",
                 confidence=0.0,
                 findings_json={
                     "label": facet.label,
@@ -199,6 +215,10 @@ class AnalysisEngine:
                     "completion_tokens": 0,
                     "total_tokens": 0,
                     "duration_ms": 0,
+                    "phase": "queued",
+                    "queue_position": index,
+                    "started_at": None,
+                    "finished_at": None,
                 },
                 evidence_json=[],
                 conflicts_json=[],
@@ -252,10 +272,15 @@ class AnalysisEngine:
 
         run.status = "running"
         run.started_at = utcnow()
+        run.finished_at = None
         summary["current_stage"] = "准备证据"
+        summary["current_phase"] = "queued"
+        summary["current_phase"] = "completed" if run.status == "completed" else "failed"
         summary["current_facet"] = None
+        summary["concurrency"] = _normalize_concurrency(summary.get("concurrency") or self.facet_max_workers)
         summary["started_at"] = run.started_at.isoformat()
         run.summary_json = summary
+        self._recalculate_run_summary(session, run)
         repository.add_analysis_event(
             session,
             run.id,
@@ -291,6 +316,7 @@ class AnalysisEngine:
         summary["progress_percent"] = 100 if total_processed else 0
         summary["finished_at"] = run.finished_at.isoformat()
         run.summary_json = summary
+        self._recalculate_run_summary(session, run)
         repository.add_analysis_event(
             session,
             run.id,
@@ -326,31 +352,28 @@ class AnalysisEngine:
             message=f"重新执行 {facet_def.label}。",
             payload_json={"facet_key": facet_def.key},
         )
-        try:
-            hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
-                session,
-                run.project_id,
-                facet_def,
-                embedding_config=embedding_config,
-                llm_payload=llm_payload,
-                target_role=summary.get("target_role"),
-                analysis_context=summary.get("analysis_context"),
-            )
-        except Exception as exc:
-            self._handle_facet_setup_error(
-                session,
-                run,
-                facet_def,
-                exc,
-                embedding_config=embedding_config,
-            )
-            run.finished_at = utcnow()
-            run.status = "completed" if int((run.summary_json or {}).get("failed_facets", 0)) == 0 else "partial_failed"
-            self._persist_progress(session)
-            return repository.get_analysis_run(session, run.id) or run
         run.status = "running"
         run.finished_at = None
-        self._mark_facet_started(
+        self._mark_facet_preparing(session, run, facet_def)
+        prepared = self._prepare_facet_execution(
+            session,
+            run,
+            facet_def,
+            embedding_config=embedding_config,
+            llm_payload=llm_payload,
+        )
+        if not prepared:
+            run.finished_at = utcnow()
+            summary = dict(run.summary_json or {})
+            run.status = "completed" if int(summary.get("failed_facets", 0)) == 0 else "partial_failed"
+            summary["finished_at"] = run.finished_at.isoformat()
+            run.summary_json = summary
+            self._recalculate_run_summary(session, run)
+            self._persist_progress(session)
+            return repository.get_analysis_run(session, run.id) or run
+
+        hits, retrieval_mode, retrieval_trace = prepared
+        self._mark_facet_running(
             session,
             run,
             facet_def,
@@ -359,7 +382,6 @@ class AnalysisEngine:
             len(hits),
             llm_payload=llm_payload,
         )
-        self._persist_progress(session)
 
         result = FacetResult(
             **analyze_facet_worker(
@@ -375,7 +397,11 @@ class AnalysisEngine:
         )
         self._apply_facet_result(session, run, facet_def, retrieval_mode, retrieval_trace, len(hits), result)
         run.finished_at = utcnow()
-        run.status = "completed" if int((run.summary_json or {}).get("failed_facets", 0)) == 0 else "partial_failed"
+        summary = dict(run.summary_json or {})
+        run.status = "completed" if int(summary.get("failed_facets", 0)) == 0 else "partial_failed"
+        summary["finished_at"] = run.finished_at.isoformat()
+        run.summary_json = summary
+        self._recalculate_run_summary(session, run)
         repository.add_analysis_event(
             session,
             run.id,
@@ -396,43 +422,16 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
-        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
-        run_concurrency = int((run.summary_json or {}).get("concurrency") or self.facet_max_workers)
+        run_concurrency = self._resolve_run_concurrency(run)
         with ProcessPoolExecutor(max_workers=min(len(FACETS), run_concurrency)) as executor:
-            for facet in FACETS:
-                prepared = self._prepare_facet_execution(
-                    session,
-                    run,
-                    facet,
-                    embedding_config=embedding_config,
-                    llm_payload=llm_payload,
-                )
-                if not prepared:
-                    continue
-                hits, retrieval_mode, retrieval_trace = prepared
-                future = executor.submit(
-                    analyze_facet_worker,
-                    facet,
-                    project_name,
-                    [self._serialize_hit(hit) for hit in hits],
-                    llm_payload,
-                    self.llm_log_path,
-                    (run.summary_json or {}).get("target_role"),
-                    (run.summary_json or {}).get("analysis_context"),
-                    self._build_stream_callback(run.id, facet),
-                )
-                future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
-
-            results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
-            for future in as_completed(future_map):
-                facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
-                try:
-                    result = FacetResult(**future.result())
-                except Exception as exc:
-                    result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
-                self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
-                results.append((facet, retrieval_mode, hit_count, result))
-            return results
+            return self._execute_facets_with_executor(
+                session,
+                run,
+                project_name,
+                llm_payload=llm_payload,
+                embedding_config=embedding_config,
+                executor=executor,
+            )
 
     def _run_parallel_threads(
         self,
@@ -443,13 +442,39 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
-        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
-        run_concurrency = int((run.summary_json or {}).get("concurrency") or self.facet_max_workers)
+        run_concurrency = self._resolve_run_concurrency(run)
         with ThreadPoolExecutor(
             max_workers=min(len(FACETS), run_concurrency),
             thread_name_prefix="facet-thread",
         ) as executor:
-            for facet in FACETS:
+            return self._execute_facets_with_executor(
+                session,
+                run,
+                project_name,
+                llm_payload=llm_payload,
+                embedding_config=embedding_config,
+                executor=executor,
+            )
+
+    def _execute_facets_with_executor(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project_name: str,
+        *,
+        llm_payload: dict[str, Any] | None,
+        embedding_config: ServiceConfig | None,
+        executor: Any,
+    ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
+        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
+        pending_facets = list(FACETS)
+        run_concurrency = self._resolve_run_concurrency(run)
+        results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
+
+        while pending_facets or future_map:
+            while pending_facets and len(future_map) < run_concurrency:
+                facet = pending_facets.pop(0)
+                self._mark_facet_preparing(session, run, facet)
                 prepared = self._prepare_facet_execution(
                     session,
                     run,
@@ -459,30 +484,66 @@ class AnalysisEngine:
                 )
                 if not prepared:
                     continue
+
                 hits, retrieval_mode, retrieval_trace = prepared
-                future = executor.submit(
-                    analyze_facet_worker,
+                self._mark_facet_running(
+                    session,
+                    run,
+                    facet,
+                    retrieval_mode,
+                    retrieval_trace,
+                    len(hits),
+                    llm_payload=llm_payload,
+                )
+                future = self._submit_facet_work(
+                    executor,
+                    run,
                     facet,
                     project_name,
-                    [self._serialize_hit(hit) for hit in hits],
-                    llm_payload,
-                    self.llm_log_path,
-                    (run.summary_json or {}).get("target_role"),
-                    (run.summary_json or {}).get("analysis_context"),
-                    self._build_stream_callback(run.id, facet),
+                    hits,
+                    llm_payload=llm_payload,
                 )
                 future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
 
-            results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
-            for future in as_completed(future_map):
-                facet, retrieval_mode, retrieval_trace, hit_count = future_map[future]
+            if not future_map:
+                continue
+
+            completed_futures, _ = wait(list(future_map.keys()), return_when=FIRST_COMPLETED)
+            for future in completed_futures:
+                facet, retrieval_mode, retrieval_trace, hit_count = future_map.pop(future)
                 try:
                     result = FacetResult(**future.result())
                 except Exception as exc:
                     result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
                 self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
                 results.append((facet, retrieval_mode, hit_count, result))
-            return results
+
+        return results
+
+    def _submit_facet_work(
+        self,
+        executor: Any,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+        project_name: str,
+        hits: list[RetrievedChunk],
+        *,
+        llm_payload: dict[str, Any] | None,
+    ) -> Future[dict[str, Any]]:
+        return executor.submit(
+            analyze_facet_worker,
+            facet,
+            project_name,
+            [self._serialize_hit(hit) for hit in hits],
+            llm_payload,
+            self.llm_log_path,
+            (run.summary_json or {}).get("target_role"),
+            (run.summary_json or {}).get("analysis_context"),
+            self._build_stream_callback(run.id, facet),
+        )
+
+    def _resolve_run_concurrency(self, run: AnalysisRun) -> int:
+        return _normalize_concurrency((run.summary_json or {}).get("concurrency") or self.facet_max_workers)
 
     def _prepare_facet_execution(
         self,
@@ -512,15 +573,6 @@ class AnalysisEngine:
                 embedding_config=embedding_config,
             )
             return None
-        self._mark_facet_started(
-            session,
-            run,
-            facet,
-            retrieval_mode,
-            retrieval_trace,
-            len(hits),
-            llm_payload=llm_payload,
-        )
         return hits, retrieval_mode, retrieval_trace
 
     def _handle_facet_setup_error(
@@ -656,6 +708,159 @@ class AnalysisEngine:
             return text
         return exc.__class__.__name__
 
+    def _mark_facet_preparing(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+    ) -> None:
+        run.status = "running"
+        run.finished_at = None
+        summary = dict(run.summary_json or {})
+        repository.upsert_facet(
+            session,
+            run.id,
+            facet.key,
+            status="preparing",
+            confidence=0.0,
+            findings_json={
+                "label": facet.label,
+                "summary": "",
+                "bullets": [],
+                "notes": None,
+                "retrieval_mode": None,
+                "retrieval_trace": None,
+                "hit_count": 0,
+                "target_role": summary.get("target_role"),
+                "analysis_context": summary.get("analysis_context"),
+                "llm_live_text": "",
+                "llm_called": False,
+                "llm_success": None,
+                "llm_attempts": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "duration_ms": 0,
+                "llm_response_text": None,
+                "llm_request_payload": None,
+                "llm_request_url": None,
+                "llm_error": None,
+                "llm_log_path": None,
+                "phase": "retrieving",
+                "queue_position": None,
+                "started_at": utcnow().isoformat(),
+                "finished_at": None,
+            },
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        self._recalculate_run_summary(session, run)
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="facet",
+            message=f"{facet.label} claimed an execution slot and started retrieval.",
+            payload_json={
+                "facet_key": facet.key,
+                "phase": "retrieving",
+            },
+        )
+        self._persist_progress(session)
+
+    def _mark_facet_running(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+        retrieval_mode: str,
+        retrieval_trace: dict[str, Any],
+        hit_count: int,
+        llm_payload: dict[str, Any] | None = None,
+    ) -> None:
+        summary = dict(run.summary_json or {})
+        existing = repository.get_facet(session, run.id, facet.key)
+        existing_findings = dict(existing.findings_json or {}) if existing and existing.findings_json else {}
+        phase = "llm" if llm_payload else "analyzing"
+        repository.upsert_facet(
+            session,
+            run.id,
+            facet.key,
+            status="running",
+            confidence=0.0,
+            findings_json={
+                "label": facet.label,
+                "summary": "",
+                "bullets": [],
+                "notes": None,
+                "retrieval_mode": retrieval_mode,
+                "retrieval_trace": retrieval_trace,
+                "hit_count": hit_count,
+                "target_role": summary.get("target_role"),
+                "analysis_context": summary.get("analysis_context"),
+                "llm_live_text": existing_findings.get("llm_live_text", ""),
+                "llm_called": False,
+                "llm_success": None,
+                "llm_attempts": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "duration_ms": 0,
+                "llm_response_text": None,
+                "llm_request_payload": None,
+                "llm_request_url": None,
+                "llm_error": None,
+                "llm_log_path": None,
+                "phase": phase,
+                "queue_position": None,
+                "started_at": existing_findings.get("started_at") or utcnow().isoformat(),
+                "finished_at": None,
+            },
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        self._recalculate_run_summary(session, run)
+        self._record_retrieval_event(
+            session,
+            run.id,
+            facet,
+            retrieval_mode,
+            retrieval_trace,
+            hit_count,
+        )
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="facet",
+            message=f"{facet.label} started analysis with {hit_count} retrieved evidence chunks.",
+            payload_json={
+                "facet_key": facet.key,
+                "phase": phase,
+                "retrieval_mode": retrieval_mode,
+                "hit_count": hit_count,
+            },
+        )
+        if llm_payload:
+            config = ServiceConfig(**llm_payload)
+            endpoint_path = "/responses" if normalize_api_mode(config.api_mode) == "responses" else "/chat/completions"
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="llm_request",
+                message=f"{facet.label} prepared an LLM request.",
+                payload_json={
+                    "facet_key": facet.key,
+                    "url": OpenAICompatibleClient(config, log_path=self.llm_log_path).endpoint_url(endpoint_path),
+                    "model": config.model,
+                    "provider_kind": config.provider_kind,
+                    "api_mode": normalize_api_mode(config.api_mode),
+                    "log_path": self.llm_log_path,
+                    "request_payload": None,
+                },
+            )
+        self._persist_progress(session)
+
     def _mark_facet_started(
         self,
         session: Session,
@@ -749,7 +954,12 @@ class AnalysisEngine:
         hit_count: int,
         result: FacetResult,
     ) -> None:
+        existing = repository.get_facet(session, run.id, facet.key)
+        existing_findings = dict(existing.findings_json or {}) if existing and existing.findings_json else {}
         meta = dict(result.raw_payload.get("_meta") or {})
+        finished_at = utcnow().isoformat()
+        started_at = existing_findings.get("started_at") or finished_at
+        phase = "completed" if result.status == "completed" else "failed"
         findings_json = {
             "label": facet.label,
             "summary": result.summary,
@@ -770,10 +980,19 @@ class AnalysisEngine:
             "duration_ms": int(meta.get("duration_ms", 0)),
             "llm_request_url": meta.get("request_url"),
             "llm_request_payload": meta.get("request_payload"),
-            "llm_live_text": (meta.get("raw_text") or "")[:RAW_TEXT_PREVIEW_LIMIT],
-            "llm_response_text": meta.get("raw_text"),
+            "llm_live_text": (
+                (meta.get("raw_text") if meta.get("raw_text") is not None else existing_findings.get("llm_live_text"))
+                or ""
+            )[:RAW_TEXT_PREVIEW_LIMIT],
+            "llm_response_text": (
+                meta.get("raw_text") if meta.get("raw_text") is not None else existing_findings.get("llm_response_text")
+            ),
             "llm_error": meta.get("llm_error"),
             "llm_log_path": meta.get("log_path"),
+            "phase": phase,
+            "queue_position": None,
+            "started_at": started_at,
+            "finished_at": finished_at,
         }
         repository.upsert_facet(
             session,
@@ -858,22 +1077,62 @@ class AnalysisEngine:
         self._persist_progress(session)
 
     def _recalculate_run_summary(self, session: Session, run: AnalysisRun) -> None:
-        facets = list(session.scalars(select(AnalysisFacet).where(AnalysisFacet.run_id == run.id)))
+        order = {facet.key: index for index, facet in enumerate(FACETS)}
+        facets = sorted(
+            list(session.scalars(select(AnalysisFacet).where(AnalysisFacet.run_id == run.id))),
+            key=lambda item: order.get(item.facet_key, 999),
+        )
         summary = dict(run.summary_json or {})
         completed = 0
         failed = 0
+        active = 0
+        queued = 0
         llm_calls = 0
         llm_successes = 0
         llm_failures = 0
         prompt_tokens = 0
         completion_tokens = 0
         total_tokens = 0
+        active_facet: AnalysisFacet | None = None
+
         for facet in facets:
-            if facet.status == "completed":
-                completed += 1
-            elif facet.status == "failed":
-                failed += 1
+            normalized_status = str(facet.status or "queued").strip().lower().replace(" ", "_")
+            if normalized_status in {"", "pending"}:
+                normalized_status = "queued"
+            if normalized_status not in {"queued", "preparing", "running", "completed", "failed"}:
+                normalized_status = "queued"
+            if facet.status != normalized_status:
+                facet.status = normalized_status
+
             findings = dict(facet.findings_json or {})
+            findings["label"] = findings.get("label") or facet.facet_key
+
+            if normalized_status == "completed":
+                completed += 1
+                findings["phase"] = "completed"
+                findings["queue_position"] = None
+            elif normalized_status == "failed":
+                failed += 1
+                findings["phase"] = "failed"
+                findings["queue_position"] = None
+            elif normalized_status == "preparing":
+                active += 1
+                findings["phase"] = "retrieving"
+                findings["queue_position"] = None
+                findings["finished_at"] = None
+                if active_facet is None:
+                    active_facet = facet
+            elif normalized_status == "running":
+                active += 1
+                findings["phase"] = findings.get("phase") or "analyzing"
+                findings["queue_position"] = None
+                findings["finished_at"] = None
+                if active_facet is None:
+                    active_facet = facet
+            else:
+                queued += 1
+                findings["phase"] = "queued"
+
             if findings.get("llm_called"):
                 llm_calls += int(findings.get("llm_attempts", 1) or 1)
                 if findings.get("llm_success") is True:
@@ -883,8 +1142,24 @@ class AnalysisEngine:
                 prompt_tokens += int(findings.get("prompt_tokens", 0) or 0)
                 completion_tokens += int(findings.get("completion_tokens", 0) or 0)
                 total_tokens += int(findings.get("total_tokens", 0) or 0)
+
+            facet.findings_json = findings
+
+        queue_position = 1
+        for facet in facets:
+            findings = dict(facet.findings_json or {})
+            if facet.status == "queued":
+                findings["queue_position"] = queue_position
+                queue_position += 1
+            else:
+                findings["queue_position"] = None
+            facet.findings_json = findings
+
         summary["completed_facets"] = completed
         summary["failed_facets"] = failed
+        summary["active_facets"] = active
+        summary["queued_facets"] = queued
+        summary["concurrency"] = _normalize_concurrency(summary.get("concurrency") or self.facet_max_workers)
         summary["llm_calls"] = llm_calls
         summary["llm_successes"] = llm_successes
         summary["llm_failures"] = llm_failures
@@ -893,6 +1168,42 @@ class AnalysisEngine:
         summary["total_tokens"] = total_tokens
         progress_done = completed + failed
         summary["progress_percent"] = int((progress_done / len(FACETS)) * 100)
+
+        if active_facet is not None:
+            active_findings = dict(active_facet.findings_json or {})
+            current_phase = str(active_findings.get("phase") or "").strip().lower() or "running"
+            summary["current_facet"] = active_facet.facet_key
+            summary["current_phase"] = current_phase
+            label = active_findings.get("label") or active_facet.facet_key
+            if current_phase == "retrieving":
+                summary["current_stage"] = f"{label}: retrieving evidence"
+            elif current_phase == "llm":
+                summary["current_stage"] = f"{label}: generating with LLM"
+            elif current_phase == "analyzing":
+                summary["current_stage"] = f"{label}: analyzing"
+            else:
+                summary["current_stage"] = f"{label}: in progress"
+        elif run.status == "completed":
+            summary["current_facet"] = None
+            summary["current_phase"] = "completed"
+            summary["current_stage"] = "Analysis completed"
+        elif run.status in {"failed", "partial_failed"}:
+            summary["current_facet"] = None
+            summary["current_phase"] = "failed"
+            summary["current_stage"] = "Analysis finished with failures"
+        elif queued:
+            summary["current_facet"] = None
+            summary["current_phase"] = "queued"
+            summary["current_stage"] = f"{queued} facet(s) waiting for a slot"
+        elif run.status == "running":
+            summary["current_facet"] = None
+            summary["current_phase"] = "persisting"
+            summary["current_stage"] = "Finalizing analysis"
+        else:
+            summary["current_facet"] = None
+            summary["current_phase"] = "queued"
+            summary["current_stage"] = "Waiting to start"
+
         run.summary_json = summary
 
     def _build_stream_callback(self, run_id: str, facet: FacetDefinition):
@@ -1034,7 +1345,11 @@ class AnalysisEngine:
             "failed_facets": 0,
             "progress_percent": 0,
             "current_stage": "排队中",
+            "current_phase": "queued",
             "current_facet": None,
+            "concurrency": DEFAULT_ANALYSIS_CONCURRENCY,
+            "active_facets": 0,
+            "queued_facets": len(FACETS),
             "llm_calls": 0,
             "llm_successes": 0,
             "llm_failures": 0,
@@ -1136,6 +1451,7 @@ def _analyze_with_llm(
                 messages,
                 model=config.model,
                 temperature=0.2,
+                max_tokens=None,
                 stream_handler=stream_callback,
             )
             flush_remaining = getattr(stream_callback, "_flush_remaining", None)
