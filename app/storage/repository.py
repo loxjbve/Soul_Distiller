@@ -216,55 +216,70 @@ def create_analysis_run(
     return run
 
 
-def get_latest_analysis_run(session: Session, project_id: str) -> AnalysisRun | None:
+def get_latest_analysis_run(session: Session, project_id: str, *, load_facets: bool = True, load_events: bool = True) -> AnalysisRun | None:
     stmt = (
         select(AnalysisRun)
         .where(AnalysisRun.project_id == project_id)
-        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
         .order_by(desc(AnalysisRun.created_at))
     )
+    if load_facets:
+        stmt = stmt.options(selectinload(AnalysisRun.facets))
+    if load_events:
+        stmt = stmt.options(selectinload(AnalysisRun.events))
     return session.scalars(stmt).first()
 
 
-def get_active_analysis_run(session: Session, project_id: str) -> AnalysisRun | None:
+def get_active_analysis_run(session: Session, project_id: str, *, load_facets: bool = True, load_events: bool = True) -> AnalysisRun | None:
     stmt = (
         select(AnalysisRun)
         .where(
             AnalysisRun.project_id == project_id,
             AnalysisRun.status.in_(("queued", "running")),
         )
-        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
         .order_by(desc(AnalysisRun.created_at))
     )
+    if load_facets:
+        stmt = stmt.options(selectinload(AnalysisRun.facets))
+    if load_events:
+        stmt = stmt.options(selectinload(AnalysisRun.events))
     return session.scalars(stmt).first()
 
 
-def list_active_analysis_runs(session: Session) -> list[AnalysisRun]:
+def list_active_analysis_runs(session: Session, *, load_facets: bool = True, load_events: bool = True) -> list[AnalysisRun]:
     stmt = (
         select(AnalysisRun)
         .where(AnalysisRun.status.in_(("queued", "running")))
-        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
         .order_by(desc(AnalysisRun.created_at))
     )
+    if load_facets:
+        stmt = stmt.options(selectinload(AnalysisRun.facets))
+    if load_events:
+        stmt = stmt.options(selectinload(AnalysisRun.events))
     return list(session.scalars(stmt))
 
 
-def get_analysis_run(session: Session, run_id: str) -> AnalysisRun | None:
+def get_analysis_run(session: Session, run_id: str, *, load_facets: bool = True, load_events: bool = True) -> AnalysisRun | None:
     stmt = (
         select(AnalysisRun)
         .where(AnalysisRun.id == run_id)
-        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
     )
+    if load_facets:
+        stmt = stmt.options(selectinload(AnalysisRun.facets))
+    if load_events:
+        stmt = stmt.options(selectinload(AnalysisRun.events))
     return session.scalar(stmt)
 
 
-def list_analysis_runs(session: Session, project_id: str) -> list[AnalysisRun]:
+def list_analysis_runs(session: Session, project_id: str, *, load_facets: bool = True, load_events: bool = True) -> list[AnalysisRun]:
     stmt = (
         select(AnalysisRun)
         .where(AnalysisRun.project_id == project_id)
-        .options(selectinload(AnalysisRun.facets), selectinload(AnalysisRun.events))
         .order_by(desc(AnalysisRun.created_at))
     )
+    if load_facets:
+        stmt = stmt.options(selectinload(AnalysisRun.facets))
+    if load_events:
+        stmt = stmt.options(selectinload(AnalysisRun.events))
     return list(session.scalars(stmt))
 
 

@@ -22,6 +22,8 @@ class AssetSynthesizer:
         target_role: str | None = None,
         analysis_context: str | None = None,
         stream_callback: Any | None = None,
+        session: Any | None = None,
+        retrieval_service: Any | None = None,
     ) -> AssetBundle:
         normalized_kind = asset_kind if asset_kind in ASSET_KINDS else "skill"
         structured = (
@@ -33,6 +35,8 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 stream_callback=stream_callback,
+                session=session,
+                retrieval_service=retrieval_service,
             )
             if config
             else self._heuristic(
@@ -66,6 +70,8 @@ class AssetSynthesizer:
         target_role: str | None,
         analysis_context: str | None,
         stream_callback: Any | None = None,
+        session: Any | None = None,
+        retrieval_service: Any | None = None,
     ) -> dict[str, Any]:
         if not config:
             return self._heuristic(
@@ -80,6 +86,49 @@ class AssetSynthesizer:
             f"{facet.facet_key}: findings={facet.findings_json or {}} conflicts={facet.conflicts_json or []}"
             for facet in facets
         )
+        
+        personality_data = {}
+        memories_data = {}
+        
+        if asset_kind == "skill" and session and retrieval_service:
+            from app.storage import repository
+            from app.analysis.prompts import build_personality_messages, build_memories_messages
+            embedding_config = repository.get_service_config(session, "embedding_service")
+            
+            try:
+                p_chunks, _, _ = retrieval_service.search(
+                    session,
+                    project_id=project.id,
+                    query="性格特质 精神状态 自我认知 核心身份",
+                    embedding_config=embedding_config,
+                    limit=5,
+                )
+                p_context = "\n".join(f"- {c.content}" for c in p_chunks)
+                p_msgs = build_personality_messages(
+                    project.name, facet_dump, p_context, target_role=target_role, analysis_context=analysis_context
+                )
+                p_res = client.chat_completion_result(p_msgs, model=config.model, temperature=0.2)
+                personality_data = parse_json_response(p_res.content, fallback=True)
+            except Exception:
+                pass
+
+            try:
+                m_chunks, _, _ = retrieval_service.search(
+                    session,
+                    project_id=project.id,
+                    query="核心记忆 经历 过往重要事件",
+                    embedding_config=embedding_config,
+                    limit=5,
+                )
+                m_context = "\n".join(f"- {c.content}" for c in m_chunks)
+                m_msgs = build_memories_messages(
+                    project.name, facet_dump, m_context, target_role=target_role, analysis_context=analysis_context
+                )
+                m_res = client.chat_completion_result(m_msgs, model=config.model, temperature=0.2)
+                memories_data = parse_json_response(m_res.content, fallback=True)
+            except Exception:
+                pass
+
         messages = build_asset_messages(
             asset_kind,
             project.name,
@@ -96,8 +145,16 @@ class AssetSynthesizer:
             if callable(flush_remaining):
                 flush_remaining()
                 
-            parsed = parse_json_response(response.content)
+            parsed = parse_json_response(response.content, fallback=True)
+            
             if asset_kind == "skill":
+                if personality_data.get("core_identity"):
+                    parsed["core_identity"] = personality_data["core_identity"]
+                if personality_data.get("mental_state"):
+                    parsed["mental_state"] = personality_data["mental_state"]
+                if memories_data.get("memories"):
+                    parsed["memories"] = memories_data["memories"]
+
                 return self._normalize_skill_payload(
                     parsed,
                     project.name,
@@ -154,6 +211,7 @@ class AssetSynthesizer:
                 "core_identity": summary_by_key.get("personality", {}).get("summary", f"围绕 {project.name} 的角色设定。"),
                 "mental_state": summary_by_key.get("physical_anchor", {}).get("summary", "")
                 or summary_by_key.get("personality", {}).get("summary", ""),
+                "memories": summary_by_key.get("life_timeline", {}).get("bullets", [])[:8],
                 "worldview_constraints": _merge_bullets(
                     summary_by_key.get("physical_anchor", {}).get("bullets", []),
                     summary_by_key.get("values_preferences", {}).get("bullets", []),
@@ -234,6 +292,7 @@ class AssetSynthesizer:
             "source_context": str(payload.get("source_context", analysis_context or "")),
             "core_identity": str(payload.get("core_identity", "")),
             "mental_state": str(payload.get("mental_state", "")),
+            "memories": [str(item) for item in payload.get("memories", [])[:8]],
             "worldview_constraints": [str(item) for item in payload.get("worldview_constraints", [])[:8]],
             "high_confidence_areas": [str(item) for item in payload.get("high_confidence_areas", [])[:8]],
             "ignorance_protocol": str(payload.get("ignorance_protocol", "")),
@@ -278,31 +337,34 @@ class AssetSynthesizer:
             f"- 你是谁：{payload['core_identity']}",
             f"- 你的精神底色：{payload['mental_state']}",
             "",
-            "## 1. 世界观约束",
+            "## 1. 核心记忆",
+            *[f"- {item}" for item in payload["memories"]],
+            "",
+            "## 2. 世界观约束",
             *[f"- {item}" for item in payload["worldview_constraints"]],
             "",
-            "## 2. 高置信领域",
+            "## 3. 高置信领域",
             *[f"- {item}" for item in payload["high_confidence_areas"]],
             "",
-            "## 3. 无知协议",
+            "## 4. 无知协议",
             payload["ignorance_protocol"],
             "",
-            "## 4. 人际互动规则",
+            "## 5. 人际互动规则",
             *[f"- {item}" for item in payload["interaction_rules"]],
             "",
-            "## 5. 话题兴奋点",
+            "## 6. 话题兴奋点",
             *[f"- {item}" for item in payload["topic_triggers"]],
             "",
-            "## 6. 语言指纹",
+            "## 7. 语言指纹",
             *[f"- {item}" for item in payload["linguistic_signature"]],
             "",
-            "## 7. 格式约束",
+            "## 8. 格式约束",
             *[f"- {item}" for item in payload["formatting_rules"]],
             "",
-            "## 8. 禁区",
+            "## 9. 禁区",
             *[f"- {item}" for item in payload["taboos"]],
             "",
-            "## 9. Few-Shot 切片",
+            "## 10. Few-Shot 切片",
         ]
         for item in payload["few_shots"]:
             lines.extend(
@@ -314,14 +376,15 @@ class AssetSynthesizer:
                 ]
             )
         if payload["source_context"]:
-            lines.extend(["## 10. 语料说明", payload["source_context"], ""])
+            lines.extend(["## 11. 语料说明", payload["source_context"], ""])
         if payload["conflict_notes"]:
-            lines.extend(["## 11. 冲突备注"])
+            lines.extend(["## 12. 冲突备注"])
             lines.extend(f"- {_stringify_conflict(item)}" for item in payload["conflict_notes"])
         return "\n".join(line for line in lines if line is not None).strip()
 
     def _render_skill_prompt(self, project_name: str, payload: dict[str, Any]) -> str:
         worldview = "\n".join(f"- {item}" for item in payload["worldview_constraints"])
+        memories = "\n".join(f"- {item}" for item in payload["memories"])
         interaction = "\n".join(f"- {item}" for item in payload["interaction_rules"])
         signature = "\n".join(f"- {item}" for item in payload["linguistic_signature"])
         formatting = "\n".join(f"- {item}" for item in payload["formatting_rules"])
@@ -335,6 +398,7 @@ class AssetSynthesizer:
             f"{source_context}"
             f"核心身份：{payload['core_identity']}\n"
             f"精神底色：{payload['mental_state']}\n\n"
+            f"核心记忆：\n{memories}\n\n"
             f"世界观约束：\n{worldview}\n\n"
             f"高置信领域：\n" + "\n".join(f"- {item}" for item in payload["high_confidence_areas"]) + "\n\n"
             f"无知协议：{payload['ignorance_protocol']}\n\n"
