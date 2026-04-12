@@ -78,9 +78,13 @@
                     </div>
                     <p class="muted" style="margin-bottom: 1rem;">{{ profile.description or '无描述' }}</p>
                     <div class="profile-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <form method="post" action="/projects/{{ profile.id }}/analyze" style="margin: 0;">
+                        <form method="post" action="/projects/{{ profile.id }}/analyze" style="margin: 0; display: flex; gap: 0.5rem; align-items: center;">
                             <input type="hidden" name="target_role" value="{{ profile.name }}">
                             <input type="hidden" name="analysis_context" value="{{ profile.description or '' }}">
+                            <label style="margin: 0; display: flex; align-items: center; gap: 0.25rem;">
+                                <span class="muted" style="font-size: 0.8rem;">并发数</span>
+                                <input type="number" name="concurrency" value="{{ (profile.latest_run.summary_json or {}).get('concurrency', 4) if profile.latest_run else 4 }}" min="1" max="20" style="width: 60px; padding: 0.25rem;">
+                            </label>
                             <button type="submit" class="secondary-button" {% if stats.ready_count == 0 %}disabled{% endif %}>生成/重新分析</button>
                         </form>
                         {% if profile.latest_run %}
@@ -111,6 +115,11 @@
             <label>
                 <span>文档补充说明</span>
                 <textarea name="analysis_context" rows="7" placeholder="说明语料来源、可信度、谁在说话、你希望重点模仿什么" id="analysis-context-input">{{ analysis_defaults.analysis_context }}</textarea>
+            </label>
+            <label>
+                <span>分析并发数</span>
+                <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1" max="20" placeholder="默认 4" id="concurrency-input">
+                <small class="muted">同时进行分析的维度数量。并发数越高速度越快，但对 LLM 的并发请求压力也越大。</small>
             </label>
             <p class="muted">
                 这些输入会进入分析提示词和 skill 合成流程，用来限定"在模仿谁"以及"如何理解这批语料"。

@@ -158,6 +158,7 @@ class AnalysisEngine:
         *,
         target_role: str | None = None,
         analysis_context: str | None = None,
+        concurrency: int | None = None,
     ) -> AnalysisRun:
         project = repository.get_project(session, project_id)
         if not project:
@@ -168,6 +169,8 @@ class AnalysisEngine:
             target_role=target_role,
             analysis_context=analysis_context,
         )
+        if concurrency is not None:
+            summary["concurrency"] = max(1, int(concurrency))
         run = repository.create_analysis_run(
             session,
             project_id,
@@ -221,12 +224,14 @@ class AnalysisEngine:
         *,
         target_role: str | None = None,
         analysis_context: str | None = None,
+        concurrency: int | None = None,
     ) -> AnalysisRun:
         run = self.create_run(
             session,
             project_id,
             target_role=target_role,
             analysis_context=analysis_context,
+            concurrency=concurrency,
         )
         session.commit()
         self.execute_run(session, run.id)
@@ -392,7 +397,8 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
-        with ProcessPoolExecutor(max_workers=min(len(FACETS), self.facet_max_workers if llm_payload else 4)) as executor:
+        run_concurrency = int((run.summary_json or {}).get("concurrency") or self.facet_max_workers)
+        with ProcessPoolExecutor(max_workers=min(len(FACETS), run_concurrency)) as executor:
             for facet in FACETS:
                 prepared = self._prepare_facet_execution(
                     session,
@@ -438,8 +444,9 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
+        run_concurrency = int((run.summary_json or {}).get("concurrency") or self.facet_max_workers)
         with ThreadPoolExecutor(
-            max_workers=min(len(FACETS), self.facet_max_workers if llm_payload else 4),
+            max_workers=min(len(FACETS), run_concurrency),
             thread_name_prefix="facet-thread",
         ) as executor:
             for facet in FACETS:

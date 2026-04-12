@@ -60,6 +60,7 @@ class ChatPayload(BaseModel):
 class AnalysisRequestPayload(BaseModel):
     target_role: str | None = None
     analysis_context: str | None = None
+    concurrency: int | None = None
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -221,6 +222,7 @@ def analyze_project_form(
     session: SessionDep,
     target_role: Annotated[str | None, Form()] = None,
     analysis_context: Annotated[str | None, Form()] = None,
+    concurrency: Annotated[int | None, Form()] = None,
 ):
     run = _enqueue_analysis(
         request,
@@ -228,6 +230,7 @@ def analyze_project_form(
         project_id,
         target_role=target_role,
         analysis_context=analysis_context,
+        concurrency=concurrency,
     )
     return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={run.id}", status_code=303)
 
@@ -801,6 +804,7 @@ def analyze_project_api(
         project_id,
         target_role=payload.target_role,
         analysis_context=payload.analysis_context,
+        concurrency=payload.concurrency,
     )
     return _serialize_analysis_run(run)
 
@@ -1271,6 +1275,7 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "analysis_defaults": {
             "target_role": latest_summary.get("target_role") or project.name,
             "analysis_context": latest_summary.get("analysis_context") or project.description or "",
+            "concurrency": latest_summary.get("concurrency") or 4,
         },
     }
 
@@ -1282,6 +1287,7 @@ def _enqueue_analysis(
     *,
     target_role: str | None,
     analysis_context: str | None,
+    concurrency: int | None = None,
 ) -> AnalysisRun:
     _ensure_project(session, project_id)
     documents = repository.list_project_documents(session, project_id)
@@ -1303,6 +1309,7 @@ def _enqueue_analysis(
         project_id,
         target_role=(target_role or "").strip() or None,
         analysis_context=(analysis_context or "").strip() or None,
+        concurrency=concurrency,
     )
     session.commit()
     request.app.state.analysis_runner.submit(run.id)
