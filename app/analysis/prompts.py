@@ -50,6 +50,70 @@ def build_facet_analysis_messages(
     ]
 
 
+def build_personality_messages(
+    project_name: str,
+    facet_dump: str,
+    search_context: str,
+    *,
+    target_role: str | None,
+    analysis_context: str | None,
+) -> list[dict[str, str]]:
+    context_block = _context_block(target_role, analysis_context)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是一名擅长塑造 LLM 人设的沉浸式导演。\n"
+                "请结合多维分析报告和向量检索语料，深入挖掘角色的性格特质和精神底色。\n"
+                "只返回 JSON。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"项目：{project_name}\n"
+                f"{context_block}\n"
+                "请生成一个 JSON 对象，必须包含这些键：\n"
+                "core_identity (一句话定义最核心的身份与现实处境),\n"
+                "mental_state (描述扮演时的基础情绪状态和精神底色)。\n\n"
+                f"检索到的相关语料：\n{search_context}\n\n"
+                f"多维分析报告输入：\n{facet_dump}"
+            ),
+        },
+    ]
+
+
+def build_memories_messages(
+    project_name: str,
+    facet_dump: str,
+    search_context: str,
+    *,
+    target_role: str | None,
+    analysis_context: str | None,
+) -> list[dict[str, str]]:
+    context_block = _context_block(target_role, analysis_context)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是一名擅长塑造 LLM 人设的沉浸式导演。\n"
+                "请结合多维分析报告和向量检索语料，提炼角色的核心记忆与过往重要经历。\n"
+                "只返回 JSON。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"项目：{project_name}\n"
+                f"{context_block}\n"
+                "请生成一个 JSON 对象，必须包含这些键：\n"
+                "memories (字符串列表，每条记忆需具体且带有时空锚点)。\n\n"
+                f"检索到的相关语料：\n{search_context}\n\n"
+                f"多维分析报告输入：\n{facet_dump}"
+            ),
+        },
+    ]
+
 def build_asset_messages(
     asset_kind: str,
     project_name: str,
@@ -76,10 +140,11 @@ def build_asset_messages(
                     f"项目：{project_name}\n"
                     f"{context_block}\n"
                     "请生成一个 JSON 对象，必须包含这些键：\n"
-                    "target_role, source_context, core_identity, mental_state, worldview_constraints,\n"
-                    "high_confidence_areas, ignorance_protocol, interaction_rules, topic_triggers,\n"
-                    "linguistic_signature, formatting_rules, taboos, few_shots, conflict_notes。\n"
-                    "few_shots 必须是对象列表，每个对象包含 scene、context、reply。\n"
+                "target_role, source_context, core_identity, mental_state, memories, worldview_constraints,\n"
+                "high_confidence_areas, ignorance_protocol, interaction_rules, topic_triggers,\n"
+                "linguistic_signature, formatting_rules, taboos, few_shots, conflict_notes。\n"
+                "memories 必须是字符串列表，如果没有提取到可以留空。\n"
+                "few_shots 必须是对象列表，每个对象包含 scene、context、reply。\n"
                     "interaction_rules 要写成可执行的 if/then 式角色扮演规则。\n"
                     "formatting_rules 要写成简短直接的表达与排版约束。\n\n"
                     f"维度输入：\n{facet_dump}"

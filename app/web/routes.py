@@ -928,6 +928,8 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     target_role=summary.get("target_role"),
                     analysis_context=summary.get("analysis_context"),
                     stream_callback=stream_callback,
+                    session=session,
+                    retrieval_service=request.app.state.retrieval,
                 )
                 
                 draft = repository.create_asset_draft(
@@ -1290,6 +1292,8 @@ def _generate_asset_draft(request: Request, session: Session, project_id: str, *
         chat_config,
         target_role=summary.get("target_role"),
         analysis_context=summary.get("analysis_context"),
+        session=session,
+        retrieval_service=request.app.state.retrieval,
     )
     draft = repository.create_asset_draft(
         session,
