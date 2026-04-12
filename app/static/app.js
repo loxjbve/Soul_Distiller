@@ -17,10 +17,10 @@ function setupDropUploads() {
         const renderFiles = (files) => {
             list.innerHTML = "";
             if (!files.length) {
-                count.textContent = "No files selected";
+                count.textContent = "未选择文件";
                 return;
             }
-            count.textContent = `${files.length} file(s) selected`;
+            count.textContent = `已选择 ${files.length} 个文件`;
             Array.from(files).forEach((file) => {
                 const pill = document.createElement("span");
                 pill.textContent = file.name;
@@ -309,11 +309,11 @@ function bindFacetRerunActions(projectId) {
                 );
                 if (!response.ok) {
                     const errorPayload = await response.json().catch(() => ({}));
-                    throw new Error(errorPayload.detail || "Rerun failed");
+                    throw new Error(errorPayload.detail || "重新运行失败");
                 }
                 window.location.reload();
             } catch (error) {
-                window.alert(error instanceof Error ? error.message : "Rerun failed");
+                window.alert(error instanceof Error ? error.message : "重新运行失败");
                 button.disabled = false;
             }
         };
@@ -416,7 +416,7 @@ function renderFacetResult(facet, runStatus) {
         .map(
             (item) => `
                 <div class="evidence-block">
-                    <strong>${escapeHtml(item.filename || item.document_title || "Evidence")}</strong>
+                    <strong>${escapeHtml(item.filename || item.document_title || "证据")}</strong>
                     <p class="muted">${escapeHtml(item.reason || "")}</p>
                     <blockquote>${escapeHtml(item.quote || "")}</blockquote>
                 </div>
@@ -471,7 +471,7 @@ function renderFacetResult(facet, runStatus) {
                 <div class="facet-meta">
                     <span>Status ${escapeHtml(facet.status || "pending")}</span>
                     <span>Confidence ${Number(facet.confidence || 0).toFixed(2)}</span>
-                    <span>${facet.accepted ? "Accepted" : "Pending"}</span>
+                    <span>${facet.accepted ? "已采纳" : "处理中"}</span>
                 </div>
             </summary>
             <div class="facet-panel-body">
@@ -479,12 +479,12 @@ function renderFacetResult(facet, runStatus) {
                     <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>重新运行这一维</button>
                 </div>
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
-                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">还没有证据。</p>`, false)}
-                ${renderSubDetails(`facet:${facetKey}:notes`, "Notes", notesBody, hasError)}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">还没有证据。</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
                 ${(findings.llm_request_url || findings.llm_error)
-                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
+                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
                     : ""}
-                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, true)}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, true)}
             </div>
         </details>
     `;
@@ -596,7 +596,7 @@ function renderAnalysisV2(payload, projectId) {
 
     updateText("analysis-run-title", `Analysis Run ${payload.id.slice(0, 8)}`);
     updateText("analysis-role-chip", summary.target_role || "Unspecified");
-    updateText("analysis-stage", summary.current_stage || "Queued");
+    updateText("analysis-stage", summary.current_stage || "排队中");
     updateText("analysis-percent", `${percent}%`);
     updateText("analysis-progress-caption", `${completedFacets + failedFacets} / ${totalFacets} facets`);
     updateText("analysis-actual-concurrency", concurrency);
@@ -607,7 +607,7 @@ function renderAnalysisV2(payload, projectId) {
     updateText("analysis-queued-count", queuedFacets);
     updateText("analysis-queue-note", buildQueueNoteV2(activeFacets, queuedFacets, concurrency));
     updateText("analysis-progress-detail", buildAnalysisDetailV2(summary, facets, latestEvent));
-    updateText("analysis-latest-event", latestEvent ? trimTextV2(latestEvent.message || latestEvent.event_type, 88) : "No events yet");
+    updateText("analysis-latest-event", latestEvent ? trimTextV2(latestEvent.message || latestEvent.event_type, 88) : "暂无事件");
     updateText(
         "analysis-latest-event-detail",
         latestEvent ? `${latestEvent.event_type} · ${formatTime(latestEvent.created_at)}` : "Live run events will appear here."
@@ -729,8 +729,8 @@ function renderFacetStatusCardV2(facet, runStatus) {
     const phase = phaseLabelV2(findings.phase || status);
     const preview = buildFacetLeadV2(facet);
     const llmLine = findings.llm_called
-        ? `LLM ${findings.llm_success ? "succeeded" : "fallback"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
-        : "No completed LLM call yet";
+        ? `LLM ${findings.llm_success ? "成功" : "回退"} · in ${promptTokens} / out ${completionTokens} / total ${totalTokens}`
+        : "尚无已完成的 LLM 调用";
     const tags = [];
 
     if (status === "queued" && findings.queue_position) {
@@ -832,7 +832,7 @@ function renderFacetResultV2(facet, runStatus) {
         renderFacetTagV2(`Phase: ${phaseLabelV2(findings.phase || status)}`, isFacetActiveV2(facet) ? "active" : ""),
         findings.queue_position ? renderFacetTagV2(`Queue #${findings.queue_position}`, "warning") : "",
         renderFacetTagV2(`Confidence ${Number(facet.confidence || 0).toFixed(2)}`, ""),
-        renderFacetTagV2(facet.accepted ? "Accepted" : "Pending", ""),
+        renderFacetTagV2(facet.accepted ? "已采纳" : "处理中", ""),
     ]
         .filter(Boolean)
         .join("");
@@ -844,7 +844,7 @@ function renderFacetResultV2(facet, runStatus) {
         .map(
             (item) => `
                 <div class="evidence-block">
-                    <strong>${escapeHtml(item.filename || item.document_title || "Evidence")}</strong>
+                    <strong>${escapeHtml(item.filename || item.document_title || "证据")}</strong>
                     <p class="muted">${escapeHtml(item.reason || "")}</p>
                     <blockquote>${escapeHtml(item.quote || "")}</blockquote>
                 </div>
@@ -904,12 +904,12 @@ function renderFacetResultV2(facet, runStatus) {
                     <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facetKey)}" ${rerunDisabled}>Rerun Facet</button>
                 </div>
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
-                ${renderSubDetails(`facet:${facetKey}:evidence`, "Evidence", evidence || `<p class="muted">No evidence has been attached yet.</p>`, false)}
-                ${renderSubDetails(`facet:${facetKey}:notes`, "Notes", notesBody, hasError)}
+                ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">No evidence has been attached yet.</p>`, false)}
+                ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
                 ${(findings.llm_request_url || findings.llm_error || findings.llm_request_payload_preview)
-                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM Trace", traceBody, hasError)
+                    ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
                     : ""}
-                ${renderSubDetails(`facet:${facetKey}:live`, "LLM Live Text", liveTextBody, status === "running")}
+                ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, status === "running")}
             </div>
         </details>
     `;
@@ -922,8 +922,8 @@ function buildAnalysisDetailV2(summary, facets, latestEvent) {
     const activeFacets = Number(summary.active_facets || 0);
     const queuedFacets = Number(summary.queued_facets || 0);
     const concurrency = Math.max(1, Number(summary.concurrency || 1));
-    const latestHint = latestEvent ? `Latest: ${latestEvent.message || latestEvent.event_type}` : "Waiting for fresh events.";
-    return `${summary.current_stage || "Queued"} · active ${activeFacets}/${concurrency}, queued ${queuedFacets}, completed ${completedFacets}/${totalFacets}, failed ${failedFacets}. ${latestHint}`;
+    const latestHint = latestEvent ? `Latest: ${latestEvent.message || latestEvent.event_type}` : "等待最新事件。";
+    return `${summary.current_stage || "排队中"} · active ${activeFacets}/${concurrency}, queued ${queuedFacets}, completed ${completedFacets}/${totalFacets}, failed ${failedFacets}. ${latestHint}`;
 }
 
 function sortAnalysisFacetsV2(facets) {
@@ -983,7 +983,7 @@ function selectHeadlineEventV2(events, facetKey) {
 }
 
 function facetLabelV2(facet) {
-    return facet?.findings?.label || facet?.facet_key || "Unknown Facet";
+    return facet?.findings?.label || facet?.facet_key || "未知维度";
 }
 
 function buildFacetLeadV2(facet) {
@@ -993,22 +993,22 @@ function buildFacetLeadV2(facet) {
     }
     const status = normalizeStatus(facet.status || "queued");
     if (status === "queued") {
-        const queuePosition = findings.queue_position ? `Queue #${findings.queue_position}` : "Queued";
+        const queuePosition = findings.queue_position ? `Queue #${findings.queue_position}` : "排队中";
         return `${queuePosition} and waiting for a free slot.`;
     }
     if (status === "preparing") {
-        return "Retrieving evidence and preparing the facet payload.";
+        return "正在检索证据并准备维度 payload。";
     }
     if (status === "running") {
         return `Active phase: ${phaseLabelV2(findings.phase || "running")}.`;
     }
     if (status === "failed") {
         return trimTextV2(
-            findings.notes || facet.error_message || "The facet failed before a structured summary was produced.",
+            findings.notes || facet.error_message || "维度在生成结构化摘要前失败。",
             220,
         );
     }
-    return "No summary was returned for this facet.";
+    return "此维度未返回摘要。";
 }
 
 function buildQueueNoteV2(activeFacets, queuedFacets, concurrency) {
@@ -1016,9 +1016,9 @@ function buildQueueNoteV2(activeFacets, queuedFacets, concurrency) {
         return `${queuedFacets} facet(s) are waiting while ${activeFacets}/${concurrency} slot(s) are in use.`;
     }
     if (activeFacets > 0) {
-        return "The queue is empty. Active slots are working on the remaining facets.";
+        return "队列已空。活动插槽正在处理剩余维度。";
     }
-    return "The queue is empty.";
+    return "队列为空。";
 }
 
 function renderFacetTagV2(text, tone) {
@@ -1028,38 +1028,38 @@ function renderFacetTagV2(text, tone) {
 function statusLabelV2(status) {
     switch (normalizeStatus(status)) {
         case "queued":
-            return "Queued";
+            return "排队中";
         case "preparing":
-            return "Preparing";
+            return "准备中";
         case "running":
-            return "Running";
+            return "运行中";
         case "completed":
-            return "Completed";
+            return "已完成";
         case "failed":
-            return "Failed";
+            return "已失败";
         default:
-            return String(status || "Queued");
+            return String(status || "排队中");
     }
 }
 
 function phaseLabelV2(phase) {
     switch (String(phase || "").toLowerCase()) {
         case "queued":
-            return "Queued";
+            return "排队中";
         case "retrieving":
-            return "Retrieving evidence";
+            return "正在检索证据";
         case "llm":
-            return "Generating with LLM";
+            return "LLM 生成中";
         case "analyzing":
-            return "Analyzing";
+            return "分析中";
         case "persisting":
-            return "Finalizing";
+            return "处理完成";
         case "completed":
-            return "Completed";
+            return "已完成";
         case "failed":
-            return "Failed";
+            return "已失败";
         default:
-            return String(phase || "Queued");
+            return String(phase || "排队中");
     }
 }
 

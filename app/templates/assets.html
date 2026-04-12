@@ -3,7 +3,7 @@
 {% block content %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Assets</p>
+        <p class="eyebrow">资产</p>
         <h1>{{ project.name }} 的资产输出</h1>
         <p class="hero-note">
             分析完成后，可以生成 Skill 或人物剖析报告。生成过程会展示实时阶段、进度和流式输出，避免只看到一个模糊的转圈状态。
@@ -11,7 +11,7 @@
     </div>
     <div class="project-hero-actions">
         <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">返回分析</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/playground">游乐场</a>
     </div>
 </section>
 
@@ -32,7 +32,7 @@
 >
     <div class="section-head">
         <div>
-            <p class="eyebrow">Generate</p>
+            <p class="eyebrow">生成</p>
             <h2>生成 {{ asset_label }}</h2>
             <p class="hero-note" id="asset-generation-hint">点击后会展示阶段进度、状态提示和实时输出。</p>
         </div>
@@ -93,7 +93,7 @@
         <section class="asset-stream-panel">
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Live Stream</p>
+                    <p class="eyebrow">实时流</p>
                     <h3>实时输出</h3>
                 </div>
                 <div class="facet-meta">
@@ -109,7 +109,7 @@
 <section class="workspace-panel">
     <div class="section-head">
         <div>
-            <p class="eyebrow">Draft</p>
+            <p class="eyebrow">草稿</p>
             <h2>编辑 {{ asset_label }} 草稿</h2>
         </div>
     </div>
@@ -146,7 +146,7 @@
 <section class="workspace-panel">
     <div class="section-head">
         <div>
-            <p class="eyebrow">Versions</p>
+            <p class="eyebrow">版本记录</p>
             <h2>{{ asset_label }} 已发布版本</h2>
         </div>
     </div>

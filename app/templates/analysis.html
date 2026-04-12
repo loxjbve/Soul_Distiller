@@ -10,8 +10,8 @@
 {% set queued_facets = summary.get("queued_facets", 0) %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Analysis Queue</p>
-        <h1>{{ project.name }} Multi-Facet Analysis</h1>
+<p class="eyebrow">分析监控队列</p>
+        <h1>{{ project.name }} 多维分析队列</h1>
         <p class="hero-note">
             This monitor shows the real queue state of the run. Facets are separated into queued, preparing,
             running, completed, and failed so the page reflects actual slot usage instead of guessed activity.
@@ -37,9 +37,9 @@
 
     <div class="section-head">
         <div>
-            <p class="eyebrow">Run</p>
-            <h2 id="analysis-run-title">Analysis Run {{ run.id[:8] }}</h2>
-            <p class="hero-note" id="analysis-progress-detail">Waiting for live updates.</p>
+<p class="eyebrow">运行</p>
+            <h2 id="analysis-run-title">分析运行 {{ run.id[:8] }}</h2>
+            <p class="hero-note" id="analysis-progress-detail">等待实时状态更新…</p>
         </div>
         <div class="facet-meta analysis-run-meta">
             <span id="analysis-status-chip">{{ run.status }}</span>
@@ -134,8 +134,8 @@
         <div>
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Queue Board</p>
-                    <h3>Facet Queue</h3>
+<p class="eyebrow">队列看板</p>
+                    <h3>维度队列</h3>
                 </div>
             </div>
             <div id="facet-status-list" class="facet-status-grid"></div>
@@ -144,8 +144,8 @@
         <div>
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Events</p>
-                    <h3>Run Event Stream</h3>
+<p class="eyebrow">运行事件</p>
+                    <h3>运行事件流</h3>
                 </div>
             </div>
             <div id="analysis-events" class="event-stream"></div>
@@ -154,8 +154,8 @@
 
     <section class="section-head slim-head top-gap">
         <div>
-            <p class="eyebrow">Results</p>
-            <h3>Facet Results</h3>
+<p class="eyebrow">分析结果</p>
+            <h3>分析结果</h3>
         </div>
     </section>
     <div id="analysis-result-list" class="facet-stack"></div>

@@ -3,7 +3,7 @@
 {% block content %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Project Workspace</p>
+        <p class="eyebrow">项目工作区</p>
         <h1>{{ project.name }}</h1>
         <p class="hero-note">{{ project.description or "这个项目还没有补充说明。" }}</p>
         <div class="hero-chips">
@@ -24,11 +24,11 @@
     <div class="project-hero-actions">
         <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">分析结果</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/playground">Playground</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/playground">游乐场</a>
         <a class="secondary-button" href="/projects/{{ project.id }}/preprocess">预分析工作区</a>
         <button type="button" class="secondary-button" onclick="document.getElementById('edit-project-modal-overlay').hidden = false">编辑项目</button>
-        <form method="post" action="/projects/{{ project.id }}/delete" id="delete-project-form" onsubmit="return confirm('Delete this project and all related data?');">
-            <button type="submit" class="danger-button" id="delete-project-btn">Delete Project</button>
+        <form method="post" action="/projects/{{ project.id }}/delete" id="delete-project-form" onsubmit="return confirm('确定删除这个项目和所有相关数据吗？');">
+            <button type="submit" class="danger-button" id="delete-project-btn">删除项目</button>
         </form>
     </div>
 </section>
@@ -37,14 +37,14 @@
     <article class="workspace-panel dark-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Ingest</p>
+                <p class="eyebrow">数据导入</p>
                 <h2>拖拽上传文档</h2>
             </div>
         </div>
         <div class="upload-zone-wrapper">
             <div class="dropzone" id="upload-dropzone">
                 <input type="file" id="file-input" multiple accept=".html,.htm,.json,.jsonl,.docx,.pdf,.txt,.md,.log">
-                <span class="dropzone-kicker">Drop files here</span>
+                <span class="dropzone-kicker">拖拽文件到这里</span>
                 <strong>拖拽或点击上传</strong>
                 <small>支持 html / json / jsonl / docx / pdf / txt / md / log</small>
             </div>
@@ -55,7 +55,7 @@
     <article class="workspace-panel" id="analysis-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Group Members</p>
+                <p class="eyebrow">群组成员</p>
                 <h2>群组用户画像列表</h2>
             </div>
             <div class="section-actions">
@@ -103,7 +103,7 @@
     <article class="workspace-panel" id="analysis-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Analysis Studio</p>
+                <p class="eyebrow">分析工作室</p>
                 <h2>指定分析目标</h2>
             </div>
         </div>
@@ -135,7 +135,7 @@
     <aside class="workspace-panel slim-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Status</p>
+                <p class="eyebrow">状态</p>
                 <h2>当前状态</h2>
             </div>
         </div>
@@ -163,7 +163,7 @@
 <section class="workspace-panel">
     <div class="section-head">
         <div>
-            <p class="eyebrow">Documents</p>
+            <p class="eyebrow">文档列表</p>
             <h2>文档处理看板</h2>
         </div>
         <div class="section-actions">
