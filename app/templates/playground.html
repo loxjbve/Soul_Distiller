@@ -1,170 +1,81 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} Playground{% endblock %}
-
-{% block extra_head %}
-<style>
-    .chat-container {
-        display: flex;
-        flex-direction: column;
-        height: 65vh;
-        min-height: 500px;
-        max-height: 800px;
-        background: var(--bg-card);
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        overflow: hidden;
-        margin-top: 1.5rem;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-    }
-    .chat-history {
-        flex: 1;
-        overflow-y: auto;
-        padding: 1.5rem;
-        display: flex;
-        flex-direction: column;
-        gap: 1.2rem;
-        background: var(--bg-body);
-    }
-    .chat-message {
-        display: flex;
-        flex-direction: column;
-        max-width: 80%;
-    }
-    .chat-message.user {
-        align-self: flex-end;
-    }
-    .chat-message.assistant {
-        align-self: flex-start;
-    }
-    .chat-bubble {
-        padding: 0.8rem 1.2rem;
-        border-radius: 18px;
-        font-size: 0.95rem;
-        line-height: 1.6;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-    }
-    .chat-message.user .chat-bubble {
-        background: var(--accent-color);
-        color: white;
-        border-bottom-right-radius: 4px;
-    }
-    .chat-message.assistant .chat-bubble {
-        background: var(--bg-card);
-        color: var(--text-main);
-        border: 1px solid var(--border-color);
-        border-bottom-left-radius: 4px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    .chat-meta {
-        font-size: 0.75rem;
-        color: var(--text-muted);
-        margin-bottom: 0.3rem;
-        padding: 0 0.5rem;
-    }
-    .chat-message.user .chat-meta {
-        text-align: right;
-    }
-    .chat-meta-bottom {
-        font-size: 0.7rem;
-        color: var(--text-muted);
-        margin-top: 0.3rem;
-        padding: 0 0.5rem;
-        opacity: 0.6;
-    }
-    .chat-input-area {
-        padding: 1rem;
-        background: var(--bg-card);
-        border-top: 1px solid var(--border-color);
-    }
-    .chat-form {
-        display: flex;
-        gap: 0.8rem;
-        align-items: flex-end;
-    }
-    .chat-form textarea {
-        flex: 1;
-        resize: none;
-        padding: 0.8rem 1rem;
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
-        background: var(--bg-body);
-        color: var(--text-main);
-        font-family: inherit;
-        font-size: 0.95rem;
-        line-height: 1.4;
-        transition: border-color 0.2s ease;
-    }
-    .chat-form textarea:focus {
-        outline: none;
-        border-color: var(--accent-color);
-    }
-    .chat-form button {
-        padding: 0 1.5rem;
-        height: 44px;
-        border-radius: 10px;
-        white-space: nowrap;
-        font-weight: 600;
-        margin-bottom: 2px;
-    }
-</style>
-{% endblock %}
-
+{% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
 {% block content %}
-<section class="project-hero">
-    <div class="project-hero-copy">
-        <p class="eyebrow">游乐场</p>
-        <h1>{{ project.name }} 的模仿试聊</h1>
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">{{ ui.eyebrow }}</p>
+        <h1>{{ project.name }} · {{ ui.title }}</h1>
         {% if version %}
-            <p class="hero-note">当前使用版本：v{{ version.version_number }} (沉浸式角色扮演)</p>
+            <p class="hero-note">{{ ui.hero_note_ready }}</p>
+            <div class="chip-row">
+                <span class="status-chip tone-ready">{{ ui.version_label }} · v{{ version.version_number }}</span>
+            </div>
         {% else %}
-            <p class="hero-note">还没有已发布 skill，暂时无法试聊。</p>
+            <p class="hero-note">{{ ui.hero_note_missing }}</p>
         {% endif %}
     </div>
-    <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">返回资产输出</a>
+    <div class="hero-actions">
+        <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.common.back_to_assets }}</a>
     </div>
 </section>
 
 {% if version %}
-    <div class="chat-container">
-        <div class="chat-history" id="chatHistory">
-            {% if not turns %}
-                <div class="chat-message assistant">
-                    <div class="chat-meta">系统提示</div>
-                    <div class="chat-bubble">试聊已准备就绪。你可以开始提问了，AI 将完全按照 <strong>{{ project.name }}</strong> 的人设进行回复，不再进行上下文检索。</div>
+    <section class="immersive-chat">
+        <aside class="surface-card chat-context-card">
+            <div class="section-head slim-head">
+                <div>
+                    <p class="eyebrow">Skill</p>
+                    <h2>当前版本</h2>
                 </div>
-            {% endif %}
-            {% for turn in turns %}
-                <div class="chat-message {{ 'user' if turn.role == 'user' else 'assistant' }}" id="turn-{{ turn.id }}">
-                    <div class="chat-meta">{{ "你" if turn.role == "user" else project.name }} • {{ turn.created_at.strftime('%H:%M') if turn.created_at else '' }}</div>
-                    <div class="chat-bubble">{{ turn.content }}</div>
-                    {% if turn.trace_json and turn.role == "assistant" %}
-                        <div class="chat-meta-bottom">v{{ turn.trace_json.skill_version_number }} | {{ turn.trace_json.llm.model }}</div>
-                    {% endif %}
-                </div>
-            {% endfor %}
-        </div>
-        <div class="chat-input-area">
-            <form method="post" action="/projects/{{ project.id }}/playground/chat" class="chat-form">
-                <textarea name="message" rows="2" placeholder="输入你想对 {{ project.name }} 说的话，按 Enter 发送..." required onkeydown="if(event.keyCode==13 && !event.shiftKey){event.preventDefault();this.form.submit();}"></textarea>
-                <button type="submit" class="primary-button">发送</button>
-            </form>
-        </div>
-    </div>
+            </div>
+            <div class="metric-list">
+                <div class="metric-row"><span>项目</span><strong>{{ project.name }}</strong></div>
+                <div class="metric-row"><span>版本</span><strong>v{{ version.version_number }}</strong></div>
+                <div class="metric-row"><span>状态</span><strong>已发布</strong></div>
+            </div>
+        </aside>
 
-    <script>
-        // 页面加载完毕后，自动将聊天记录滚动到最底部
-        document.addEventListener("DOMContentLoaded", function() {
-            var chatHistory = document.getElementById("chatHistory");
-            if (chatHistory) {
-                chatHistory.scrollTop = chatHistory.scrollHeight;
-            }
-        });
-    </script>
-{% else %}
-    <section class="workspace-panel">
-        <p class="muted">请先在资产输出页面发布一个 Skill 版本。</p>
+        <section class="surface-card chat-shell">
+            <div class="chat-history" id="chat-history">
+                {% if not turns %}
+                    <article class="chat-row chat-row--assistant">
+                        <div class="system-banner">
+                            <strong>{{ ui.system_notice }}</strong>
+                            <p>{{ ui.empty_turns }}</p>
+                        </div>
+                    </article>
+                {% endif %}
+                {% for turn in turns %}
+                    <article class="chat-row chat-row--{{ 'user' if turn.role == 'user' else 'assistant' }}" id="turn-{{ turn.id }}">
+                        <div class="chat-bubble chat-bubble--{{ 'user' if turn.role == 'user' else 'assistant' }}">
+                            {{ turn.content }}
+                        </div>
+                        <div class="chat-meta">
+                            {{ ui.you if turn.role == 'user' else project.name }} ·
+                            {{ turn.created_at.strftime('%Y-%m-%d %H:%M') if turn.created_at else '--' }}
+                        </div>
+                    </article>
+                {% endfor %}
+            </div>
+            <form method="post" action="/projects/{{ project.id }}/playground/chat" class="chat-composer" id="playground-form">
+                <textarea name="message" id="playground-input" rows="3" placeholder="{{ ui.placeholder }}" required></textarea>
+                <div class="button-row button-row--end">
+                    <button type="submit" class="primary-button">{{ ui.send }}</button>
+                </div>
+            </form>
+        </section>
     </section>
+{% else %}
+    <section class="surface-card">
+        <div class="empty-panel">
+            <strong>{{ ui.publish_first }}</strong>
+        </div>
+    </section>
+{% endif %}
+{% endblock %}
+
+{% block extra_scripts %}
+{% if version %}
+<script type="module" src="{{ request.url_for('static', path='playground.js') }}"></script>
 {% endif %}
 {% endblock %}

@@ -17,8 +17,9 @@ from app.db import Database
 from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk, utcnow
 from app.pipeline.chunking import chunk_segments
+from app.pipeline.extractors import ExtractionError, extract_text
 from app.retrieval.vector_store import VectorStoreManager
-from app.schemas import ServiceConfig, ExtractionResult, ExtractedSegment
+from app.schemas import ServiceConfig
 from app.storage import repository
 
 EMBEDDING_DIMENSION_DEFAULT = 1024
@@ -189,17 +190,7 @@ class IngestTaskManager:
         self._update_task(task, status=TaskStage.PARSING, progress_percent=5, started_at=utcnow().isoformat())
         try:
             if task.is_cancelled: return
-            text = content.decode("utf-8", errors="ignore")
-            result = ExtractionResult(
-                raw_text=text,
-                clean_text=text,
-                title=task.filename,
-                author_guess=None,
-                created_at_guess=None,
-                language="unknown",
-                metadata={"format": "raw_text"},
-                segments=[ExtractedSegment(text=text, metadata={})]
-            )
+            result = extract_text(task.filename, content)
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
             if task.is_cancelled: return
             self._process_chunks(task, result)
@@ -211,6 +202,8 @@ class IngestTaskManager:
             self._store_to_vector_db(task)
             self._finalize_document(task)
             self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
+        except ExtractionError as exc:
+            self._mark_document_failed(task, str(exc))
         except Exception as exc:
             self._handle_failure(task, exc)
 
@@ -342,34 +335,46 @@ class IngestTaskManager:
                         vectors=vectors[i:i + batch_size],
                         payloads=payloads[i:i + batch_size]
                     )
-                store.save()
+                self.vector_store_manager.mark_dirty(task.project_id)
 
     def _finalize_document(self, task: IngestTask) -> None:
         with self._lock:
-            if task.task_id in self._tasks: del self._tasks[task.task_id]
-            if task.task_id in self._futures: del self._futures[task.task_id]
-            if task.document_id in self._tasks_by_document: del self._tasks_by_document[task.document_id]
+            if task.task_id in self._tasks:
+                del self._tasks[task.task_id]
+            if task.task_id in self._futures:
+                del self._futures[task.task_id]
+            if task.document_id in self._tasks_by_document:
+                del self._tasks_by_document[task.document_id]
             if task.project_id in self._tasks_by_project and task.task_id in self._tasks_by_project[task.project_id]:
                 self._tasks_by_project[task.project_id].remove(task.task_id)
+            should_flush_project = not self._tasks_by_project.get(task.project_id)
         with self.db.session() as session:
             document = repository.get_document(session, task.document_id)
             if document:
                 document.ingest_status = "ready"
                 session.commit()
+        if should_flush_project:
+            self.vector_store_manager.save_project(task.project_id)
 
     def _mark_document_failed(self, task: IngestTask, error_message: str) -> None:
         with self._lock:
-            if task.task_id in self._tasks: del self._tasks[task.task_id]
-            if task.task_id in self._futures: del self._futures[task.task_id]
-            if task.document_id in self._tasks_by_document: del self._tasks_by_document[task.document_id]
+            if task.task_id in self._tasks:
+                del self._tasks[task.task_id]
+            if task.task_id in self._futures:
+                del self._futures[task.task_id]
+            if task.document_id in self._tasks_by_document:
+                del self._tasks_by_document[task.document_id]
             if task.project_id in self._tasks_by_project and task.task_id in self._tasks_by_project[task.project_id]:
                 self._tasks_by_project[task.project_id].remove(task.task_id)
+            should_flush_project = not self._tasks_by_project.get(task.project_id)
         with self.db.session() as session:
             document = repository.get_document(session, task.document_id)
             if document:
                 document.ingest_status = "failed"
                 document.error_message = error_message
                 session.commit()
+        if should_flush_project:
+            self.vector_store_manager.save_project(task.project_id)
 
     def _handle_failure(self, task: IngestTask, exc: Exception) -> None:
         import traceback

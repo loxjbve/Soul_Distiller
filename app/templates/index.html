@@ -1,102 +1,124 @@
 {% extends "base.html" %}
-{% block title %}Projects{% endblock %}
+{% block title %}{{ ui.title }}{% endblock %}
 {% block content %}
-<section class="hero-board">
+<section class="hero-panel">
     <div class="hero-copy">
-        <p class="eyebrow">本地角色提取工作室</p>
-        <h1>构建可交互的人物 Skill。</h1>
-        <div class="hero-chips">
-            <span>Chat LLM {{ "已就绪" if chat_configured else "未配置" }}</span>
-            <span>Embeddings {{ "已就绪" if embedding_configured else "已回退" }}</span>
-            <span>本地环境</span>
+        <p class="eyebrow">{{ ui.eyebrow }}</p>
+        <h1>{{ ui.hero_title }}</h1>
+        <p class="hero-note">{{ ui.hero_note }}</p>
+        <div class="chip-row">
+            <span class="status-chip {{ 'tone-ready' if chat_configured else 'tone-failed' }}">
+                {{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}
+            </span>
+            <span class="status-chip {{ 'tone-ready' if embedding_configured else 'tone-warning' }}">
+                {{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}
+            </span>
+            <span class="status-chip tone-processing">FastAPI + Jinja + 原生 JS</span>
         </div>
     </div>
-    <div class="hero-side">
-        <div class="metric-tile">
+    <div class="hero-metric-grid">
+        <article class="metric-card">
+            <span>{{ ui.metric_projects }}</span>
             <strong>{{ projects|length }}</strong>
-            <span>人物项目</span>
-        </div>
+            <p>{{ ui.metric_note }}</p>
+        </article>
     </div>
 </section>
 
-<section class="workspace-grid">
-    <article class="workspace-panel">
+<section class="layout-grid layout-grid--home">
+    <article class="surface-card">
         <div class="section-head">
             <div>
-                <p class="eyebrow">新建项目</p>
-                <h2>创建人物项目</h2>
+                <p class="eyebrow">Create</p>
+                <h2>{{ ui.panel_create }}</h2>
             </div>
         </div>
-        <form method="post" action="/projects" class="stack roomy">
+        <form method="post" action="/projects" class="form-stack">
             <label>
-                <span>人物名称 / 群聊名称</span>
-                <input type="text" name="name" placeholder="例如：张三 / Alice / 某群聊中的核心成员" required>
+                <span>{{ ui.create_name }}</span>
+                <input type="text" name="name" placeholder="{{ ui.create_name_placeholder }}" required>
             </label>
             <label>
-                <span>工作区模式</span>
+                <span>{{ ui.create_mode }}</span>
                 <select name="mode">
-                    <option value="group">基于群聊（分析多个人或整个群氛围）</option>
-                    <option value="single">基于单人（只分析一个特定的人）</option>
+                    <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
+                    <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
                 </select>
             </label>
             <label>
-                <span>项目说明</span>
-                <textarea name="description" rows="5" placeholder="说明这些文档是什么、来自哪里、之后打算模拟谁"></textarea>
+                <span>{{ ui.create_description }}</span>
+                <textarea name="description" rows="5" placeholder="{{ ui.create_description_placeholder }}"></textarea>
             </label>
-            <button type="submit">创建项目</button>
+            <button type="submit" class="primary-button">{{ ui.create_submit }}</button>
         </form>
     </article>
 
-    <section class="workspace-panel">
+    <section class="surface-card">
         <div class="section-head">
             <div>
-                <p class="eyebrow">项目</p>
-                <h2>已有项目</h2>
+                <p class="eyebrow">Workspace</p>
+                <h2>{{ ui.panel_existing }}</h2>
             </div>
         </div>
         {% if projects %}
-            <div class="project-list">
+            <div class="project-card-list">
                 {% for project in projects %}
-                    <div class="project-row">
-                        <div>
-                            <a class="strong-link" href="/projects/{{ project.id }}">{{ project.name }}</a>
-                            <p>{{ project.description or "无描述" }}</p>
-                            <p class="muted">最后更新：{{ project.updated_at }}</p>
+                    <article class="project-card">
+                        <div class="project-card__copy">
+                            <div class="project-card__title-row">
+                                <a class="project-card__title" href="/projects/{{ project.id }}">{{ project.name }}</a>
+                                <span class="status-chip {{ 'tone-processing' if project.mode == 'group' else 'tone-ready' }}">
+                                    {{ ui.mode_group if project.mode == 'group' else ui.mode_single }}
+                                </span>
+                            </div>
+                            <p>{{ project.description or ui.project_description_empty }}</p>
+                            <small>
+                                {{ ui.project_updated }} ·
+                                {{ project.updated_at.strftime('%Y-%m-%d %H:%M') if project.updated_at else '--' }}
+                            </small>
                         </div>
-                        <div class="inline-actions">
-                            <button type="button" class="secondary-button" onclick="document.getElementById('edit-project-modal-{{ project.id }}').hidden = false">编辑</button>
-                            <form method="post" action="/projects/{{ project.id }}/delete" onsubmit="return confirm('确定要删除该项目吗？所有数据将无法恢复。')">
-                                <button type="submit" class="danger-button">删除</button>
+                        <div class="button-row">
+                            <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.project_card_open }}</a>
+                            <button type="button" class="ghost-button" data-modal-open="edit-project-modal-{{ project.id }}">{{ ui.project_card_edit }}</button>
+                            <form method="post" action="/projects/{{ project.id }}/delete">
+                                <button
+                                    type="submit"
+                                    class="ghost-button danger-button"
+                                    data-confirm="{{ ui.common.confirm_delete_project }}"
+                                >
+                                    {{ ui.project_card_delete }}
+                                </button>
                             </form>
                         </div>
-                    </div>
-                    
+                    </article>
+
                     <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
-                        <div class="modal">
-                            <div class="modal-header">
-                                <h3>编辑项目信息</h3>
-                                <button type="button" class="modal-close" onclick="document.getElementById('edit-project-modal-{{ project.id }}').hidden = true">&times;</button>
-                            </div>
-                            <form method="post" action="/projects/{{ project.id }}/update" class="stack">
-                                <div class="modal-body stack">
-                                    <label>
-                                        <span>项目名称</span>
-                                        <input type="text" name="name" value="{{ project.name }}" required>
-                                    </label>
-                                    <label>
-                                        <span>项目描述</span>
-                                        <textarea name="description" rows="3">{{ project.description or '' }}</textarea>
-                                    </label>
-                                    <label>
-                                        <span>项目模式</span>
-                                        <select name="mode">
-                                            <option value="single" {% if project.mode == 'single' %}selected{% endif %}>单人模式</option>
-                                            <option value="group" {% if project.mode == 'group' %}selected{% endif %}>群聊模式</option>
-                                        </select>
-                                    </label>
+                        <div class="modal-dialog">
+                            <div class="modal-head">
+                                <div>
+                                    <p class="eyebrow">Edit</p>
+                                    <h3>{{ ui.modal_edit_title }}</h3>
                                 </div>
-                                <div class="modal-footer">
-                                    <button type="submit" class="primary-button">保存修改</button>
+                                <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+                            </div>
+                            <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
+                                <label>
+                                    <span>{{ ui.modal_name }}</span>
+                                    <input type="text" name="name" value="{{ project.name }}" required>
+                                </label>
+                                <label>
+                                    <span>{{ ui.modal_description }}</span>
+                                    <textarea name="description" rows="4">{{ project.description or '' }}</textarea>
+                                </label>
+                                <label>
+                                    <span>{{ ui.modal_mode }}</span>
+                                    <select name="mode">
+                                        <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
+                                        <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
+                                    </select>
+                                </label>
+                                <div class="button-row button-row--end">
+                                    <button type="submit" class="primary-button">{{ ui.modal_submit }}</button>
                                 </div>
                             </form>
                         </div>
@@ -104,7 +126,9 @@
                 {% endfor %}
             </div>
         {% else %}
-            <p class="muted">还没有项目，从左侧创建一个即可开始。</p>
+            <div class="empty-panel">
+                <strong>{{ ui.empty_projects }}</strong>
+            </div>
         {% endif %}
     </section>
 </section>

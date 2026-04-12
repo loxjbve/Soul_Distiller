@@ -13,7 +13,7 @@ from app.config import AppConfig
 from app.llm.client import OpenAICompatibleClient
 from app.main import create_app
 from app.models import TextChunk
-from app.schemas import AssetBundle, DEFAULT_ANALYSIS_CONCURRENCY, RetrievedChunk
+from app.schemas import AssetBundle, DEFAULT_ANALYSIS_CONCURRENCY, ExtractedSegment, ExtractionResult, RetrievedChunk
 from app.storage import repository
 
 
@@ -808,3 +808,132 @@ def test_custom_provider_requires_base_url(client):
         follow_redirects=False,
     )
     assert response.status_code == 400
+
+
+def test_pages_render_simplified_chinese_and_lang(client):
+    project_id = client.post("/api/projects", json={"name": "页面检查"}).json()["id"]
+
+    pages = {
+        "/": "项目总览",
+        f"/projects/{project_id}": "项目控制中心",
+        f"/projects/{project_id}/analysis": "分析监控",
+        f"/projects/{project_id}/assets?kind=skill": "资产输出工作台",
+        f"/projects/{project_id}/playground": "沉浸式对话验证",
+        f"/projects/{project_id}/preprocess": "预分析工作区",
+        "/settings": "配置 Chat LLM 与 Embedding 服务",
+    }
+
+    for path, expected_text in pages.items():
+        response = client.get(path)
+        assert response.status_code == 200
+        assert b'lang="zh-CN"' in response.content
+        assert expected_text.encode("utf-8") in response.content
+        assert b"\xef\xbf\xbd" not in response.content
+        assert b"zh-Hant" not in response.content
+
+
+def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
+    create_payload = client.post("/api/projects", json={"name": "接口本地化"}).json()
+    project_id = create_payload["id"]
+    assert create_payload["status"] == "ok"
+    assert "项目已创建" in create_payload["message"]
+
+    upload_payload = client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("memo.txt", io.BytesIO(b"localized api payload"), "text/plain")},
+    ).json()
+    assert upload_payload["status"] == "ok"
+    assert "文档上传完成" in upload_payload["message"]
+
+    session_payload = client.post(
+        f"/api/projects/{project_id}/preprocess/sessions",
+        json={"title": "接口消息会话"},
+    ).json()
+    assert session_payload["status"] == "ok"
+    assert "预分析会话已创建" in session_payload["message"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "测试角色", "analysis_context": "接口文案检查"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={"label": "Personality", "summary": "ready", "bullets": []},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    def fake_build(asset_kind, project, facets, config, **kwargs):
+        return AssetBundle(
+            asset_kind=asset_kind,
+            markdown_text="# Draft",
+            json_payload={"headline": "Preview"},
+            prompt_text="Prompt",
+        )
+
+    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+
+    draft_payload = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "skill"},
+    ).json()
+    assert draft_payload["request_status"] == "ok"
+    assert "资产草稿已生成" in draft_payload["message"]
+
+    publish_payload = client.post(f"/api/projects/{project_id}/skills/{draft_payload['id']}/publish").json()
+    assert publish_payload["request_status"] == "ok"
+    assert "Skill 版本已发布" in publish_payload["message"]
+
+    chat_payload = client.post(
+        f"/api/projects/{project_id}/playground/chat",
+        json={"message": "你好，介绍一下自己。"},
+    ).json()
+    assert chat_payload["status"] == "ok"
+    assert "试聊回复已生成" in chat_payload["message"]
+
+
+def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch):
+    import app.pipeline.ingest_task as ingest_task_module
+
+    calls = []
+
+    def fake_extract_text(filename: str, content: bytes):
+        calls.append((filename, content))
+        return ExtractionResult(
+            raw_text="原始抽取文本",
+            clean_text="清洗后的文本",
+            title="提取标题",
+            author_guess=None,
+            created_at_guess=None,
+            language="zh",
+            metadata={"format": "fake"},
+            segments=[ExtractedSegment(text="第一段", metadata={})],
+        )
+
+    monkeypatch.setattr(ingest_task_module, "extract_text", fake_extract_text)
+
+    project_id = client.post("/api/projects", json={"name": "抽取回归"}).json()["id"]
+    raw_bytes = b"\xff\xfe\x00real extractor path"
+    upload_payload = client.post(
+        f"/api/projects/{project_id}/documents",
+        files={"files": ("broken.txt", io.BytesIO(raw_bytes), "text/plain")},
+    ).json()
+    document_id = upload_payload["documents"][0]["id"]
+
+    client.post(f"/api/projects/{project_id}/process-all")
+    _wait_for_ready(client, project_id)
+
+    assert calls == [("broken.txt", raw_bytes)]
+    with app.state.db.session() as session:
+        document = repository.get_document(session, document_id)
+        assert document is not None
+        assert document.title == "提取标题"
+        assert document.clean_text == "清洗后的文本"

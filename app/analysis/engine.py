@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS, FacetDefinition
+from app.analysis.streaming import AnalysisStreamHub
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, TextChunk, utcnow
 from app.retrieval.service import RetrievalService
@@ -161,12 +162,14 @@ class AnalysisEngine:
         llm_log_path: str | None = None,
         use_processes: bool = True,
         facet_max_workers: int = DEFAULT_ANALYSIS_CONCURRENCY,
+        stream_hub: AnalysisStreamHub | None = None,
     ) -> None:
         self.retrieval = retrieval or RetrievalService()
         self.db = db
         self.llm_log_path = llm_log_path
         self.use_processes = use_processes
         self.facet_max_workers = _normalize_concurrency(facet_max_workers)
+        self.stream_hub = stream_hub
 
     def create_run(
         self,
@@ -274,8 +277,7 @@ class AnalysisEngine:
         run.started_at = utcnow()
         run.finished_at = None
         summary["current_stage"] = "准备证据"
-        summary["current_phase"] = "queued"
-        summary["current_phase"] = "completed" if run.status == "completed" else "failed"
+        summary["current_phase"] = "retrieving"
         summary["current_facet"] = None
         summary["concurrency"] = _normalize_concurrency(summary.get("concurrency") or self.facet_max_workers)
         summary["started_at"] = run.started_at.isoformat()
@@ -288,7 +290,7 @@ class AnalysisEngine:
             message="分析任务开始执行。",
             payload_json={"llm_enabled": bool(chat_config), "embedding_enabled": bool(embedding_config)},
         )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
 
         if self.use_processes:
             results = self._run_parallel_processes(
@@ -329,7 +331,7 @@ class AnalysisEngine:
                 "llm_failures": summary.get("llm_failures", 0),
             },
         )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
 
     def rerun_facet(self, session: Session, project_id: str, facet_key: str) -> AnalysisRun:
@@ -369,7 +371,7 @@ class AnalysisEngine:
             summary["finished_at"] = run.finished_at.isoformat()
             run.summary_json = summary
             self._recalculate_run_summary(session, run)
-            self._persist_progress(session)
+            self._persist_progress(session, run.id)
             return repository.get_analysis_run(session, run.id) or run
 
         hits, retrieval_mode, retrieval_trace = prepared
@@ -410,7 +412,7 @@ class AnalysisEngine:
             level="success" if result.status == "completed" else "error",
             payload_json={"facet_key": facet_def.key},
         )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
 
     def _run_parallel_processes(
@@ -766,7 +768,7 @@ class AnalysisEngine:
                 "phase": "retrieving",
             },
         )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
 
     def _mark_facet_running(
         self,
@@ -859,7 +861,7 @@ class AnalysisEngine:
                     "request_payload": None,
                 },
             )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
 
     def _mark_facet_started(
         self,
@@ -942,7 +944,7 @@ class AnalysisEngine:
                     "request_payload": None,
                 },
             )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
 
     def _apply_facet_result(
         self,
@@ -1074,7 +1076,7 @@ class AnalysisEngine:
                     "log_path": meta.get("log_path"),
                 },
             )
-        self._persist_progress(session)
+        self._persist_progress(session, run.id)
 
     def _recalculate_run_summary(self, session: Session, run: AnalysisRun) -> None:
         order = {facet.key: index for index, facet in enumerate(FACETS)}
@@ -1404,10 +1406,11 @@ class AnalysisEngine:
             "context_span": dict(hit.context_span or {}),
         }
 
-    @staticmethod
-    def _persist_progress(session: Session) -> None:
+    def _persist_progress(self, session: Session, run_id: str | None = None) -> None:
         session.flush()
         session.commit()
+        if run_id and self.stream_hub:
+            self.stream_hub.publish(run_id)
 
 
 def _analyze_with_llm(

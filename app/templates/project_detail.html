@@ -1,904 +1,262 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }}{% endblock %}
 {% block content %}
-<section class="project-hero">
-    <div class="project-hero-copy">
-        <p class="eyebrow">项目工作区</p>
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">{{ ui.eyebrow }}</p>
         <h1>{{ project.name }}</h1>
-        <p class="hero-note">{{ project.description or "这个项目还没有补充说明。" }}</p>
-        <div class="hero-chips">
-            <span id="stat-total">{{ stats.document_count }} 份文档</span>
-            <span id="stat-ready">{{ stats.ready_count }} 份可分析</span>
-            {% if latest_run %}
-                <span>最新分析 {{ latest_run.status }}</span>
-            {% else %}
-                <span>尚未分析</span>
-            {% endif %}
-            {% if latest_version %}
-                <span>已发布 v{{ latest_version.version_number }}</span>
-            {% else %}
-                <span>未发布</span>
-            {% endif %}
+        <p class="hero-note">{{ project.description or ui.no_project_description }}</p>
+        <div class="chip-row">
+            <span class="status-chip tone-processing">{{ stats.document_count }} 份文档</span>
+            <span class="status-chip tone-ready">{{ stats.ready_count }} 份可分析</span>
+            <span class="status-chip {{ 'tone-warning' if latest_run else 'tone-queued' }}">
+                {{ ui.latest_analysis }} · {{ latest_run.status if latest_run else ui.not_analyzed }}
+            </span>
+            <span class="status-chip {{ 'tone-ready' if latest_version else 'tone-queued' }}">
+                {{ ui.latest_release }} · {% if latest_version %}v{{ latest_version.version_number }}{% else %}{{ ui.unreleased }}{% endif %}
+            </span>
         </div>
     </div>
-    <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">分析结果</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/playground">游乐场</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/preprocess">预分析工作区</a>
-        <button type="button" class="secondary-button" onclick="document.getElementById('edit-project-modal-overlay').hidden = false">编辑项目</button>
-        <form method="post" action="/projects/{{ project.id }}/delete" id="delete-project-form" onsubmit="return confirm('确定删除这个项目和所有相关数据吗？');">
-            <button type="submit" class="danger-button" id="delete-project-btn">删除项目</button>
+    <div class="hero-actions">
+        {% if latest_run %}
+            <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.common.back_to_analysis }}</a>
+        {% endif %}
+        <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
+        <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
+        <a class="ghost-button" href="/projects/{{ project.id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+        <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
+        <form method="post" action="/projects/{{ project.id }}/delete">
+            <button type="submit" class="ghost-button danger-button" data-confirm="{{ ui.common.confirm_delete_project }}">{{ ui.common.delete }}</button>
         </form>
     </div>
 </section>
 
-<section class="studio-grid">
-    <article class="workspace-panel dark-panel">
+<section class="layout-grid layout-grid--project">
+    <article class="surface-card">
         <div class="section-head">
             <div>
-                <p class="eyebrow">数据导入</p>
-                <h2>拖拽上传文档</h2>
+                <p class="eyebrow">Upload</p>
+                <h2>{{ ui.upload_title }}</h2>
             </div>
+            <span class="status-chip tone-processing">
+                {{ ui.workspace_mode }} · {{ ui.group_mode if project.mode == 'group' else ui.single_mode }}
+            </span>
         </div>
-        <div class="upload-zone-wrapper">
+        <p class="section-note">{{ ui.upload_hint }}</p>
+        {% if project.parent_id %}
+            <div class="empty-panel">
+                <strong>{{ ui.child_project_hint }}</strong>
+            </div>
+        {% else %}
             <div class="dropzone" id="upload-dropzone">
-                <input type="file" id="file-input" multiple accept=".html,.htm,.json,.jsonl,.docx,.pdf,.txt,.md,.log">
-                <span class="dropzone-kicker">拖拽文件到这里</span>
-                <strong>拖拽或点击上传</strong>
-                <small>支持 html / json / jsonl / docx / pdf / txt / md / log</small>
+                <input
+                    type="file"
+                    id="file-input"
+                    multiple
+                    accept=".html,.htm,.json,.jsonl,.docx,.pdf,.txt,.md,.log"
+                    aria-label="{{ ui.dropzone_title }}"
+                >
+                <strong>{{ ui.dropzone_title }}</strong>
+                <small>{{ ui.dropzone_note }}</small>
             </div>
-        </div>
+            <div class="button-row top-gap">
+                <button type="button" class="ghost-button" id="refresh-docs-btn">{{ ui.refresh_documents }}</button>
+                <button type="button" class="primary-button" id="process-all-btn">{{ ui.process_all }}</button>
+                <button type="button" class="ghost-button" id="retry-all-btn">{{ ui.retry_all }}</button>
+                <button type="button" class="ghost-button danger-button" id="stop-processing-btn">{{ ui.stop_processing }}</button>
+            </div>
+            <p class="helper-text top-gap">{{ ui.document_queued_hint }}</p>
+        {% endif %}
     </article>
 
-    {% if project.mode == 'group' %}
-    <article class="workspace-panel" id="analysis-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">群组成员</p>
-                <h2>群组用户画像列表</h2>
-            </div>
-            <div class="section-actions">
-                <button type="button" class="primary-button" onclick="document.getElementById('add-profile-modal-overlay').hidden = false">
-                    添加用户
-                </button>
-            </div>
-        </div>
-        <div class="profiles-list stack">
-            {% if not profiles %}
-                <p class="muted">当前群组还没有创建任何用户画像。</p>
-            {% else %}
-                {% for profile in profiles %}
-                <div class="profile-card" style="border: 1px solid var(--border); padding: 1rem; border-radius: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.5rem;">
-                        <h3 style="margin: 0;">{{ profile.name }}</h3>
-                        <form method="post" action="/projects/{{ profile.id }}/delete" style="margin: 0;" onsubmit="return confirm('确定要删除这个用户画像吗？')">
-                            <button type="submit" class="ghost-button destructive" style="padding: 0.25rem 0.5rem;">删除</button>
-                        </form>
-                    </div>
-                    <p class="muted" style="margin-bottom: 1rem;">{{ profile.description or '无描述' }}</p>
-                    <div class="profile-actions" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <form method="post" action="/projects/{{ profile.id }}/analyze" style="margin: 0; display: flex; gap: 0.5rem; align-items: center;">
-                            <input type="hidden" name="target_role" value="{{ profile.name }}">
-                            <input type="hidden" name="analysis_context" value="{{ profile.description or '' }}">
-                            <label style="margin: 0; display: flex; align-items: center; gap: 0.25rem;">
-                                <span class="muted" style="font-size: 0.8rem;">并发数</span>
-                                <input type="number" name="concurrency" value="{{ (profile.latest_run.summary_json or {}).get('concurrency', analysis_concurrency_default) if profile.latest_run else analysis_concurrency_default }}" min="1" max="20" style="width: 60px; padding: 0.25rem;">
-                            </label>
-                            <button type="submit" class="secondary-button" {% if stats.ready_count == 0 %}disabled{% endif %}>生成/重新分析</button>
-                        </form>
-                        {% if profile.latest_run %}
-                            <a href="/projects/{{ profile.id }}/analysis" class="secondary-button">查看分析</a>
-                        {% endif %}
-                        {% if profile.latest_skill %}
-                            <a href="/projects/{{ profile.id }}/assets?kind=skill" class="secondary-button">查看技能</a>
-                        {% endif %}
-                    </div>
+    <article class="surface-card">
+        {% if project.mode == 'group' %}
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Profiles</p>
+                    <h2>{{ ui.group_profiles }}</h2>
                 </div>
-                {% endfor %}
+                <button type="button" class="primary-button" data-modal-open="add-profile-modal">{{ ui.add_profile }}</button>
+            </div>
+            {% if profiles %}
+                <div class="profile-list">
+                    {% for profile in profiles %}
+                        <article class="profile-card">
+                            <div class="profile-card__head">
+                                <div>
+                                    <strong>{{ profile.name }}</strong>
+                                    <p>{{ profile.description or ui.profile_description_empty }}</p>
+                                </div>
+                                <form method="post" action="/projects/{{ profile.id }}/delete">
+                                    <button type="submit" class="ghost-button danger-button" data-confirm="{{ ui.profile_delete_confirm }}">{{ ui.common.delete }}</button>
+                                </form>
+                            </div>
+                            <div class="button-row">
+                                <form method="post" action="/projects/{{ profile.id }}/analyze" class="inline-form">
+                                    <input type="hidden" name="target_role" value="{{ profile.name }}">
+                                    <input type="hidden" name="analysis_context" value="{{ profile.description or '' }}">
+                                    <input type="hidden" name="concurrency" value="{{ analysis_concurrency_default }}">
+                                    <button type="submit" class="ghost-button" {% if stats.ready_count == 0 %}disabled{% endif %}>{{ ui.profile_run_analysis }}</button>
+                                </form>
+                                {% if profile.latest_run %}
+                                    <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
+                                {% endif %}
+                                {% if profile.latest_skill %}
+                                    <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=skill">{{ ui.profile_view_asset }}</a>
+                                {% endif %}
+                            </div>
+                        </article>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="empty-panel">
+                    <strong>{{ ui.group_profiles_empty }}</strong>
+                </div>
             {% endif %}
-        </div>
-    </article>
-    {% else %}
-    <article class="workspace-panel" id="analysis-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">分析工作室</p>
-                <h2>指定分析目标</h2>
+        {% else %}
+            <div class="section-head">
+                <div>
+                    <p class="eyebrow">Analysis</p>
+                    <h2>{{ ui.analysis_title }}</h2>
+                </div>
             </div>
-        </div>
-        <form method="post" action="/projects/{{ project.id }}/analyze" class="stack roomy" id="analyze-form">
-            <label>
-                <span>要分析和模拟的角色</span>
-                <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" placeholder="例如：作者本人、群聊管理员、小红本人" id="target-role-input">
-            </label>
-            <label>
-                <span>文档补充说明</span>
-                <textarea name="analysis_context" rows="7" placeholder="说明语料来源、可信度、谁在说话、你希望重点模仿什么" id="analysis-context-input">{{ analysis_defaults.analysis_context }}</textarea>
-            </label>
-            <label>
-                <span>分析并发数</span>
-                <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1" max="20" placeholder="默认 4" id="concurrency-input">
-                <small class="muted">同时进行分析的维度数量。并发数越高速度越快，但对 LLM 的并发请求压力也越大。</small>
-            </label>
-            <p class="muted">
-                这些输入会进入分析提示词和 skill 合成流程，用来限定"在模仿谁"以及"如何理解这批语料"。
-            </p>
-            <p class="muted">Concurrency `1` is strict serial mode: the next facet starts only after the current facet fully finishes retrieval, LLM analysis, and persistence.</p>
-            <div id="analysis-submit-wrapper">
-                <button type="submit" id="analyze-submit-btn" disabled>需要先处理文档</button>
-            </div>
-        </form>
+            <form method="post" action="/projects/{{ project.id }}/analyze" class="form-stack" id="analyze-form">
+                <label>
+                    <span>{{ ui.analysis_target_role }}</span>
+                    <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" required>
+                </label>
+                <label>
+                    <span>{{ ui.analysis_context }}</span>
+                    <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
+                </label>
+                <label>
+                    <span>{{ ui.analysis_concurrency }}</span>
+                    <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1" max="20">
+                </label>
+                <p class="section-note">{{ ui.analysis_help }}</p>
+                <button type="submit" class="primary-button" id="analyze-submit-btn" {% if stats.ready_count == 0 %}disabled{% endif %}>
+                    {{ ui.analysis_submit if stats.ready_count > 0 else ui.analysis_submit_disabled }}
+                </button>
+            </form>
+        {% endif %}
     </article>
-    {% endif %}
 
-    <aside class="workspace-panel slim-panel">
+    <aside class="surface-card">
         <div class="section-head">
             <div>
-                <p class="eyebrow">状态</p>
+                <p class="eyebrow">Status</p>
                 <h2>当前状态</h2>
             </div>
         </div>
-        <div class="status-stack">
-            <div class="status-row">
-                <span>文档</span>
-                <strong id="status-total">{{ stats.document_count }}</strong>
-            </div>
-            <div class="status-row">
-                <span>可分析</span>
-                <strong id="status-ready">{{ stats.ready_count }}</strong>
-            </div>
-            <div class="status-row">
-                <span>待处理</span>
-                <strong id="status-pending">0</strong>
-            </div>
-            <div class="status-row">
-                <span>失败</span>
-                <strong id="status-failed">{{ stats.failed_count }}</strong>
-            </div>
+        <div class="metric-list">
+            <div class="metric-row"><span>{{ ui.stats_total }}</span><strong id="status-total">{{ stats.document_count }}</strong></div>
+            <div class="metric-row"><span>{{ ui.stats_ready }}</span><strong id="status-ready">{{ stats.ready_count }}</strong></div>
+            <div class="metric-row"><span>{{ ui.stats_pending }}</span><strong id="status-pending">{{ stats.pending_count + stats.queued_count + stats.processing_count }}</strong></div>
+            <div class="metric-row"><span>{{ ui.stats_failed }}</span><strong id="status-failed">{{ stats.failed_count }}</strong></div>
         </div>
     </aside>
 </section>
 
-<section class="workspace-panel">
+<section class="surface-card">
     <div class="section-head">
         <div>
-            <p class="eyebrow">文档列表</p>
-            <h2>文档处理看板</h2>
+            <p class="eyebrow">Documents</p>
+            <h2>{{ ui.document_panel }}</h2>
         </div>
-        <div class="section-actions">
-            {% if not project.parent_id %}
-            <button type="button" class="secondary-button" id="refresh-docs-btn">刷新</button>
-            <button type="button" class="primary-button" id="process-all-btn" data-project-id="{{ project.id }}">
-                <span class="btn-text">一键处理</span>
-                <span class="btn-loading" hidden>处理中...</span>
-            </button>
-            <button type="button" class="secondary-button" id="retry-all-btn" data-project-id="{{ project.id }}">
-                <span class="btn-text">一键重试</span>
-                <span class="btn-loading" hidden>重试中...</span>
-            </button>
-            <button type="button" class="danger-button" id="stop-processing-btn">
-                停止处理
-            </button>
-            {% endif %}
+        <div class="button-row">
+            <button type="button" class="filter-chip is-active" data-doc-filter="all">{{ ui.document_filter_all }}</button>
+            <button type="button" class="filter-chip" data-doc-filter="ready">{{ ui.document_filter_ready }}</button>
+            <button type="button" class="filter-chip" data-doc-filter="active">{{ ui.document_filter_active }}</button>
+            <button type="button" class="filter-chip" data-doc-filter="failed">{{ ui.document_filter_failed }}</button>
         </div>
     </div>
-    {% if project.parent_id %}
-        <p class="muted">文档继承自群组项目。请在群组项目中管理文档。</p>
-    {% else %}
-    <div id="document-container">
-        <p class="muted" id="no-docs-message" hidden>还没有上传文档。</p>
-        <div class="document-grid" id="document-grid"></div>
+    <script type="application/json" id="project-bootstrap">{{ project_bootstrap | safe }}</script>
+    <div id="project-feedback" class="notice-strip" hidden></div>
+    <div class="document-board" id="document-grid"></div>
+    <div class="empty-panel" id="no-docs-message" hidden>
+        <strong>{{ ui.document_empty }}</strong>
     </div>
+    {% if document_pagination.has_more %}
+        <div class="button-row button-row--end top-gap">
+            <button type="button" class="ghost-button" id="load-more-docs-btn">{{ ui.document_load_more }}</button>
+        </div>
     {% endif %}
 </section>
 
-<div class="modal-overlay" id="doc-modal-overlay" hidden>
-    <div class="modal" id="doc-modal">
-        <div class="modal-header">
-            <h3 id="modal-title">文档详情</h3>
-            <button type="button" class="modal-close" id="modal-close">&times;</button>
-        </div>
-        <div class="modal-body" id="modal-body"></div>
-        <div class="modal-footer" id="modal-footer"></div>
-    </div>
-</div>
-
-<div class="modal-overlay" id="edit-project-modal-overlay" hidden>
-    <div class="modal" id="edit-project-modal">
-        <div class="modal-header">
-            <h3>编辑项目信息</h3>
-            <button type="button" class="modal-close" onclick="document.getElementById('edit-project-modal-overlay').hidden = true">&times;</button>
-        </div>
-        <div class="modal-body">
-            <form method="post" action="/projects/{{ project.id }}/update" class="stack roomy" id="edit-project-form">
-                <label>
-                    <span>人物名称 / 群聊名称</span>
-                    <input type="text" name="name" value="{{ project.name }}" required>
-                </label>
-                <label>
-                    <span>项目说明</span>
-                    <textarea name="description" rows="5">{{ project.description or '' }}</textarea>
-                </label>
-                <label>
-                    <span>工作区模式</span>
-                    <select name="mode">
-                        <option value="group" {% if project.mode == 'group' %}selected{% endif %}>基于群聊（分析多个人或整个群氛围）</option>
-                        <option value="single" {% if project.mode == 'single' %}selected{% endif %}>基于单人（只分析一个特定的人）</option>
-                    </select>
-                </label>
-                <button type="submit" class="primary-button">保存修改</button>
-            </form>
-        </div>
-    </div>
-</div>
-
-<div class="modal-overlay" id="add-profile-modal-overlay" hidden>
-    <div class="modal" id="add-profile-modal">
-        <div class="modal-header">
-            <h3>添加用户画像</h3>
-            <button type="button" class="modal-close" onclick="document.getElementById('add-profile-modal-overlay').hidden = true">&times;</button>
-        </div>
-        <form method="post" action="/projects/{{ project.id }}/profiles" class="stack">
-            <div class="modal-body stack">
-                <label>
-                    <span>用户名 / 角色名</span>
-                    <input type="text" name="name" required placeholder="例如：Alice">
-                </label>
-                <label>
-                    <span>描述与设定</span>
-                    <textarea name="description" rows="4" placeholder="描述该用户的特点、群内表现等"></textarea>
-                </label>
+<div class="modal-overlay" id="document-modal" hidden>
+    <div class="modal-dialog modal-dialog--wide">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">Document</p>
+                <h3 id="document-modal-title">{{ ui.modal_document_title }}</h3>
             </div>
-            <div class="modal-footer">
-                <button type="submit" class="primary-button">添加并保存</button>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <div id="document-modal-body" class="form-stack"></div>
+        <div id="document-modal-footer" class="button-row button-row--end"></div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="edit-project-modal" hidden>
+    <div class="modal-dialog">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">Edit</p>
+                <h3>{{ ui.modal_edit_project }}</h3>
+            </div>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
+            <label>
+                <span>项目名称</span>
+                <input type="text" name="name" value="{{ project.name }}" required>
+            </label>
+            <label>
+                <span>项目说明</span>
+                <textarea name="description" rows="5">{{ project.description or '' }}</textarea>
+            </label>
+            <label>
+                <span>{{ ui.workspace_mode }}</span>
+                <select name="mode">
+                    <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.group_mode }}</option>
+                    <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.single_mode }}</option>
+                </select>
+            </label>
+            <div class="button-row button-row--end">
+                <button type="submit" class="primary-button">{{ ui.common.save }}</button>
             </div>
         </form>
     </div>
 </div>
+
+{% if project.mode == 'group' %}
+<div class="modal-overlay" id="add-profile-modal" hidden>
+    <div class="modal-dialog">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">Profile</p>
+                <h3>{{ ui.modal_add_profile }}</h3>
+            </div>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <form method="post" action="/projects/{{ project.id }}/profiles" class="form-stack">
+            <label>
+                <span>{{ ui.profile_name }}</span>
+                <input type="text" name="name" required>
+            </label>
+            <label>
+                <span>{{ ui.profile_description }}</span>
+                <textarea name="description" rows="4"></textarea>
+            </label>
+            <div class="button-row button-row--end">
+                <button type="submit" class="primary-button">{{ ui.profile_submit }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block extra_scripts %}
-<script>
-(function() {
-    const projectId = "{{ project.id }}";
-    let documents = [];
-    let taskStates = {};
-    let pollInterval = null;
-
-    function init() {
-        setupAnalyzeForm();
-        setupDeleteProject();
-{% if not project.parent_id %}
-        setupDropzone();
-        setupProcessAll();
-        setupRetryAll();
-        setupStopProcessing();
-{% endif %}
-        setupModal();
-        loadDocuments();
-        startPolling();
-    }
-
-    function setupDropzone() {
-        const dropzone = document.getElementById('upload-dropzone');
-        const fileInput = document.getElementById('file-input');
-        if (!dropzone || !fileInput) return;
-
-        fileInput.addEventListener('change', () => handleFiles(fileInput.files));
-
-        dropzone.addEventListener('click', () => fileInput.click());
-
-        dropzone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropzone.classList.add('drag-active');
-        });
-
-        dropzone.addEventListener('dragleave', () => {
-            dropzone.classList.remove('drag-active');
-        });
-
-        dropzone.addEventListener('drop', (e) => {
-            e.preventDefault();
-            dropzone.classList.remove('drag-active');
-            handleFiles(e.dataTransfer.files);
-        });
-    }
-
-    async function handleFiles(files) {
-        if (!files || files.length === 0) return;
-        const formData = new FormData();
-        for (const file of files) {
-            formData.append('files', file);
-        }
-
-        try {
-            const response = await fetch(`/api/projects/${projectId}/documents`, {
-                method: 'POST',
-                body: formData
-            });
-            const result = await response.json();
-            if (result.documents) {
-                result.documents.forEach(doc => {
-                    documents.push(doc);
-                    taskStates[doc.id] = getInitialState(doc);
-                });
-                renderDocuments();
-                updateStats();
-            }
-        } catch (err) {
-            console.error('Upload error:', err);
-            alert('上传失败: ' + err.message);
-        }
-    }
-
-    function getInitialState(doc) {
-        return {
-            status: doc.ingest_status || 'pending',
-            progress: 0,
-            task: null
-        };
-    }
-
-    function renderDocuments() {
-        const documentGrid = document.getElementById('document-grid');
-        const noDocs = document.getElementById('no-docs-message');
-
-        if (documents.length === 0) {
-            documentGrid.hidden = true;
-            noDocs.hidden = false;
-            return;
-        }
-
-        documentGrid.hidden = false;
-        noDocs.hidden = true;
-
-        const sortOrder = {
-            'failed': 0,
-            'processing': 1,
-            'queued': 2,
-            'unprocessed': 3,
-            'completed': 4
-        };
-
-        const cardData = documents.map(doc => {
-            const state = taskStates[doc.id] || getInitialState(doc);
-            const stage = state.task && state.task.status ? state.task.status : state.status;
-            
-            let col = 'unprocessed';
-            if (state.status === 'failed') {
-                col = 'failed';
-            } else if (state.status === 'ready' || stage === 'completed') {
-                col = 'completed';
-            } else if (state.status === 'queued' || stage === 'queued') {
-                col = 'queued';
-            } else if (state.status === 'processing' || ['parsing', 'extracting', 'chunking', 'embedding', 'storing'].includes(stage)) {
-                col = 'processing';
-            }
-
-            let displayProgress = state.progress || 0;
-            if (state.task && state.task.stages) {
-                const st = state.task.stages;
-                if (st.embedding_total) {
-                    displayProgress = (st.embedding_processed || 0) / st.embedding_total * 100;
-                } else if (st.total) {
-                    displayProgress = (st.extracting || 0) / st.total * 100;
-                } else if (st.chunk_count) {
-                    displayProgress = 100;
-                }
-            }
-            if (displayProgress > 100) displayProgress = 100;
-            if (displayProgress < 0) displayProgress = 0;
-
-            const statusClass = getStatusClass(state.status, state.task);
-            const statusLabel = getStatusLabel(state.status, state.task);
-            const progressStyle = col === 'processing' ? `width: ${displayProgress}%` : '';
-            const progressText = getProgressText(state.task);
-
-            let indicatorTitle = statusLabel;
-            if (col === 'processing' || col === 'queued') {
-                let details = [];
-                if (state.progress !== undefined) details.push(Math.round(state.progress) + '%');
-                if (progressText) details.push(progressText);
-                if (details.length > 0) {
-                    indicatorTitle += ' (' + details.join(', ') + ')';
-                }
-            }
-
-            const html = `
-                <div class="doc-card" data-doc-id="${doc.id}" onclick="openDocModal('${doc.id}')">
-                    <div class="doc-card-inner">
-                        <div class="doc-status-indicator ${statusClass}" title="${indicatorTitle}"></div>
-                        <div class="doc-info">
-                            <div class="doc-filename" title="${escapeHtml(doc.filename || doc.title)}">${escapeHtml(doc.filename || doc.title)}</div>
-                            ${progressText ? `<div class="doc-progress-text">${progressText}</div>` : ''}
-                            ${state.status === 'failed' && doc.error_message ? `<div class="doc-error-text" style="color: var(--danger); font-size: 0.65rem; margin-top: 2px;" title="${escapeHtml(doc.error_message)}">失败: ${escapeHtml(doc.error_message)}</div>` : ''}
-                        </div>
-                        ${(col === 'processing') ? `<div class="doc-progress-bar-container"><div class="doc-progress-fill" style="${progressStyle}"></div></div>` : ''}
-                    </div>
-                </div>
-            `;
-            
-            return {
-                html: html,
-                order: sortOrder[col] !== undefined ? sortOrder[col] : 99,
-                updatedAt: doc.updated_at || ''
-            };
-        });
-
-        cardData.sort((a, b) => {
-            if (a.order !== b.order) return a.order - b.order;
-            return b.updatedAt.localeCompare(a.updatedAt);
-        });
-
-        documentGrid.innerHTML = cardData.map(c => c.html).join('');
-    }
-
-    function getStatusClass(status, task) {
-        if (status === 'ready') return 'status-ready';
-        if (status === 'failed') return 'status-failed';
-        
-        const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return 'status-extracting';
-        if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return 'status-indexing';
-        
-        return 'status-unprocessed';
-    }
-
-    function getStatusLabel(status, task) {
-        if (status === 'ready') return '可分析';
-        if (status === 'failed') return '失败';
-        
-        const stage = task && task.status ? task.status : status;
-        if (stage === 'parsing' || stage === 'queued' || stage === 'processing') return '解析中';
-        if (stage === 'chunking' || stage === 'embedding' || stage === 'storing') return '索引中';
-        
-        return '未处理';
-    }
-
-    function getProgressText(task) {
-        if (!task || !task.stages) return '';
-        const stages = task.stages;
-        if (stages.embedding_processed !== undefined) {
-            return `已索引 ${stages.embedding_processed}/${stages.embedding_total || '?'}`;
-        }
-        if (stages.extracting !== undefined && stages.chunking !== undefined) {
-            return `已抽取 ${stages.extracting}/${stages.total || '?'}`;
-        }
-        if (stages.chunk_count !== undefined) {
-            return `生成块数 ${stages.chunk_count}`;
-        }
-        return '';
-    }
-
-    function loadDocuments() {
-        fetch(`/api/projects/${projectId}/documents?limit=100`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.documents) {
-                    documents = data.documents;
-                    documents.forEach(doc => {
-                        taskStates[doc.id] = getInitialState(doc);
-                    });
-                    renderDocuments();
-                    updateStats();
-                }
-            })
-            .catch(console.error);
-    }
-
-    function updateStats() {
-        let total = documents.length;
-        let ready = 0, pending = 0, failed = 0;
-
-        documents.forEach(doc => {
-            const state = taskStates[doc.id] || {};
-            if (state.status === 'ready') ready++;
-            else if (state.status === 'failed') failed++;
-            else pending++;
-        });
-
-        document.getElementById('status-total').textContent = total;
-        document.getElementById('status-ready').textContent = ready;
-        document.getElementById('status-pending').textContent = pending;
-        document.getElementById('status-failed').textContent = failed;
-        document.getElementById('stat-total').textContent = total + ' 份文档';
-        document.getElementById('stat-ready').textContent = ready + ' 份可分析';
-
-        const analyzeBtn = document.getElementById('analyze-submit-btn');
-        if (analyzeBtn) {
-            if (ready > 0) {
-                analyzeBtn.disabled = false;
-                analyzeBtn.textContent = '后台启动分析';
-            } else {
-                analyzeBtn.disabled = true;
-                analyzeBtn.textContent = '需要先处理文档';
-            }
-        }
-    }
-
-    function startPolling() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/api/projects/${projectId}/documents/ws`;
-        const ws = new WebSocket(wsUrl);
-        
-        ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.documents) {
-                let changed = false;
-                let structuralChange = false;
-                
-                data.documents.forEach(update => {
-                    const docId = update.id;
-                    const state = taskStates[docId];
-                    if (!state) return;
-                    
-                    const newStatus = update.task && update.task.status ? update.task.status : update.ingest_status;
-                    const newProgress = update.task ? update.task.progress_percent : 0;
-                    
-                    if (state.status !== newStatus || state.progress !== newProgress || JSON.stringify(state.task) !== JSON.stringify(update.task)) {
-                        const oldCol = getColumn(state);
-                        
-                        state.status = newStatus;
-                        state.progress = newProgress;
-                        state.task = update.task;
-                        
-                        const newCol = getColumn(state);
-                        if (oldCol !== newCol) {
-                            structuralChange = true;
-                        } else {
-                            updateDocumentCard(docId, state);
-                        }
-                        changed = true;
-                    }
-                });
-                
-                if (structuralChange) {
-                    renderDocuments();
-                }
-                if (changed) {
-                    updateStats();
-                }
-            }
-        };
-
-        function getColumn(state) {
-            const stage = state.task && state.task.status ? state.task.status : state.status;
-            if (state.status === 'failed') return 'failed';
-            if (state.status === 'ready' || stage === 'completed') return 'completed';
-            if (state.status === 'queued' || stage === 'queued') return 'queued';
-            if (state.status === 'processing' || ['parsing', 'extracting', 'chunking', 'embedding', 'storing'].includes(stage)) return 'processing';
-            return 'unprocessed';
-        }
-
-        function updateDocumentCard(docId, state) {
-            const card = document.querySelector(`.doc-card[data-doc-id="${docId}"]`);
-            if (!card) return;
-            
-            const col = getColumn(state);
-            let displayProgress = state.progress || 0;
-            if (state.task && state.task.stages) {
-                const st = state.task.stages;
-                if (st.embedding_total) displayProgress = (st.embedding_processed || 0) / st.embedding_total * 100;
-                else if (st.total) displayProgress = (st.extracting || 0) / st.total * 100;
-                else if (st.chunk_count) displayProgress = 100;
-            }
-            if (displayProgress > 100) displayProgress = 100;
-            if (displayProgress < 0) displayProgress = 0;
-
-            const statusClass = getStatusClass(state.status, state.task);
-            const statusLabel = getStatusLabel(state.status, state.task);
-            const progressText = getProgressText(state.task);
-            
-            let indicatorTitle = statusLabel;
-            if (col === 'processing' || col === 'queued') {
-                let details = [];
-                if (state.progress !== undefined) details.push(Math.round(state.progress) + '%');
-                if (progressText) details.push(progressText);
-                if (details.length > 0) indicatorTitle += ' (' + details.join(', ') + ')';
-            }
-
-            const indicator = card.querySelector('.doc-status-indicator');
-            if (indicator) {
-                indicator.className = `doc-status-indicator ${statusClass}`;
-                indicator.title = indicatorTitle;
-            }
-
-            let textEl = card.querySelector('.doc-progress-text');
-            if (progressText) {
-                if (!textEl) {
-                    textEl = document.createElement('div');
-                    textEl.className = 'doc-progress-text';
-                    card.querySelector('.doc-info').appendChild(textEl);
-                }
-                textEl.textContent = progressText;
-            } else if (textEl) {
-                textEl.remove();
-            }
-
-            if (col === 'processing') {
-                let barContainer = card.querySelector('.doc-progress-bar-container');
-                if (!barContainer) {
-                    barContainer = document.createElement('div');
-                    barContainer.className = 'doc-progress-bar-container';
-                    barContainer.innerHTML = '<div class="doc-progress-fill"></div>';
-                    card.querySelector('.doc-card-inner').appendChild(barContainer);
-                }
-                const fill = barContainer.querySelector('.doc-progress-fill');
-                if (fill) fill.style.width = `${displayProgress}%`;
-            } else {
-                const barContainer = card.querySelector('.doc-progress-bar-container');
-                if (barContainer) barContainer.remove();
-            }
-        }
-
-        ws.onclose = () => {
-            setTimeout(startPolling, 3000);
-        };
-    }
-
-    function startProcessAll() {
-        const btn = document.getElementById('process-all-btn');
-        if (!btn) return;
-        btn.disabled = true;
-        btn.textContent = '处理中...';
-        fetch(`/api/projects/${projectId}/process-all`, { method: 'POST' })
-            .then(r => r.json())
-            .then(() => {
-                btn.textContent = '一键处理';
-                btn.disabled = false;
-                loadDocuments();
-            })
-            .catch(err => {
-                console.error(err);
-                btn.textContent = '一键处理';
-                btn.disabled = false;
-            });
-    }
-
-    function setupStopProcessing() {
-        const btn = document.getElementById('stop-processing-btn');
-        if (!btn) return;
-        btn.addEventListener('click', () => {
-            btn.disabled = true;
-            btn.textContent = '停止中...';
-            fetch(`/api/projects/${projectId}/stop-processing`, { method: 'POST' })
-                .then(r => r.json())
-                .then(() => {
-                    btn.textContent = '停止处理';
-                    btn.disabled = false;
-                    loadDocuments();
-                })
-                .catch(err => {
-                    console.error(err);
-                    btn.textContent = '停止处理';
-                    btn.disabled = false;
-                });
-        });
-    }
-
-    function setupAnalyzeForm() {
-        const form = document.getElementById('analyze-form');
-        if (!form) return;
-        form.addEventListener('submit', () => {
-            const btn = document.getElementById('analyze-submit-btn');
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '分析启动中...';
-            }
-        });
-    }
-
-    function setupDeleteProject() {
-        const form = document.getElementById('delete-project-form');
-        if (!form) return;
-        form.addEventListener('submit', () => {
-            const btn = document.getElementById('delete-project-btn');
-            if (btn) {
-                btn.disabled = true;
-                btn.textContent = '删除中...';
-            }
-        });
-    }
-
-    function setupProcessAll() {
-        const btn = document.getElementById('process-all-btn');
-        if (!btn) return;
-
-        btn.addEventListener('click', async () => {
-            const docsToProcess = documents.filter(d => {
-                const state = taskStates[d.id];
-                return !state || state.status === 'pending' || state.status === 'failed';
-            });
-
-            if (docsToProcess.length === 0) {
-                alert('没有需要处理的文档');
-                return;
-            }
-
-            btn.disabled = true;
-            btn.querySelector('.btn-text').hidden = true;
-            btn.querySelector('.btn-loading').hidden = false;
-
-            try {
-                const response = await fetch(`/api/projects/${projectId}/process-all`, {
-                    method: 'POST'
-                });
-                const result = await response.json();
-
-                if (result.submitted) {
-                    result.submitted.forEach(item => {
-                        if (taskStates[item.document_id]) {
-                            taskStates[item.document_id].status = 'queued';
-                            taskStates[item.document_id].task = item.task;
-                        }
-                    });
-                    renderDocuments();
-                }
-            } catch (err) {
-                console.error('Process all error:', err);
-                alert('处理失败: ' + err.message);
-            } finally {
-                btn.disabled = false;
-                btn.querySelector('.btn-text').hidden = false;
-                btn.querySelector('.btn-loading').hidden = true;
-            }
-        });
-    }
-
-    function setupRetryAll() {
-        const btn = document.getElementById('retry-all-btn');
-        if (!btn) return;
-
-        btn.addEventListener('click', async () => {
-            const docsToProcess = documents.filter(d => {
-                const state = taskStates[d.id];
-                return !state || state.status !== 'ready';
-            });
-
-            if (docsToProcess.length === 0) {
-                alert('所有文档都已处理成功，没有需要重试的文档哦～');
-                return;
-            }
-
-            btn.disabled = true;
-            btn.querySelector('.btn-text').hidden = true;
-            btn.querySelector('.btn-loading').hidden = false;
-
-            try {
-                const response = await fetch(`/api/projects/${projectId}/retry-all`, {
-                    method: 'POST'
-                });
-                const result = await response.json();
-
-                if (result.submitted) {
-                    result.submitted.forEach(item => {
-                        if (taskStates[item.document_id]) {
-                            taskStates[item.document_id].status = 'queued';
-                            taskStates[item.document_id].task = item.task;
-                        }
-                    });
-                    renderDocuments();
-                }
-            } catch (err) {
-                console.error('Retry all error:', err);
-                alert('一键重试失败了呢: ' + err.message);
-            } finally {
-                btn.disabled = false;
-                btn.querySelector('.btn-text').hidden = false;
-                btn.querySelector('.btn-loading').hidden = true;
-            }
-        });
-    }
-
-    function setupModal() {
-        const overlay = document.getElementById('doc-modal-overlay');
-        const closeBtn = document.getElementById('modal-close');
-
-        if (closeBtn) {
-            closeBtn.addEventListener('click', closeModal);
-        }
-
-        if (overlay) {
-            overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) closeModal();
-            });
-        }
-    }
-
-    window.openDocModal = function(docId) {
-        const doc = documents.find(d => d.id === docId);
-        if (!doc) return;
-
-        const state = taskStates[docId] || {};
-        const overlay = document.getElementById('doc-modal-overlay');
-        const modal = document.getElementById('doc-modal');
-        const title = document.getElementById('modal-title');
-        const body = document.getElementById('modal-body');
-        const footer = document.getElementById('modal-footer');
-
-        title.textContent = doc.title || doc.filename || '文档详情';
-
-        body.innerHTML = `
-            <div class="modal-doc-info">
-                <div class="modal-status ${getStatusClass(state.status)}">${getStatusLabel(state.status)}</div>
-                <p class="modal-filename">${escapeHtml(doc.filename || '')}</p>
-                ${doc.language ? `<p class="modal-meta">语言: ${doc.language}</p>` : ''}
-                ${doc.source_type ? `<p class="modal-meta">来源: ${doc.source_type}</p>` : ''}
-                ${state.status === 'processing' ? `<div class="modal-progress"><div class="modal-progress-bar"><div class="modal-progress-fill" style="width: ${state.progress}%"></div></div><span>${state.progress}%</span></div>` : ''}
-                ${state.task && state.task.error ? `<p class="modal-error">${escapeHtml(state.task.error)}</p>` : ''}
-                ${doc.error_message ? `<p class="modal-error">${escapeHtml(doc.error_message)}</p>` : ''}
-            </div>
-            <details class="modal-details">
-                <summary>编辑文档信息</summary>
-                <form method="post" action="/projects/${projectId}/documents/${docId}/update" class="stack modal-form" id="modal-update-form">
-                    <label>
-                        <span>显示标题</span>
-                        <input type="text" name="title" value="${escapeHtml(doc.title || doc.filename || '')}">
-                    </label>
-                    <label>
-                        <span>来源类型</span>
-                        <input type="text" name="source_type" value="${escapeHtml(doc.source_type || '')}">
-                    </label>
-                    <label>
-                        <span>备注</span>
-                        <textarea name="user_note" rows="4">${escapeHtml((doc.metadata_json || {}).user_note || '')}</textarea>
-                    </label>
-                    <button type="submit" class="secondary-button">保存</button>
-                </form>
-            </details>
-        `;
-
-        const canProcess = state.status !== 'processing' && state.status !== 'ready';
-        footer.innerHTML = `
-            ${canProcess ? `<button type="button" class="primary-button" onclick="processDoc('${docId}')">处理此文档</button>` : ''}
-            <form method="post" action="/projects/${projectId}/documents/${docId}/delete" class="inline-form" onsubmit="return confirm('确定删除这份文档吗？');">
-                <button type="submit" class="danger-button">删除文档</button>
-            </form>
-        `;
-
-        overlay.hidden = false;
-        modal.hidden = false;
-    };
-
-    window.processDoc = async function(docId) {
-        try {
-            const response = await fetch(`/api/projects/${projectId}/documents/${docId}/process`, {
-                method: 'POST'
-            });
-            const result = await response.json();
-            if (result.task) {
-                taskStates[docId] = {
-                    status: 'queued',
-                    progress: 0,
-                    task: result.task
-                };
-                renderDocuments();
-                closeModal();
-            }
-        } catch (err) {
-            console.error('Process doc error:', err);
-            alert('处理失败: ' + err.message);
-        }
-    };
-
-    function closeModal() {
-        const overlay = document.getElementById('doc-modal-overlay');
-        const modal = document.getElementById('doc-modal');
-        if (overlay) overlay.hidden = true;
-        if (modal) modal.hidden = true;
-    }
-
-    function escapeHtml(str) {
-        if (!str) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
-    }
-
-    document.addEventListener('DOMContentLoaded', init);
-})();
-</script>
+<script type="module" src="{{ request.url_for('static', path='project.js') }}"></script>
 {% endblock %}

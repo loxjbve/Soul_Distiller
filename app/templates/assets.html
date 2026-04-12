@@ -1,169 +1,160 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} Assets{% endblock %}
+{% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
 {% block content %}
-<section class="project-hero">
-    <div class="project-hero-copy">
-        <p class="eyebrow">资产</p>
-        <h1>{{ project.name }} 的资产输出</h1>
-        <p class="hero-note">
-            分析完成后，可以生成 Skill 或人物剖析报告。生成过程会展示实时阶段、进度和流式输出，避免只看到一个模糊的转圈状态。
-        </p>
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">{{ ui.eyebrow }}</p>
+        <h1>{{ project.name }} · {{ asset_label }}</h1>
+        <p class="hero-note">{{ ui.hero_note }}</p>
     </div>
-    <div class="project-hero-actions">
-        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">返回分析</a>
-        <a class="secondary-button" href="/projects/{{ project.id }}/playground">游乐场</a>
+    <div class="hero-actions">
+        <a class="ghost-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.view_analysis }}</a>
+        {% if asset_kind == "skill" %}
+            <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.view_playground }}</a>
+        {% endif %}
     </div>
 </section>
 
-<section class="workspace-panel">
-    <div class="inline-actions">
+<script type="application/json" id="assets-page-bootstrap">
+    {{ {
+        "project_id": project.id,
+        "asset_kind": asset_kind,
+        "asset_label": asset_label,
+        "draft_id": draft.id if draft else None,
+        "ui_strings": ui
+    } | tojson | safe }}
+</script>
+
+<section class="surface-card">
+    <div class="button-row">
         {% for option in asset_options %}
-        <a class="secondary-button" href="/projects/{{ project.id }}/assets?kind={{ option.value }}">{{ option.label }}</a>
+            <a class="filter-chip {% if option.value == asset_kind %}is-active{% endif %}" href="/projects/{{ project.id }}/assets?kind={{ option.value }}">{{ option.label }}</a>
         {% endfor %}
     </div>
 </section>
 
-<section
-    class="workspace-panel asset-generator"
-    data-asset-generator
-    data-project-id="{{ project.id }}"
-    data-asset-kind="{{ asset_kind }}"
-    data-asset-label="{{ asset_label }}"
->
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">生成</p>
-            <h2>生成 {{ asset_label }}</h2>
-            <p class="hero-note" id="asset-generation-hint">点击后会展示阶段进度、状态提示和实时输出。</p>
-        </div>
-        <div class="facet-meta">
-            <span id="asset-stage-chip">待命</span>
-            <span id="asset-progress-percent">0%</span>
-        </div>
-    </div>
-
-    <form
-        id="generate-form"
-        data-generate-form
-        method="post"
-        action="/projects/{{ project.id }}/assets/generate"
-        class="stack"
-    >
-        <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
-        <div class="inline-actions">
-            <button type="submit" id="generate-btn">重新生成 {{ asset_label }}</button>
-            <span class="muted">前端会优先使用流式生成；失败时仍可回退到普通提交。</span>
-        </div>
-    </form>
-
-    <div id="asset-generation-shell" class="asset-generation-shell" hidden>
-        <section class="progress-shell">
-            <div class="progress-labels">
-                <strong id="asset-current-stage">等待开始</strong>
-                <span id="asset-current-percent">0%</span>
+<section class="layout-grid layout-grid--assets">
+    <article class="surface-card">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Generate</p>
+                <h2>{{ ui.generator_title }}</h2>
             </div>
-            <div class="progress-track">
-                <div id="asset-progress-fill" class="progress-fill" style="width: 0%"></div>
-            </div>
-        </section>
-
-        <section class="analysis-brief-grid asset-brief-grid">
-            <article class="analysis-brief-card">
-                <span>状态</span>
-                <strong id="asset-generation-state">未开始</strong>
-                <p>显示当前生成是否还在推进。</p>
-            </article>
-            <article class="analysis-brief-card">
-                <span>阶段说明</span>
-                <strong id="asset-generation-message">等待任务启动</strong>
-                <p>后端会推送阶段事件，提示更明确。</p>
-            </article>
-            <article class="analysis-brief-card">
-                <span>流式块数</span>
-                <strong id="asset-chunk-count">0</strong>
-                <p>收到的新文本块数量。</p>
-            </article>
-            <article class="analysis-brief-card">
-                <span>输出字符数</span>
-                <strong id="asset-char-count">0</strong>
-                <p>帮助判断任务是否还在持续推进。</p>
-            </article>
-        </section>
-
-        <section class="asset-stream-panel">
-            <div class="section-head slim-head">
-                <div>
-                    <p class="eyebrow">实时流</p>
-                    <h3>实时输出</h3>
+            <span class="status-chip tone-queued" id="asset-stage-chip">{{ ui.status_idle }}</span>
+        </div>
+        <p class="section-note">{{ ui.generator_note }}</p>
+        <form id="generate-form" method="post" action="/projects/{{ project.id }}/assets/generate" class="form-stack">
+            <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+            <button type="submit" class="primary-button" id="generate-btn">
+                {{ ui.regenerate if draft else ui.generate }} {{ asset_label }}
+            </button>
+            <p class="helper-text">{{ ui.fallback_hint }}</p>
+        </form>
+        <div id="asset-generation-shell" class="stream-panel top-gap" hidden>
+            <section class="progress-shell">
+                <div class="progress-labels">
+                    <strong id="asset-current-stage">{{ ui.status_idle }}</strong>
+                    <span id="asset-current-percent">0%</span>
                 </div>
-                <div class="facet-meta">
-                    <span id="asset-output-status">等待数据</span>
+                <div class="progress-track">
+                    <div id="asset-progress-fill" class="progress-fill" style="width: 0%"></div>
                 </div>
+            </section>
+            <div class="metric-grid metric-grid--compact top-gap">
+                <article class="metric-card">
+                    <span>状态</span>
+                    <strong id="asset-generation-state">{{ ui.status_idle }}</strong>
+                    <p id="asset-generation-message">{{ ui.stream_hint }}</p>
+                </article>
+                <article class="metric-card">
+                    <span>流式片段</span>
+                    <strong id="asset-chunk-count">0</strong>
+                    <p>已接收的增量块数量</p>
+                </article>
+                <article class="metric-card">
+                    <span>字符数</span>
+                    <strong id="asset-char-count">0</strong>
+                    <p>便于判断生成是否持续推进</p>
+                </article>
             </div>
-            <pre id="generation-output" class="generation-output"></pre>
-        </section>
-    </div>
+            <div class="stream-output top-gap">
+                <div class="section-head slim-head">
+                    <div>
+                        <p class="eyebrow">Stream</p>
+                        <h3>{{ ui.stream_title }}</h3>
+                    </div>
+                </div>
+                <pre id="generation-output" class="generation-output"></pre>
+            </div>
+        </div>
+    </article>
+
+    <article class="surface-card">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">Draft</p>
+                <h2>{{ ui.draft_title }}</h2>
+            </div>
+        </div>
+        {% if draft %}
+            <form method="post" action="/projects/{{ project.id }}/assets/{{ draft.id }}/save" class="form-stack">
+                <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+                <label>
+                    <span>{{ ui.field_markdown }}</span>
+                    <textarea name="markdown_text" rows="16">{{ draft.markdown_text }}</textarea>
+                </label>
+                <label>
+                    <span>{{ ui.field_json }}</span>
+                    <textarea name="json_payload" rows="12">{{ draft_json_pretty }}</textarea>
+                </label>
+                <label>
+                    <span>{{ ui.field_prompt }}</span>
+                    <textarea name="prompt_text" rows="10">{{ draft.system_prompt }}</textarea>
+                </label>
+                <label>
+                    <span>{{ ui.field_notes }}</span>
+                    <textarea name="notes" rows="4">{{ draft.notes or "" }}</textarea>
+                </label>
+                <div class="button-row">
+                    <button type="submit" class="primary-button">{{ ui.save_draft }}</button>
+                    <button formaction="/projects/{{ project.id }}/assets/{{ draft.id }}/publish" type="submit" class="ghost-button">{{ ui.publish }}</button>
+                </div>
+            </form>
+        {% else %}
+            <div class="empty-panel">
+                <strong>{{ ui.empty_draft }}</strong>
+            </div>
+        {% endif %}
+    </article>
 </section>
 
-{% if draft %}
-<section class="workspace-panel">
+<section class="surface-card">
     <div class="section-head">
         <div>
-            <p class="eyebrow">草稿</p>
-            <h2>编辑 {{ asset_label }} 草稿</h2>
-        </div>
-    </div>
-    <form method="post" action="/projects/{{ project.id }}/assets/{{ draft.id }}/save" class="stack roomy">
-        <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
-        <label>
-            <span>Markdown</span>
-            <textarea name="markdown_text" rows="20">{{ draft.markdown_text }}</textarea>
-        </label>
-        <label>
-            <span>JSON Payload</span>
-            <textarea name="json_payload" rows="20">{{ draft_json_pretty }}</textarea>
-        </label>
-        <label>
-            <span>Prompt Text</span>
-            <textarea name="prompt_text" rows="16">{{ draft.system_prompt }}</textarea>
-        </label>
-        <label>
-            <span>备注</span>
-            <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
-        </label>
-        <div class="inline-actions">
-            <button type="submit">保存草稿</button>
-            <button formaction="/projects/{{ project.id }}/assets/{{ draft.id }}/publish" type="submit">发布版本</button>
-        </div>
-    </form>
-</section>
-{% else %}
-<section class="workspace-panel">
-    <p class="muted">当前还没有 {{ asset_label }} 草稿。先完成分析，再生成一份资产。</p>
-</section>
-{% endif %}
-
-<section class="workspace-panel">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">版本记录</p>
-            <h2>{{ asset_label }} 已发布版本</h2>
+            <p class="eyebrow">Versions</p>
+            <h2>{{ ui.versions_title }}</h2>
         </div>
     </div>
     {% if versions %}
-    <div class="project-list">
-        {% for version in versions %}
-        <div class="project-row">
-            <div>
-                <strong>v{{ version.version_number }}</strong>
-                <p>{{ version.published_at }}</p>
-            </div>
-            <span>{{ asset_label }}</span>
+        <div class="version-list">
+            {% for version in versions %}
+                <article class="version-card">
+                    <div>
+                        <strong>v{{ version.version_number }}</strong>
+                        <p>{{ version.published_at.strftime('%Y-%m-%d %H:%M') if version.published_at else '--' }}</p>
+                    </div>
+                    <span class="status-chip tone-ready">{{ asset_label }}</span>
+                </article>
+            {% endfor %}
         </div>
-        {% endfor %}
-    </div>
     {% else %}
-    <p class="muted">还没有已发布版本。</p>
+        <div class="empty-panel">
+            <strong>{{ ui.empty_versions }}</strong>
+        </div>
     {% endif %}
 </section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module" src="{{ request.url_for('static', path='assets.js') }}"></script>
 {% endblock %}

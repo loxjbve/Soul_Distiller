@@ -61,6 +61,22 @@ def upgrade_schema(engine) -> None:
             connection.exec_driver_sql(
                 "UPDATE projects SET mode = 'group' WHERE mode IS NULL OR mode = ''"
             )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_projects_parent_updated ON projects (parent_id, updated_at)"
+            )
+
+        if "documents" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_documents_project_status_created ON documents (project_id, ingest_status, created_at)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_documents_project_created ON documents (project_id, created_at)"
+            )
+
+        if "chunks" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_chunks_project_document_chunk ON chunks (project_id, document_id, chunk_index)"
+            )
 
         if "chat_sessions" in tables:
             columns = {column["name"] for column in inspector.get_columns("chat_sessions")}
@@ -80,6 +96,9 @@ def upgrade_schema(engine) -> None:
             )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_chat_sessions_session_kind ON chat_sessions (session_kind)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_chat_sessions_project_kind_active ON chat_sessions (project_id, session_kind, last_active_at)"
             )
 
         if "skill_drafts" in tables:
@@ -104,6 +123,16 @@ def upgrade_schema(engine) -> None:
             )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_skill_versions_asset_kind ON skill_versions (asset_kind)"
+            )
+
+        if "analysis_runs" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_analysis_runs_project_status_created ON analysis_runs (project_id, status, created_at)"
+            )
+
+        if "analysis_facets" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_analysis_facets_run_status_key ON analysis_facets (run_id, status, facet_key)"
             )
 
 

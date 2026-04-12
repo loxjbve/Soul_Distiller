@@ -225,6 +225,7 @@ class VectorStoreManager:
         self.data_dir = data_dir
         self.default_model = default_model
         self._stores: dict[str, VectorStore] = {}
+        self._dirty_projects: set[str] = set()
         self._lock = threading.Lock()
 
     def get_store(self, project_id: str, provider: str = "auto", model: str | None = None) -> VectorStore:
@@ -261,8 +262,23 @@ class VectorStoreManager:
         with self._lock:
             if project_id in self._stores:
                 del self._stores[project_id]
+            self._dirty_projects.discard(project_id)
+
+    def mark_dirty(self, project_id: str) -> None:
+        with self._lock:
+            self._dirty_projects.add(project_id)
+
+    def save_project(self, project_id: str) -> None:
+        with self._lock:
+            store = self._stores.get(project_id)
+            should_save = project_id in self._dirty_projects
+        if store and should_save:
+            store.save()
+            with self._lock:
+                self._dirty_projects.discard(project_id)
 
     def save_all(self) -> None:
         with self._lock:
-            for store in self._stores.values():
-                store.save()
+            dirty_projects = list(self._dirty_projects)
+        for project_id in dirty_projects:
+            self.save_project(project_id)
