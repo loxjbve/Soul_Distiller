@@ -7,7 +7,7 @@
 {% set failed_facets = summary.get("failed_facets", 0) %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Analysis Monitor</p>
+        <p class="eyebrow">分析监控</p>
         <h1>{{ project.name }} 的多维分析</h1>
         <p class="hero-note">
             页面会持续刷新当前 run 的阶段、进度、最近事件和各维度结果。长文本预览会自动截断，展开卡片后仍可查看实时输出和证据细节。
@@ -33,7 +33,7 @@
 
     <div class="section-head">
         <div>
-            <p class="eyebrow">Run</p>
+            <p class="eyebrow">运行</p>
             <h2 id="analysis-run-title">分析运行 {{ run.id[:8] }}</h2>
             <p class="hero-note" id="analysis-progress-detail">等待实时状态更新…</p>
         </div>
@@ -120,7 +120,7 @@
         <div>
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Facets</p>
+                    <p class="eyebrow">分析维度</p>
                     <h3>维度状态</h3>
                 </div>
             </div>
@@ -130,7 +130,7 @@
         <div>
             <div class="section-head slim-head">
                 <div>
-                    <p class="eyebrow">Events</p>
+                    <p class="eyebrow">运行事件</p>
                     <h3>运行事件流</h3>
                 </div>
             </div>
@@ -140,7 +140,7 @@
 
     <section class="section-head slim-head top-gap">
         <div>
-            <p class="eyebrow">Results</p>
+            <p class="eyebrow">分析结果</p>
             <h3>分析结果</h3>
         </div>
     </section>

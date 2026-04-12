@@ -17,10 +17,10 @@ function setupDropUploads() {
         const renderFiles = (files) => {
             list.innerHTML = "";
             if (!files.length) {
-                count.textContent = "No files selected";
+                count.textContent = "未选择文件";
                 return;
             }
-            count.textContent = `${files.length} file(s) selected`;
+            count.textContent = `已选择 ${files.length} 个文件`;
             Array.from(files).forEach((file) => {
                 const pill = document.createElement("span");
                 pill.textContent = file.name;
@@ -308,11 +308,11 @@ function bindFacetRerunActions(projectId) {
                 );
                 if (!response.ok) {
                     const errorPayload = await response.json().catch(() => ({}));
-                    throw new Error(errorPayload.detail || "Rerun failed");
+                    throw new Error(errorPayload.detail || "重新运行失败");
                 }
                 window.location.reload();
             } catch (error) {
-                window.alert(error instanceof Error ? error.message : "Rerun failed");
+                window.alert(error instanceof Error ? error.message : "重新运行失败");
                 button.disabled = false;
             }
         };

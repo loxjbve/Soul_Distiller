@@ -3,11 +3,11 @@
 {% block content %}
 <section class="hero-board">
     <div class="hero-copy">
-        <p class="eyebrow">Local Persona Distillation Studio</p>
+        <p class="eyebrow">本地角色提取工作室</p>
         <h1>构建可交互的人物 Skill。</h1>
         <div class="hero-chips">
-            <span>Chat LLM {{ "Ready" if chat_configured else "Missing" }}</span>
-            <span>Embeddings {{ "Ready" if embedding_configured else "Fallback" }}</span>
+            <span>Chat LLM {{ "已就绪" if chat_configured else "未配置" }}</span>
+            <span>Embeddings {{ "已就绪" if embedding_configured else "已回退" }}</span>
             <span>本地环境</span>
         </div>
     </div>
@@ -23,7 +23,7 @@
     <article class="workspace-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">New Project</p>
+                <p class="eyebrow">新建项目</p>
                 <h2>创建人物项目</h2>
             </div>
         </div>
@@ -50,7 +50,7 @@
     <section class="workspace-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">Projects</p>
+                <p class="eyebrow">项目</p>
                 <h2>已有项目</h2>
             </div>
         </div>
