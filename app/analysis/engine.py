@@ -21,7 +21,24 @@ from app.storage import repository
 from app.utils.text import top_terms
 
 FACET_EVIDENCE_LIMIT = 50
-RAW_TEXT_PREVIEW_LIMIT = 6000
+RAW_TEXT_PREVIEW_LIMIT = 20000
+
+
+def _parse_confidence(val: Any, default: float) -> float:
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        if isinstance(val, str):
+            s = val.strip().lower()
+            if "high" in s:
+                return 0.8
+            if "medium" in s:
+                return 0.5
+            if "low" in s:
+                return 0.2
+        return default
 
 
 def analyze_facet_worker(
@@ -82,7 +99,7 @@ def analyze_facet_worker(
             FacetResult(
                 facet_key=facet.key,
                 status="completed",
-                confidence=float(payload.get("confidence", 0.55)),
+                confidence=_parse_confidence(payload.get("confidence"), 0.55),
                 summary=payload.get("summary", ""),
                 bullets=list(payload.get("bullets", [])),
                 evidence=list(payload.get("evidence", [])),
@@ -396,6 +413,7 @@ class AnalysisEngine:
                     self.llm_log_path,
                     (run.summary_json or {}).get("target_role"),
                     (run.summary_json or {}).get("analysis_context"),
+                    self._build_stream_callback(run.id, facet),
                 )
                 future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
 
@@ -938,6 +956,7 @@ class AnalysisEngine:
         target_role: str | None,
         analysis_context: str | None,
     ) -> tuple[list[RetrievedChunk], str, dict[str, Any]]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         query_parts = [facet.search_query]
         if target_role:
             query_parts.append(target_role)
@@ -947,7 +966,7 @@ class AnalysisEngine:
         llm_config = ServiceConfig(**llm_payload) if llm_payload else None
         hits, retrieval_mode, retrieval_trace = self.retrieval.search(
             session,
-            project_id=project_id,
+            project_id=target_project_id,
             query=query_text,
             embedding_config=embedding_config,
             llm_config=llm_config,
@@ -974,22 +993,23 @@ class AnalysisEngine:
         target_role: str | None,
         analysis_context: str | None,
     ) -> dict[str, Any]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         document_count = (
             session.scalar(
-                select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == project_id)
+                select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
             )
             or 0
         )
         chunk_count = (
             session.scalar(
-                select(func.count()).select_from(TextChunk).where(TextChunk.project_id == project_id)
+                select(func.count()).select_from(TextChunk).where(TextChunk.project_id == target_project_id)
             )
             or 0
         )
         failed_count = (
             session.scalar(
                 select(func.count()).select_from(DocumentRecord).where(
-                    DocumentRecord.project_id == project_id,
+                    DocumentRecord.project_id == target_project_id,
                     DocumentRecord.ingest_status == "failed",
                 )
             )
@@ -1017,10 +1037,11 @@ class AnalysisEngine:
         }
 
     def _fallback_hits(self, session: Session, project_id: str) -> list[RetrievedChunk]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         stmt = (
             select(TextChunk, DocumentRecord)
             .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-            .where(TextChunk.project_id == project_id)
+            .where(TextChunk.project_id == target_project_id)
             .order_by(TextChunk.chunk_index.asc())
             .limit(FACET_EVIDENCE_LIMIT)
         )
@@ -1114,7 +1135,7 @@ def _analyze_with_llm(
             if callable(flush_remaining):
                 flush_remaining()
             try:
-                parsed = parse_json_response(completion.content)
+                parsed = parse_json_response(completion.content, fallback=True)
             except LLMError as exc:
                 raise LLMError(
                     str(exc),
@@ -1246,7 +1267,7 @@ def _normalize_facet_payload(payload: dict[str, Any], chunks: list[dict[str, Any
     return {
         "summary": str(payload.get("summary", "")),
         "bullets": [str(item) for item in payload.get("bullets", [])[:6]],
-        "confidence": float(payload.get("confidence", 0.65)),
+        "confidence": _parse_confidence(payload.get("confidence"), 0.65),
         "evidence": evidence,
         "conflicts": [
             {

@@ -32,6 +32,7 @@ class Project(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     mode: Mapped[str] = mapped_column(String(32), default="group")
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
 
     documents: Mapped[list["DocumentRecord"]] = relationship(back_populates="project")
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(back_populates="project")

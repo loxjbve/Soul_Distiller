@@ -117,45 +117,17 @@ def create_project_form(
     return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
-
-
-
-@router.post("/projects/{project_id}/clone")
-def clone_project_form(request: Request, project_id: str, session: SessionDep):
-    project = _ensure_project(session, project_id)
-    new_name = f"{project.name} (Copy)"
-    
-    new_project = repository.clone_project(session, project_id, new_name)
-    if not new_project:
-        raise HTTPException(status_code=404, detail="Failed to clone project.")
-        
-    from app.models import TextChunk
-    store = request.app.state.vector_store_manager.get_store(new_project.id)
-    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
-    
-    chunk_ids = []
-    vectors = []
-    payloads = []
-    
-    for c in chunks:
-        if c.embedding_vector:
-            chunk_ids.append(c.id)
-            vectors.append(c.embedding_vector)
-            payloads.append({
-                "content": c.content,
-                "filename": c.document.filename if c.document else "",
-                "chunk_index": c.chunk_index
-            })
-            
-    if vectors and chunk_ids:
-        try:
-            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
-            store.save()
-        except Exception:
-            pass
-            
-    session.commit()
-    return RedirectResponse(url=f"/projects/{new_project.id}", status_code=303)
+@router.post("/projects/{project_id}/profiles")
+def create_profile_form(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    name: Annotated[str, Form(...)],
+    description: Annotated[str | None, Form()] = None,
+):
+    _ensure_project(session, project_id)
+    child = repository.create_project(session, name=name, description=description, mode="single", parent_id=project_id)
+    return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
 
 @router.get("/projects/{project_id}", response_class=HTMLResponse)
@@ -184,8 +156,11 @@ def update_project_form(
 @router.post("/projects/{project_id}/delete")
 def delete_project_form(request: Request, project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
+    parent_id = project.parent_id
     _delete_project_resources(request, session, project.id)
     session.commit()
+    if parent_id:
+        return RedirectResponse(url=f"/projects/{parent_id}", status_code=303)
     return RedirectResponse(url="/", status_code=303)
 
 
@@ -301,6 +276,40 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
         raise HTTPException(status_code=404, detail="No analysis run found.")
     request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
     return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={latest_run.id}", status_code=303)
+
+
+@router.get("/projects/{project_id}/analysis/export")
+def export_analysis_zip(request: Request, project_id: str, session: SessionDep, run_id: str | None = Query(default=None)):
+    import io
+    import zipfile
+    from fastapi.responses import StreamingResponse
+    
+    project = _ensure_project(session, project_id)
+    run = _resolve_run(session, project_id, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="No analysis run found.")
+        
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for facet in run.facets:
+            facet_data = {
+                "facet_key": facet.facet_key,
+                "status": facet.status,
+                "confidence": facet.confidence,
+                "findings": facet.findings_json,
+                "evidence": facet.evidence_json,
+                "conflicts": facet.conflicts_json,
+            }
+            json_str = json.dumps(facet_data, ensure_ascii=False, indent=2)
+            zip_file.writestr(f"{facet.facet_key}.json", json_str)
+            
+    zip_buffer.seek(0)
+    filename = f"analysis_export_{project.name}_{run.id[:8]}.zip"
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]), 
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.get("/projects/{project_id}/assets", response_class=HTMLResponse)
@@ -627,44 +636,7 @@ async def upload_documents_api(
     return {"documents": created}
 
 
-@router.post("/api/projects/{project_id}/clone")
-def clone_project_api(request: Request, project_id: str, session: SessionDep):
-    project = _ensure_project(session, project_id)
-    new_name = f"{project.name} (Copy)"
-    
-    new_project = repository.clone_project(session, project_id, new_name)
-    if not new_project:
-        raise HTTPException(status_code=404, detail="Failed to clone project.")
-        
-    # Migrate vector store
-    from app.models import TextChunk
-    store = request.app.state.vector_store_manager.get_store(new_project.id)
-    chunks = list(session.scalars(select(TextChunk).where(TextChunk.project_id == new_project.id)))
-    
-    chunk_ids = []
-    vectors = []
-    payloads = []
-    
-    for c in chunks:
-        if c.embedding_vector:
-            chunk_ids.append(c.id)
-            vectors.append(c.embedding_vector)
-            payloads.append({
-                "content": c.content,
-                "filename": c.document.filename if c.document else "",
-                "chunk_index": c.chunk_index
-            })
-            
-    if vectors and chunk_ids:
-        try:
-            store.add(ids=chunk_ids, vectors=vectors, payloads=payloads)
-            store.save()
-        except Exception as e:
-            # We log but continue, user can re-embed if it fails
-            pass
-            
-    session.commit()
-    return {"id": new_project.id, "name": new_project.name, "description": new_project.description}
+
 
 
 @router.get("/api/projects/{project_id}/documents")
@@ -724,6 +696,36 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
     submitted = []
     for doc in documents:
         if doc.ingest_status not in ("ready", "processing", "queued"):
+            task = task_manager.submit(
+                project_id=project_id,
+                document_id=doc.id,
+                filename=doc.filename,
+                storage_path=doc.storage_path,
+                mime_type=None,
+            )
+            # update db status to queued to immediately reflect in UI
+            doc.ingest_status = "queued"
+            submitted.append({"document_id": doc.id, "filename": doc.filename, "task": task})
+    session.commit()
+    return {"submitted": submitted}
+
+
+@router.post("/api/projects/{project_id}/retry-all")
+def retry_all_documents_api(request: Request, project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    embedding_config = repository.get_service_config(session, "embedding_service")
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.set_embedding_config(embedding_config)
+    
+    # First, forcefully stop any existing processing for this project
+    task_manager.stop_project_tasks(project_id)
+    
+    documents = repository.list_project_documents(session, project_id)
+    submitted = []
+    for doc in documents:
+        # Retry all documents that are not 'ready'
+        if doc.ingest_status != "ready":
+            doc.error_message = None
             task = task_manager.submit(
                 project_id=project_id,
                 document_id=doc.id,
@@ -1187,8 +1189,17 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
     latest_version = repository.get_latest_skill_version(session, project_id)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
+    
+    profiles = []
+    if project.mode == "group":
+        for p in repository.list_child_projects(session, project_id):
+            p.latest_run = repository.get_latest_analysis_run(session, p.id)
+            p.latest_skill = repository.get_latest_skill_version(session, p.id)
+            profiles.append(p)
+            
     return {
         "project": project,
+        "profiles": profiles,
         "documents": documents,
         "latest_run": latest_run,
         "latest_draft": latest_draft,
@@ -1337,19 +1348,9 @@ def _chat_with_persona(
         chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
     history = sorted(chat_session.turns, key=lambda item: item.created_at)
     repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
-    hits, retrieval_mode, retrieval_trace = request.app.state.retrieval.search(
-        session,
-        project_id=project_id,
-        query=message,
-        embedding_config=embedding_config,
-        log_path=str(request.app.state.config.llm_log_path),
-        limit=4,
-    )
-    evidence_block = "\n\n".join(
-        f"[{hit.chunk_id}] {hit.document_title} / {hit.filename}\n{hit.content[:900]}"
-        for hit in hits
-    )
-    prompt_excerpt = f"SKILL:\n{version.system_prompt[:600]}\n\nEVIDENCE:\n{evidence_block[:1200]}"
+
+    evidence_block = ""
+    prompt_excerpt = f"SKILL:\n{version.system_prompt[:1800]}"
     assistant_reply, llm_meta = _generate_chat_reply(
         chat_config,
         version.system_prompt,
@@ -1361,22 +1362,6 @@ def _chat_with_persona(
     trace = {
         "skill_version_id": version.id,
         "skill_version_number": version.version_number,
-        "retrieval_mode": retrieval_mode,
-        "retrieval_trace": retrieval_trace,
-        "evidence": [
-            {
-                "chunk_id": hit.chunk_id,
-                "anchor_chunk_id": hit.anchor_chunk_id or hit.chunk_id,
-                "anchor_chunk_index": hit.anchor_chunk_index,
-                "document_title": hit.document_title,
-                "filename": hit.filename,
-                "page_number": hit.page_number,
-                "score": hit.score,
-                "quote": hit.content[:900],
-                "context_span": dict(hit.context_span or {}),
-            }
-            for hit in hits
-        ],
         "prompt_excerpt": prompt_excerpt,
         "llm": llm_meta,
     }
@@ -1406,13 +1391,10 @@ def _generate_chat_reply(
 ) -> tuple[str, dict[str, Any]]:
     if not config:
         prefix = "当前为无外部 LLM 降级模式。"
-        evidence_lines = [line for line in evidence_block.splitlines() if line.strip()]
-        evidence_hint = evidence_lines[1] if len(evidence_lines) > 1 else "暂无命中证据。"
         return (
             (
                 f"{prefix}\n\n"
-                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n"
-                f"本轮检索提示：{evidence_hint}\n\n"
+                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n\n"
                 f"你刚刚说的是：{message}"
             ),
             {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
@@ -1482,6 +1464,12 @@ def _delete_document_with_file(document: DocumentRecord) -> None:
 
 
 def _delete_project_resources(request: Request, session: Session, project_id: str) -> None:
+    from app.models import Project
+    from sqlalchemy import select
+    child_ids = session.scalars(select(Project.id).where(Project.parent_id == project_id)).all()
+    for cid in child_ids:
+        _delete_project_resources(request, session, cid)
+
     repository.delete_project_cascade(session, project_id)
     config = request.app.state.config
     request.app.state.vector_store_manager.delete_store(project_id)

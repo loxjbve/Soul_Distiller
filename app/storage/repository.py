@@ -25,86 +25,41 @@ from app.schemas import ServiceConfig
 
 
 def list_projects(session: Session) -> list[Project]:
-    stmt = select(Project).order_by(desc(Project.updated_at))
+    stmt = select(Project).where(Project.parent_id.is_(None)).order_by(desc(Project.updated_at))
     return list(session.scalars(stmt))
 
 
-def create_project(session: Session, name: str, description: str | None = None, mode: str = "group") -> Project:
-    project = Project(name=name.strip(), description=(description or "").strip() or None, mode=mode)
+def list_child_projects(session: Session, parent_id: str) -> list[Project]:
+    stmt = select(Project).where(Project.parent_id == parent_id).order_by(desc(Project.updated_at))
+    return list(session.scalars(stmt))
+
+
+def create_project(
+    session: Session,
+    name: str,
+    description: str | None = None,
+    mode: str = "group",
+    parent_id: str | None = None,
+) -> Project:
+    project = Project(
+        name=name.strip(),
+        description=(description or "").strip() or None,
+        mode=mode,
+        parent_id=parent_id,
+    )
     session.add(project)
     session.flush()
     return project
 
 
-def clone_project(session: Session, project_id: str, new_name: str) -> Project | None:
-    import shutil
-    from pathlib import Path
-    from uuid import uuid4
-    from app.models import DocumentRecord, TextChunk
+def get_target_project_id(session: Session, project_id: str) -> str:
+    project = get_project(session, project_id)
+    if project and project.parent_id:
+        return project.parent_id
+    return project_id
 
-    original_project = get_project(session, project_id)
-    if not original_project:
-        return None
 
-    new_project = create_project(session, new_name, original_project.description, mode=original_project.mode)
 
-    # Copy documents
-    original_docs = session.scalars(select(DocumentRecord).where(DocumentRecord.project_id == project_id)).all()
-    for doc in original_docs:
-        new_doc_id = str(uuid4())
-        
-        # Copy physical file if exists
-        new_storage_path = None
-        if doc.storage_path and Path(doc.storage_path).exists():
-            orig_path = Path(doc.storage_path)
-            new_dir = orig_path.parent.parent / new_project.id
-            new_dir.mkdir(parents=True, exist_ok=True)
-            new_path = new_dir / f"{new_doc_id}{orig_path.suffix}"
-            shutil.copy2(orig_path, new_path)
-            new_storage_path = str(new_path)
-
-        new_doc = DocumentRecord(
-            id=new_doc_id,
-            project_id=new_project.id,
-            filename=doc.filename,
-            mime_type=doc.mime_type,
-            extension=doc.extension,
-            source_type=doc.source_type,
-            title=doc.title,
-            author_guess=doc.author_guess,
-            created_at_guess=doc.created_at_guess,
-            raw_text=doc.raw_text,
-            clean_text=doc.clean_text,
-            language=doc.language,
-            metadata_json=doc.metadata_json,
-            ingest_status=doc.ingest_status,
-            error_message=doc.error_message,
-            storage_path=new_storage_path,
-        )
-        session.add(new_doc)
-        session.flush()
-
-        # Copy chunks
-        original_chunks = session.scalars(select(TextChunk).where(TextChunk.document_id == doc.id)).all()
-        for chunk in original_chunks:
-            new_chunk = TextChunk(
-                id=str(uuid4()),
-                project_id=new_project.id,
-                document_id=new_doc.id,
-                chunk_index=chunk.chunk_index,
-                content=chunk.content,
-                start_offset=chunk.start_offset,
-                end_offset=chunk.end_offset,
-                page_number=chunk.page_number,
-                token_count=chunk.token_count,
-                metadata_json=chunk.metadata_json,
-                embedding_vector=chunk.embedding_vector,
-                embedding_model=chunk.embedding_model,
-            )
-            session.add(new_chunk)
-            
-    session.flush()
-    return new_project
 
 
 def get_project(session: Session, project_id: str) -> Project | None:
@@ -117,6 +72,10 @@ def delete_project(session: Session, project_id: str) -> None:
 
 
 def delete_project_cascade(session: Session, project_id: str) -> None:
+    child_ids = session.scalars(select(Project.id).where(Project.parent_id == project_id)).all()
+    for cid in child_ids:
+        delete_project_cascade(session, cid)
+
     session.execute(delete(TextChunk).where(TextChunk.project_id == project_id))
     session.execute(delete(DocumentRecord).where(DocumentRecord.project_id == project_id))
     session.execute(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
@@ -145,9 +104,10 @@ def replace_document_chunks(session: Session, document_id: str, chunks: list[dic
 
 
 def list_project_documents(session: Session, project_id: str, *, limit: int | None = None, offset: int = 0) -> list[DocumentRecord]:
+    target_project_id = get_target_project_id(session, project_id)
     stmt = (
         select(DocumentRecord)
-        .where(DocumentRecord.project_id == project_id)
+        .where(DocumentRecord.project_id == target_project_id)
         .order_by(desc(DocumentRecord.created_at))
         .options(defer(DocumentRecord.raw_text), defer(DocumentRecord.clean_text))
     )
@@ -159,18 +119,19 @@ def list_project_documents(session: Session, project_id: str, *, limit: int | No
 
 
 def count_project_documents(session: Session, project_id: str) -> dict[str, int]:
+    target_project_id = get_target_project_id(session, project_id)
     total = session.scalar(
-        select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == project_id)
+        select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
     ) or 0
     ready = session.scalar(
         select(func.count()).select_from(DocumentRecord).where(
-            DocumentRecord.project_id == project_id,
+            DocumentRecord.project_id == target_project_id,
             DocumentRecord.ingest_status == "ready",
         )
     ) or 0
     failed = session.scalar(
         select(func.count()).select_from(DocumentRecord).where(
-            DocumentRecord.project_id == project_id,
+            DocumentRecord.project_id == target_project_id,
             DocumentRecord.ingest_status == "failed",
         )
     ) or 0
@@ -182,12 +143,13 @@ def list_project_documents_by_ids(
     project_id: str,
     document_ids: list[str],
 ) -> list[DocumentRecord]:
+    target_project_id = get_target_project_id(session, project_id)
     if not document_ids:
         return []
     stmt = (
         select(DocumentRecord)
         .where(
-            DocumentRecord.project_id == project_id,
+            DocumentRecord.project_id == target_project_id,
             DocumentRecord.id.in_(document_ids),
         )
         .order_by(desc(DocumentRecord.created_at))

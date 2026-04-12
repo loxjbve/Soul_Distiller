@@ -11,6 +11,7 @@ from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk
 from app.retrieval.base import RetrievalFilters
 from app.schemas import RetrievedChunk, ServiceConfig
+from app.storage import repository
 from app.utils.text import cosine_similarity
 
 EMBEDDING_BATCH_SIZE = 64
@@ -40,6 +41,7 @@ class EmbeddingRetriever:
         limit: int = 8,
         filters: RetrievalFilters | None = None,
     ) -> tuple[list[RetrievedChunk], dict[str, object]]:
+        target_project_id = repository.get_target_project_id(session, project_id)
         trace: dict[str, object] = {
             "embedding_attempted": True,
             "embedding_api_called": True,
@@ -61,7 +63,7 @@ class EmbeddingRetriever:
         if self._vector_store is not None:
             return self._search_from_vector_store(
                 session,
-                project_id=project_id,
+                project_id=target_project_id,
                 query_vector=query_vector,
                 config=config,
                 client=client,
@@ -72,7 +74,7 @@ class EmbeddingRetriever:
 
         backfill = self._backfill_missing_embeddings(
             session,
-            project_id=project_id,
+            project_id=target_project_id,
             config=config,
             client=client,
             filters=filters,
@@ -83,7 +85,7 @@ class EmbeddingRetriever:
 
         candidates, candidate_chunks, candidate_docs = self._rank_semantic_candidates(
             session,
-            project_id=project_id,
+            project_id=target_project_id,
             query_vector=query_vector,
             config=config,
             limit=limit,
@@ -106,7 +108,7 @@ class EmbeddingRetriever:
         hits = [
             self._expand_context_hit(
                 session,
-                project_id=project_id,
+                project_id=target_project_id,
                 anchor=anchor,
                 target_chars=CONTEXT_TARGET_CHARS,
             )

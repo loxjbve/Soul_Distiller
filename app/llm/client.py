@@ -865,22 +865,31 @@ class OpenAICompatibleClient:
         _LOG_QUEUE.put((self.log_path, record))
 
 
-def parse_json_response(text: str) -> dict[str, Any]:
+def parse_json_response(text: str, fallback: bool = False) -> dict[str, Any]:
     body = text.strip()
-    if body.startswith("```"):
-        lines = [line for line in body.splitlines() if not line.startswith("```")]
-        body = "\n".join(lines)
+    if body.startswith("```json"):
+        body = body[7:]
+    elif body.startswith("```"):
+        body = body[3:]
+    if body.endswith("```"):
+        body = body[:-3]
+    body = body.strip()
+
     try:
         return json.loads(body)
     except json.JSONDecodeError:
         start = body.find("{")
         end = body.rfind("}")
-        if start == -1 or end == -1 or end <= start:
-            raise LLMError("Model did not return valid JSON.", raw_text=body)
-        try:
-            return json.loads(body[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise LLMError("Model did not return valid JSON.", raw_text=body) from exc
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(body[start : end + 1])
+            except json.JSONDecodeError:
+                pass
+        
+        if fallback:
+            return {"summary": text, "bullets": [], "confidence": 0.5, "notes": "Recovered from unparseable JSON."}
+        
+        raise LLMError("Model did not return valid JSON.", raw_text=body)
 
 
 def _utcnow_iso() -> str:

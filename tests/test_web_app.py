@@ -125,8 +125,7 @@ def test_end_to_end_project_flow(client, app):
     assert chat_response.status_code == 200
     chat_payload = chat_response.json()
     assert chat_payload["trace"]["skill_version_number"] == 1
-    assert chat_payload["trace"]["retrieval_mode"] == "lexical"
-    assert chat_payload["trace"]["retrieval_trace"]["embedding_configured"] is False
+    assert "retrieval_mode" not in chat_payload["trace"]
     assert chat_payload["response"]
 
     with app.state.db.session() as session:

@@ -128,9 +128,10 @@ def build_asset_messages(
             {
                 "role": "system",
                 "content": (
-                    "你是一名擅长塑造 LLM 人设的沉浸式导演。\n"
+                    "你是一名擅长塑造 LLM 人设的沉浸式导演和心理侧写师。\n"
                     "请把分析结论转换成自然、可执行的角色扮演技能设定。\n"
                     "凡是能够转成操作规则的内容，就不要再用抽象分析语言复述。\n"
+                    "**极其重要**：你必须深度挖掘并还原角色的「语气语调」、「常用词汇」、「口癖习惯」以及「长期/短期记忆和经历」。这些细节占据人格的主导地位，必须在生成的结果中被放大和强调！\n"
                     "只返回 JSON。"
                 ),
             },
@@ -140,13 +141,15 @@ def build_asset_messages(
                     f"项目：{project_name}\n"
                     f"{context_block}\n"
                     "请生成一个 JSON 对象，必须包含这些键：\n"
-                "target_role, source_context, core_identity, mental_state, memories, worldview_constraints,\n"
-                "high_confidence_areas, ignorance_protocol, interaction_rules, topic_triggers,\n"
-                "linguistic_signature, formatting_rules, taboos, few_shots, conflict_notes。\n"
-                "memories 必须是字符串列表，如果没有提取到可以留空。\n"
-                "few_shots 必须是对象列表，每个对象包含 scene、context、reply。\n"
-                    "interaction_rules 要写成可执行的 if/then 式角色扮演规则。\n"
-                    "formatting_rules 要写成简短直接的表达与排版约束。\n\n"
+                    "target_role, source_context, core_identity, mental_state, worldview_constraints,\n"
+                    "high_confidence_areas, ignorance_protocol, interaction_rules, topic_triggers,\n"
+                    "linguistic_signature, formatting_rules, taboos, few_shots, conflict_notes, memories。\n"
+                    "**强烈要求**：\n"
+                    "1. `linguistic_signature` 必须极其详细地描述口癖、常用语气词、说话节奏（如标点习惯、断句）、典型词汇库。\n"
+                    "2. `memories` 必须列出角色最深刻的记忆、过往经历以及支撑其当前人设的核心事件（字符串列表）。如果没有提取到可以留空。\n"
+                    "3. `few_shots` 必须是对象列表，每个对象包含 scene、context、reply，且 reply 必须完美还原上述口癖和语气。\n"
+                    "4. `interaction_rules` 要写成可执行的 if/then 式角色扮演规则，指导 LLM 如何运用记忆和口癖。\n"
+                    "5. `formatting_rules` 要写成简短直接的表达与排版约束。\n\n"
                     f"维度输入：\n{facet_dump}"
                 ),
             },
