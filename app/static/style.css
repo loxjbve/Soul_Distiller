@@ -909,3 +909,55 @@ textarea {
         transition: none !important;
     }
 }
+.cursor-glow { position: fixed; width: 600px; height: 600px; border-radius: 50%; background: radial-gradient(circle, rgba(0, 240, 255, 0.08), transparent 50%); pointer-events: none; z-index: -1; transform: translate(-50%, -50%); transition: opacity 0.3s; opacity: 0; } .cursor-glow.active { opacity: 1; }
+
+/* =========================================================
+   Holographic Lab UI Overrides (from feat/holographic-ui)
+   ========================================================= */
+:root {
+    --radius-xl: 0px;
+    --radius-lg: 0px;
+    --radius-md: 0px;
+    --radius-sm: 0px;
+    --clip-panel: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 20px 100%, 0 calc(100% - 20px));
+    --clip-button: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+    --clip-chip: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+}
+
+.site-shell, .workspace-panel, .panel, .doc-card, .metric-tile, .modal {
+    clip-path: var(--clip-panel);
+    border-radius: 0 !important;
+}
+
+button, .primary-button, .secondary-button, .ghost-button, .danger-button, input, select, textarea, .trace-box, .event-item {
+    clip-path: var(--clip-button);
+    border-radius: 0 !important;
+}
+
+.status-pill, .hero-chips span, .facet-meta span, .metric-card {
+    clip-path: var(--clip-chip);
+    border-radius: 0 !important;
+}
+
+/* Holographic Hover Effects */
+button:hover, .primary-button:hover {
+    animation: textGlitch 0.3s ease;
+}
+
+@keyframes textGlitch {
+    0%, 100% { transform: translate(0); }
+    20% { transform: translate(-1px, 1px); text-shadow: 2px 0 var(--accent), -2px 0 var(--danger); }
+    40% { transform: translate(1px, -1px); text-shadow: -2px 0 var(--accent), 2px 0 var(--purple); }
+    60% { transform: translate(-1px, -1px); }
+    80% { transform: translate(1px, 1px); text-shadow: 2px 0 var(--danger), -2px 0 var(--accent); }
+}
+
+.workspace-panel::before, .workspace-panel::after {
+    content: ''; position: absolute; width: 30px; height: 30px;
+    opacity: 0.5; transition: 0.3s; pointer-events: none; z-index: 10;
+}
+.workspace-panel::before { top: 0; left: 0; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+.workspace-panel::after { bottom: 0; right: 0; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+.workspace-panel:hover::before, .workspace-panel:hover::after {
+    opacity: 1; width: 40px; height: 40px; box-shadow: 0 0 15px var(--accent-soft);
+}
