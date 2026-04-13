@@ -51,6 +51,7 @@ app/analysis/engine.py
 app/analysis/facets.py
 app/analysis/prompts.py
 app/analysis/runner.py
+app/analysis/streaming.py
 app/analysis/synthesizer.py
 app/llm/__init__.py
 app/llm/client.py
@@ -67,6 +68,7 @@ app/retrieval/__init__.py
 app/retrieval/base.py
 app/retrieval/embedding.py
 app/retrieval/lexical.py
+app/retrieval/rewrite.py
 app/retrieval/service.py
 app/retrieval/vector_store.py
 app/storage/__init__.py
@@ -75,6 +77,7 @@ app/utils/__init__.py
 app/utils/text.py
 app/web/__init__.py
 app/web/routes.py
+app/web/ui_strings.py
 persona_distiller.egg-info/PKG-INFO
 persona_distiller.egg-info/SOURCES.txt
 persona_distiller.egg-info/dependency_links.txt

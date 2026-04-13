@@ -214,6 +214,15 @@ if (bootstrap.project?.id) {
             ? (state.ui.modal_retry_document || "重新处理")
             : (state.ui.modal_process_document || "处理此文档");
 
+        let taskStageLabel = task ? escapeHtml(stageToLabel(task.status)) : "";
+        if (task && task.status === "embedding" && task.stages) {
+            const processed = task.stages.embedding_processed || 0;
+            const total = task.stages.embedding_total || 0;
+            if (total > 0) {
+                taskStageLabel = `索引中 ${processed}/${total} chunks`;
+            }
+        }
+
         const node = document.createElement("article");
         node.className = "document-card";
         node.innerHTML = `
@@ -229,7 +238,7 @@ if (bootstrap.project?.id) {
             ${task ? `
                 <div class="progress-shell">
                     <div class="progress-labels">
-                        <strong>${escapeHtml(stageToLabel(task.status))}</strong>
+                        <strong>${taskStageLabel}</strong>
                         <span>${progress}%</span>
                     </div>
                     <div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>
