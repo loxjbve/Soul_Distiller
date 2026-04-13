@@ -28,7 +28,7 @@ from app.schemas import (
 from app.storage import repository
 from app.utils.text import top_terms
 
-FACET_EVIDENCE_LIMIT = 50
+FACET_EVIDENCE_LIMIT = 20
 RAW_TEXT_PREVIEW_LIMIT = 20000
 
 
