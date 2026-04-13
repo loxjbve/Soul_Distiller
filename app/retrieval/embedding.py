@@ -356,7 +356,9 @@ class EmbeddingRetriever:
         )
         if filters and filters.source_types:
             stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
-        result = session.execute(stmt)
+        
+        # Use yield_per to stream results and prevent memory buffering of entire tables
+        result = session.execute(stmt.execution_options(yield_per=256))
 
         candidate_chunks = 0
         candidate_docs: set[str] = set()
