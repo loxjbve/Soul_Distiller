@@ -63,9 +63,9 @@ def build_personality_messages(
         {
             "role": "system",
             "content": (
-                "你是一名擅长塑造 LLM 人设的沉浸式导演。\n"
-                "请结合多维分析报告和向量检索语料，深入挖掘角色的性格特质和精神底色。\n"
-                "只返回 JSON。"
+                "你是人物模仿 Skill 的资料整理员。\n"
+                "请结合十维分析摘要与检索片段，输出一份可直接保存为 personality.md 的 Markdown 文档。\n"
+                "只输出 Markdown 正文，不要 JSON，不要解释，不要使用代码块。"
             ),
         },
         {
@@ -73,11 +73,17 @@ def build_personality_messages(
             "content": (
                 f"项目：{project_name}\n"
                 f"{context_block}\n"
-                "请生成一个 JSON 对象，必须包含这些键：\n"
-                "core_identity (一句话定义最核心的身份与现实处境),\n"
-                "mental_state (描述扮演时的基础情绪状态和精神底色)。\n\n"
-                f"检索到的相关语料：\n{search_context}\n\n"
-                f"多维分析报告输入：\n{facet_dump}"
+                "请写一份聚焦“身份+精神底色”的人格文档，结构固定为：\n"
+                "# 核心身份与精神底色\n"
+                "## 核心身份\n"
+                "## 精神底色\n\n"
+                "要求：\n"
+                "1. 核心身份只总结最稳定的自我定位、现实处境与角色站位，不写泛泛性格评价。\n"
+                "2. 精神底色只总结长期情绪底盘、心理张力和扮演时应保持的心智气候。\n"
+                "3. 每节 1 到 3 段，语言直接，可执行，可供下游 Skill 追加引用。\n"
+                "4. 不要编造具体经历，不要重复输出完整十维报告。\n\n"
+                f"检索片段：\n{search_context}\n\n"
+                f"十维分析摘要：\n{facet_dump}"
             ),
         },
     ]
@@ -96,9 +102,9 @@ def build_memories_messages(
         {
             "role": "system",
             "content": (
-                "你是一名擅长塑造 LLM 人设的沉浸式导演。\n"
-                "请结合多维分析报告和向量检索语料，提炼角色的核心记忆与过往重要经历。\n"
-                "只返回 JSON。"
+                "你是人物模仿 Skill 的资料整理员。\n"
+                "请结合十维分析摘要与检索片段，输出一份可直接保存为 memories.md 的 Markdown 文档。\n"
+                "只输出 Markdown 正文，不要 JSON，不要解释，不要使用代码块。"
             ),
         },
         {
@@ -106,13 +112,21 @@ def build_memories_messages(
             "content": (
                 f"项目：{project_name}\n"
                 f"{context_block}\n"
-                "请生成一个 JSON 对象，必须包含这些键：\n"
-                "memories (字符串列表，每条记忆需具体且带有时空锚点)。\n\n"
-                f"检索到的相关语料：\n{search_context}\n\n"
-                f"多维分析报告输入：\n{facet_dump}"
+                "请写一份核心记忆文档，结构固定为：\n"
+                "# 核心记忆与经历\n"
+                "## 关键记忆\n"
+                "## 长期经历脉络\n\n"
+                "要求：\n"
+                "1. 优先写能支撑角色稳定人设的记忆、经历和长期背景。\n"
+                "2. 尽量保留时间、场景、关系或现实锚点；证据不足时宁可保守，不要脑补。\n"
+                "3. `## 关键记忆` 用项目符号列出 4 到 8 条。\n"
+                "4. `## 长期经历脉络` 用 1 到 3 段总结这些记忆如何塑造角色。\n\n"
+                f"检索片段：\n{search_context}\n\n"
+                f"十维分析摘要：\n{facet_dump}"
             ),
         },
     ]
+
 
 def build_asset_messages(
     asset_kind: str,
@@ -128,11 +142,10 @@ def build_asset_messages(
             {
                 "role": "system",
                 "content": (
-                    "你是一名擅长塑造 LLM 人设的沉浸式导演和心理侧写师。\n"
-                    "请把分析结论转换成自然、可执行的角色扮演技能设定。\n"
-                    "凡是能够转成操作规则的内容，就不要再用抽象分析语言复述。\n"
-                    "**极其重要**：你必须深度挖掘并还原角色的「语气语调」、「常用词汇」、「口癖习惯」以及「长期/短期记忆和经历」。这些细节占据人格的主导地位，必须在生成的结果中被放大和强调！\n"
-                    "只返回 JSON。"
+                    "你是人物模仿 Skill 的总编写手。\n"
+                    "你只能依据十维分析摘要，生成一份可直接保存为 Skill.md 的 Markdown 文档。\n"
+                    "不要输出 JSON，不要解释，不要使用代码块。\n"
+                    "这份 Skill 只负责总结十维分析中的可执行扮演规则，不要把独立的人格文档和记忆文档再重复附录进来。"
                 ),
             },
             {
@@ -140,17 +153,24 @@ def build_asset_messages(
                 "content": (
                     f"项目：{project_name}\n"
                     f"{context_block}\n"
-                    "请生成一个 JSON 对象，必须包含这些键：\n"
-                    "target_role, source_context, core_identity, mental_state, worldview_constraints,\n"
-                    "high_confidence_areas, ignorance_protocol, interaction_rules, topic_triggers,\n"
-                    "linguistic_signature, formatting_rules, taboos, few_shots, conflict_notes, memories。\n"
-                    "**强烈要求**：\n"
-                    "1. `linguistic_signature` 必须极其详细地描述口癖、常用语气词、说话节奏（如标点习惯、断句）、典型词汇库。\n"
-                    "2. `memories` 必须列出角色最深刻的记忆、过往经历以及支撑其当前人设的核心事件（字符串列表）。如果没有提取到可以留空。\n"
-                    "3. `few_shots` 必须是对象列表，每个对象包含 scene、context、reply，且 reply 必须完美还原上述口癖和语气。\n"
-                    "4. `interaction_rules` 要写成可执行的 if/then 式角色扮演规则，指导 LLM 如何运用记忆和口癖。\n"
-                    "5. `formatting_rules` 要写成简短直接的表达与排版约束。\n\n"
-                    f"维度输入：\n{facet_dump}"
+                    "请写一份最终 Skill 文档，结构固定为：\n"
+                    "# System Role: 扮演 <目标角色>\n"
+                    "## 角色定位\n"
+                    "## 高置信领域\n"
+                    "## 世界观与现实约束\n"
+                    "## 互动规则\n"
+                    "## 语言指纹\n"
+                    "## 格式约束\n"
+                    "## 触发话题\n"
+                    "## 禁区\n"
+                    "## Few-Shot 切片\n"
+                    "## 冲突备注\n\n"
+                    "要求：\n"
+                    "1. 全文必须可直接作为系统 Prompt 使用，强调可执行规则，不写分析腔总结。\n"
+                    "2. 语言指纹必须具体，包含常用语气、断句、词汇偏好、节奏和回复习惯。\n"
+                    "3. Few-Shot 切片必须贴近原始表达，突出真实语气。\n"
+                    "4. 不要单独展开“核心身份与精神底色”或“核心记忆与经历”章节，它们会在本次生成后由系统追加到底部。\n\n"
+                    f"十维分析摘要：\n{facet_dump}"
                 ),
             },
         ]

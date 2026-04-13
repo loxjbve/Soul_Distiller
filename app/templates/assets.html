@@ -99,6 +99,21 @@
         {% if draft %}
             <form method="post" action="/projects/{{ project.id }}/assets/{{ draft.id }}/save" class="form-stack">
                 <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+                {% if asset_kind == "skill" %}
+                    <div class="section-head slim-head">
+                        <div>
+                            <p class="eyebrow">Export</p>
+                            <h3>{{ ui.draft_exports_title }}</h3>
+                        </div>
+                    </div>
+                    <div class="button-row">
+                        <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/skill">{{ ui.export_skill_doc }}</a>
+                        <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/personality">{{ ui.export_personality_doc }}</a>
+                        <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/memories">{{ ui.export_memories_doc }}</a>
+                        <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/merge">{{ ui.export_merge_doc }}</a>
+                        <a class="primary-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/bundle">{{ ui.export_bundle }}</a>
+                    </div>
+                {% endif %}
                 <label>
                     <span>{{ ui.field_markdown }}</span>
                     <textarea name="markdown_text" rows="16">{{ draft.markdown_text }}</textarea>
@@ -109,7 +124,10 @@
                 </label>
                 <label>
                     <span>{{ ui.field_prompt }}</span>
-                    <textarea name="prompt_text" rows="10">{{ draft.system_prompt }}</textarea>
+                    <textarea name="prompt_text" rows="10" {% if asset_kind == "skill" %}readonly{% endif %}>{{ draft.system_prompt }}</textarea>
+                    {% if asset_kind == "skill" %}
+                        <small class="helper-text">{{ ui.prompt_locked_hint }}</small>
+                    {% endif %}
                 </label>
                 <label>
                     <span>{{ ui.field_notes }}</span>
@@ -144,6 +162,15 @@
                         <p>{{ version.published_at.strftime('%Y-%m-%d %H:%M') if version.published_at else '--' }}</p>
                     </div>
                     <span class="status-chip tone-ready">{{ asset_label }}</span>
+                    {% if asset_kind == "skill" %}
+                        <div class="button-row top-gap">
+                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/skill">{{ ui.export_skill_doc }}</a>
+                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/personality">{{ ui.export_personality_doc }}</a>
+                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/memories">{{ ui.export_memories_doc }}</a>
+                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/merge">{{ ui.export_merge_doc }}</a>
+                            <a class="primary-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/bundle">{{ ui.export_bundle }}</a>
+                        </div>
+                    {% endif %}
                 </article>
             {% endfor %}
         </div>
