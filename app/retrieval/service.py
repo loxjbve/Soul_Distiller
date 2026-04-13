@@ -82,39 +82,34 @@ class RetrievalService:
                     filters=filters,
                 )
             
-            # Use ThreadPoolExecutor to run vector search concurrently to save time.
-            # Lexical (BM25) runs on the main thread using the original SQLAlchemy session.
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future_emb = executor.submit(run_embedding)
-                
-                # While embedding runs, do lexical search
-                try:
-                    lexical_results = self.lexical.search(
-                        session,
-                        project_id=project_id,
-                        query=lexical_query,
-                        limit=limit * 2,
-                        filters=filters,
-                    )
-                except Exception as e:
-                    trace["lexical_error"] = _format_exception(e)
-                
-                # Wait for embedding search
-                try:
-                    embedding_results, embedding_trace = future_emb.result()
-                    trace.update(embedding_trace)
-                    trace["embedding_attempted"] = bool(trace.get("embedding_attempted"))
-                    trace["embedding_api_called"] = bool(trace.get("embedding_api_called"))
-                    if embedding_results:
-                        trace["embedding_success"] = True
-                    else:
-                        trace["embedding_success"] = bool(trace.get("embedding_api_called"))
-                        trace["fallback_reason"] = str(trace.get("embedding_skip_reason")) or "empty_hybrid_results"
-                except Exception as exc:
-                    trace["embedding_error"] = _format_exception(exc)
-                    trace["fallback_reason"] = "embedding_exception"
-                    trace["embedding_success"] = False
-                    trace["embedding_api_called"] = True
+            # Run sequentially to avoid SQLAlchemy session thread-safety issues
+            try:
+                lexical_results = self.lexical.search(
+                    session,
+                    project_id=project_id,
+                    query=lexical_query,
+                    limit=limit * 2,
+                    filters=filters,
+                )
+            except Exception as e:
+                trace["lexical_error"] = _format_exception(e)
+            
+            # Wait for embedding search
+            try:
+                embedding_results, embedding_trace = run_embedding()
+                trace.update(embedding_trace)
+                trace["embedding_attempted"] = bool(trace.get("embedding_attempted"))
+                trace["embedding_api_called"] = bool(trace.get("embedding_api_called"))
+                if embedding_results:
+                    trace["embedding_success"] = True
+                else:
+                    trace["embedding_success"] = bool(trace.get("embedding_api_called"))
+                    trace["fallback_reason"] = str(trace.get("embedding_skip_reason")) or "empty_hybrid_results"
+            except Exception as exc:
+                trace["embedding_error"] = _format_exception(exc)
+                trace["fallback_reason"] = "embedding_exception"
+                trace["embedding_success"] = False
+                trace["embedding_api_called"] = True
         else:
             # Fallback lexical only
             lexical_results = self.lexical.search(
