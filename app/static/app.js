@@ -381,14 +381,23 @@ function renderEventItem(event) {
             payload.retrieval_mode ? `mode=${payload.retrieval_mode}` : "",
             typeof payload.hit_count === "number" ? `hits=${payload.hit_count}` : "",
             trace.embedding_url ? `embedding=${trace.embedding_url}` : "",
+            trace.vector_store_backend ? `vector_backend=${trace.vector_store_backend}` : "",
+            trace.vector_store_provider ? `vector_provider=${trace.vector_store_provider}` : "",
+            trace.vector_store_model ? `vector_model=${trace.vector_store_model}` : "",
+            typeof trace.vector_store_available === "boolean"
+                ? `vector_available=${trace.vector_store_available}`
+                : "",
             typeof trace.candidate_chunks === "number" ? `candidate_chunks=${trace.candidate_chunks}` : "",
             typeof trace.candidate_documents === "number" ? `candidate_documents=${trace.candidate_documents}` : "",
             typeof trace.selected_documents === "number" ? `selected_documents=${trace.selected_documents}` : "",
             typeof trace.per_document_cap_applied === "boolean"
                 ? `per_document_cap_applied=${trace.per_document_cap_applied}`
                 : "",
+            typeof trace.semantic_degraded === "boolean" ? `semantic_degraded=${trace.semantic_degraded}` : "",
+            trace.degraded_reason ? `degraded=${trace.degraded_reason}` : "",
             trace.embedding_skip_reason ? `skip=${trace.embedding_skip_reason}` : "",
             trace.fallback_reason ? `fallback=${trace.fallback_reason}` : "",
+            trace.vector_store_error ? `vector_store_error=${trace.vector_store_error}` : "",
             trace.embedding_error ? `embedding_error=${trace.embedding_error}` : "",
             trace.error ? `error=${trace.error}` : "",
         ]
@@ -799,14 +808,23 @@ function renderEventItemV2(event) {
             payload.retrieval_mode ? `mode=${payload.retrieval_mode}` : "",
             typeof payload.hit_count === "number" ? `hits=${payload.hit_count}` : "",
             trace.embedding_url ? `embedding=${trace.embedding_url}` : "",
+            trace.vector_store_backend ? `vector_backend=${trace.vector_store_backend}` : "",
+            trace.vector_store_provider ? `vector_provider=${trace.vector_store_provider}` : "",
+            trace.vector_store_model ? `vector_model=${trace.vector_store_model}` : "",
+            typeof trace.vector_store_available === "boolean"
+                ? `vector_available=${trace.vector_store_available}`
+                : "",
             typeof trace.candidate_chunks === "number" ? `candidate_chunks=${trace.candidate_chunks}` : "",
             typeof trace.candidate_documents === "number" ? `candidate_documents=${trace.candidate_documents}` : "",
             typeof trace.selected_documents === "number" ? `selected_documents=${trace.selected_documents}` : "",
             typeof trace.per_document_cap_applied === "boolean"
                 ? `per_document_cap_applied=${trace.per_document_cap_applied}`
                 : "",
+            typeof trace.semantic_degraded === "boolean" ? `semantic_degraded=${trace.semantic_degraded}` : "",
+            trace.degraded_reason ? `degraded=${trace.degraded_reason}` : "",
             trace.embedding_skip_reason ? `skip=${trace.embedding_skip_reason}` : "",
             trace.fallback_reason ? `fallback=${trace.fallback_reason}` : "",
+            trace.vector_store_error ? `vector_store_error=${trace.vector_store_error}` : "",
             trace.embedding_error ? `embedding_error=${trace.embedding_error}` : "",
             trace.error ? `error=${trace.error}` : "",
         ]

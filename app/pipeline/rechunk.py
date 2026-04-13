@@ -12,6 +12,7 @@ from app.db import Database
 from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk, utcnow
 from app.pipeline.chunking import chunk_segments
+from app.retrieval.vector_store import VectorStoreBatch, VectorStoreManager
 from app.schemas import ExtractedSegment, ServiceConfig
 from app.storage import repository
 
@@ -24,11 +25,13 @@ class RechunkTaskManager:
     def __init__(
         self,
         db: Database,
+        vector_store_manager: VectorStoreManager,
         *,
         llm_log_path: str | None = None,
         max_workers: int = 1,
     ) -> None:
         self.db = db
+        self.vector_store_manager = vector_store_manager
         self.llm_log_path = llm_log_path
         self.executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="rechunk")
         self._tasks: dict[str, dict[str, Any]] = {}
@@ -137,6 +140,7 @@ class RechunkTaskManager:
             if embedding_config:
                 self._update(task_id, stage="rebuild_embeddings", progress_percent=65)
                 self._rebuild_embeddings(task_id, project_id, embedding_config)
+            self._sync_project_vector_store(project_id)
 
             self._update(
                 task_id,
@@ -279,3 +283,32 @@ class RechunkTaskManager:
             if not task:
                 return
             task.update(fields)
+
+    def _sync_project_vector_store(self, project_id: str) -> None:
+        batches_by_model: dict[str, VectorStoreBatch] = {}
+        with self.db.session() as session:
+            stmt = (
+                select(
+                    TextChunk.id.label("chunk_id"),
+                    TextChunk.embedding_vector.label("embedding_vector"),
+                    TextChunk.embedding_model.label("embedding_model"),
+                )
+                .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
+                .where(
+                    TextChunk.project_id == project_id,
+                    DocumentRecord.ingest_status == "ready",
+                    TextChunk.embedding_vector.is_not(None),
+                    TextChunk.embedding_model.is_not(None),
+                )
+                .order_by(TextChunk.embedding_model.asc(), TextChunk.document_id.asc(), TextChunk.chunk_index.asc())
+            )
+            rows = session.execute(stmt).all()
+        for row in rows:
+            model = str(row.embedding_model or "").strip()
+            vector = row.embedding_vector
+            if not model or not isinstance(vector, (list, tuple)):
+                continue
+            batch = batches_by_model.setdefault(model, VectorStoreBatch(ids=[], vectors=[]))
+            batch.ids.append(str(row.chunk_id))
+            batch.vectors.append(list(vector))
+        self.vector_store_manager.rebuild_project(project_id, batches_by_model)

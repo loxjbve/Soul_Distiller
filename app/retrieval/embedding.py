@@ -1,22 +1,18 @@
 from __future__ import annotations
 
-import heapq
 from collections import defaultdict
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk
 from app.retrieval.base import RetrievalFilters
+from app.retrieval.vector_store import VectorStoreResolution, model_key_for
 from app.schemas import RetrievedChunk, ServiceConfig
 from app.storage import repository
-from app.utils.text import cosine_similarity
 
-EMBEDDING_BATCH_SIZE = 64
-SEMANTIC_POOL_MIN = 240
-SEMANTIC_POOL_MULTIPLIER = 25
 CONTEXT_TARGET_CHARS = 900
 CONTEXT_MAX_CHARS = 1100
 CONTEXT_NEIGHBOR_WINDOW = 6
@@ -42,79 +38,72 @@ class EmbeddingRetriever:
         filters: RetrievalFilters | None = None,
     ) -> tuple[list[RetrievedChunk], dict[str, object]]:
         target_project_id = repository.get_target_project_id(session, project_id)
+        client = OpenAICompatibleClient(config, log_path=log_path)
+        resolved_model = config.model or client.resolve_model()
         trace: dict[str, object] = {
             "embedding_attempted": True,
-            "embedding_api_called": True,
-            "embedding_url": OpenAICompatibleClient(config, log_path=log_path).endpoint_url("/embeddings"),
-            "lexical_candidate_count": 0,
-            "new_chunk_embeddings": 0,
+            "embedding_api_called": False,
+            "embedding_url": client.endpoint_url("/embeddings"),
             "embedding_skip_reason": None,
             "candidate_chunks": 0,
             "candidate_documents": 0,
             "selected_documents": 0,
             "per_document_cap_applied": False,
-            "backfill_batches": 0,
-            "missing_embeddings_before": 0,
             "vector_store_used": self._vector_store is not None,
+            "vector_store_backend": None,
+            "vector_store_provider": None,
+            "vector_store_model": resolved_model,
+            "vector_store_available": False,
+            "vector_store_error": None,
+            "semantic_degraded": False,
+            "degraded_reason": None,
         }
-        client = OpenAICompatibleClient(config, log_path=log_path)
-        query_vector = client.embeddings([query], model=config.model)[0]
 
-        if self._vector_store is not None:
-            return self._search_from_vector_store(
-                session,
-                project_id=target_project_id,
-                query_vector=query_vector,
-                config=config,
-                client=client,
-                limit=limit,
-                filters=filters,
-                trace=trace,
-            )
+        resolution = self._resolve_vector_store(project_id=target_project_id, model=resolved_model)
+        trace.update(resolution.to_trace())
+        trace["vector_store_used"] = resolution.store is not None
+        if not resolution.available or resolution.store is None:
+            trace["embedding_skip_reason"] = str(trace.get("degraded_reason") or "vector_store_unavailable")
+            return [], trace
 
-        backfill = self._backfill_missing_embeddings(
-            session,
-            project_id=target_project_id,
-            config=config,
-            client=client,
-            filters=filters,
-        )
-        trace["new_chunk_embeddings"] = backfill["embedded_chunks"]
-        trace["backfill_batches"] = backfill["batches"]
-        trace["missing_embeddings_before"] = backfill["missing_before"]
-
-        candidates, candidate_chunks, candidate_docs = self._rank_semantic_candidates(
+        query_vector = client.embeddings([query], model=resolved_model)[0]
+        trace["embedding_api_called"] = True
+        return self._search_from_vector_store(
             session,
             project_id=target_project_id,
             query_vector=query_vector,
-            config=config,
             limit=limit,
             filters=filters,
+            trace=trace,
+            resolution=resolution,
         )
-        trace["candidate_chunks"] = candidate_chunks
-        trace["candidate_documents"] = candidate_docs
-        if not candidates:
-            trace["embedding_skip_reason"] = "no_semantic_candidates"
-            return [], trace
 
-        selected, selected_docs, cap_applied = self._apply_document_cap(
-            candidates,
-            limit=limit,
-            per_document_cap=PER_DOCUMENT_CAP,
-        )
-        trace["selected_documents"] = selected_docs
-        trace["per_document_cap_applied"] = cap_applied
+    def _resolve_vector_store(self, *, project_id: str, model: str | None) -> VectorStoreResolution:
+        resolver = getattr(self._vector_store, "resolve_store", None)
+        if callable(resolver):
+            return resolver(project_id, provider="auto", model=model, allow_memory=False)
 
-        hits = [
-            self._expand_context_hit(
-                session,
-                project_id=target_project_id,
-                anchor=anchor,
-                target_chars=CONTEXT_TARGET_CHARS,
+        store = self._vector_store
+        if store is not None and callable(getattr(store, "search", None)):
+            backend_name = type(store).__name__.replace("VectorStore", "").lower() or "custom"
+            return VectorStoreResolution(
+                store=store,
+                backend=backend_name,
+                provider="legacy",
+                model=model,
+                model_key=model_key_for(model),
+                available=True,
             )
-            for anchor in selected
-        ]
-        return hits, trace
+
+        return VectorStoreResolution(
+            store=None,
+            backend="disabled",
+            provider="auto",
+            model=model,
+            model_key=model_key_for(model),
+            available=False,
+            degraded_reason="vector_store_unavailable",
+        )
 
     def _search_from_vector_store(
         self,
@@ -122,136 +111,76 @@ class EmbeddingRetriever:
         *,
         project_id: str,
         query_vector: list[float],
-        config: ServiceConfig,
-        client: OpenAICompatibleClient,
         limit: int,
         filters: RetrievalFilters | None,
         trace: dict[str, object],
+        resolution: VectorStoreResolution,
     ) -> tuple[list[RetrievedChunk], dict[str, object]]:
         try:
-            search_results = self._vector_store.search(query_vector, top_k=limit * PER_DOCUMENT_CAP)
-            if not search_results:
-                trace["embedding_skip_reason"] = "vector_store_empty"
-                return [], trace
-
-            chunk_ids = [r.get("id") for r in search_results if r.get("id")]
-            if not chunk_ids:
-                trace["embedding_skip_reason"] = "no_chunk_ids_from_vector_store"
-                return [], trace
-
-            stmt = (
-                select(
-                    TextChunk.id.label("chunk_id"),
-                    TextChunk.document_id.label("document_id"),
-                    TextChunk.chunk_index.label("chunk_index"),
-                    TextChunk.page_number.label("page_number"),
-                    TextChunk.content.label("content"),
-                    TextChunk.metadata_json.label("metadata_json"),
-                    DocumentRecord.filename.label("filename"),
-                    DocumentRecord.title.label("document_title"),
-                    DocumentRecord.source_type.label("source_type"),
-                )
-                .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-                .where(
-                    TextChunk.id.in_(chunk_ids),
-                    TextChunk.project_id == project_id,
-                    DocumentRecord.ingest_status == "ready",
-                )
-            )
-            if filters and filters.source_types:
-                stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
-
-            rows = session.execute(stmt).all()
-            id_to_row = {str(row.chunk_id): row for row in rows}
-            id_to_score = {str(r.get("id", "")): r.get("score", 0.0) for r in search_results}
-
-            candidates = []
-            for row in rows:
-                chunk_id = str(row.chunk_id)
-                score = id_to_score.get(chunk_id, 0.0)
-                candidates.append({
-                    "chunk_id": chunk_id,
-                    "document_id": str(row.document_id),
-                    "chunk_index": int(row.chunk_index),
-                    "page_number": row.page_number,
-                    "content": str(row.content or ""),
-                    "metadata": dict(row.metadata_json or {}),
-                    "filename": str(row.filename or ""),
-                    "document_title": str(row.document_title or row.filename or ""),
-                    "source_type": str(row.source_type or "document"),
-                    "score": float(score),
-                })
-
-            selected, selected_docs, cap_applied = self._apply_document_cap(
-                candidates,
-                limit=limit,
-                per_document_cap=PER_DOCUMENT_CAP,
-            )
-            trace["selected_documents"] = selected_docs
-            trace["per_document_cap_applied"] = cap_applied
-            trace["candidate_chunks"] = len(candidates)
-            trace["candidate_documents"] = len({c.get("document_id") for c in candidates})
-            trace["vector_store_hit_count"] = len(search_results)
-
-            hits = [
-                self._expand_context_hit(
-                    session,
-                    project_id=project_id,
-                    anchor=anchor,
-                    target_chars=CONTEXT_TARGET_CHARS,
-                )
-                for anchor in selected
-            ]
-            return hits, trace
+            search_results = resolution.store.search(query_vector, top_k=limit * PER_DOCUMENT_CAP) if resolution.store else []
         except Exception as exc:
-            trace["vector_store_error"] = str(exc)
-            trace["fallback_to_db"] = True
-            return self._search_from_db(
-                session,
-                project_id=project_id,
-                query_vector=query_vector,
-                config=config,
-                client=client,
-                limit=limit,
-                filters=filters,
-                trace=trace,
+            trace["vector_store_error"] = _format_exception(exc)
+            trace["vector_store_available"] = False
+            trace["semantic_degraded"] = True
+            trace["degraded_reason"] = "vector_store_search_failed"
+            trace["embedding_skip_reason"] = "vector_store_search_failed"
+            return [], trace
+
+        trace["vector_store_hit_count"] = len(search_results)
+        if not search_results:
+            trace["embedding_skip_reason"] = "vector_store_empty"
+            return [], trace
+
+        chunk_ids = [str(item.get("id") or "") for item in search_results if str(item.get("id") or "").strip()]
+        if not chunk_ids:
+            trace["embedding_skip_reason"] = "no_chunk_ids_from_vector_store"
+            return [], trace
+
+        stmt = (
+            select(
+                TextChunk.id.label("chunk_id"),
+                TextChunk.document_id.label("document_id"),
+                TextChunk.chunk_index.label("chunk_index"),
+                TextChunk.page_number.label("page_number"),
+                TextChunk.content.label("content"),
+                TextChunk.metadata_json.label("metadata_json"),
+                DocumentRecord.filename.label("filename"),
+                DocumentRecord.title.label("document_title"),
+                DocumentRecord.source_type.label("source_type"),
             )
-
-    def _search_from_db(
-        self,
-        session: Session,
-        *,
-        project_id: str,
-        query_vector: list[float],
-        config: ServiceConfig,
-        client: OpenAICompatibleClient,
-        limit: int,
-        filters: RetrievalFilters | None,
-        trace: dict[str, object],
-    ) -> tuple[list[RetrievedChunk], dict[str, object]]:
-        backfill = self._backfill_missing_embeddings(
-            session,
-            project_id=project_id,
-            config=config,
-            client=client,
-            filters=filters,
+            .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
+            .where(
+                TextChunk.id.in_(chunk_ids),
+                TextChunk.project_id == project_id,
+                DocumentRecord.ingest_status == "ready",
+            )
         )
-        trace["new_chunk_embeddings"] = backfill["embedded_chunks"]
-        trace["backfill_batches"] = backfill["batches"]
-        trace["missing_embeddings_before"] = backfill["missing_before"]
+        if filters and filters.source_types:
+            stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
 
-        candidates, candidate_chunks, candidate_docs = self._rank_semantic_candidates(
-            session,
-            project_id=project_id,
-            query_vector=query_vector,
-            config=config,
-            limit=limit,
-            filters=filters,
-        )
-        trace["candidate_chunks"] = candidate_chunks
-        trace["candidate_documents"] = candidate_docs
+        rows = session.execute(stmt).all()
+        id_to_score = {str(item.get("id") or ""): float(item.get("score") or 0.0) for item in search_results}
+        id_to_candidate = {
+            str(row.chunk_id): {
+                "chunk_id": str(row.chunk_id),
+                "document_id": str(row.document_id),
+                "chunk_index": int(row.chunk_index),
+                "page_number": row.page_number,
+                "content": str(row.content or ""),
+                "metadata": dict(row.metadata_json or {}),
+                "filename": str(row.filename or ""),
+                "document_title": str(row.document_title or row.filename or ""),
+                "source_type": str(row.source_type or "document"),
+                "score": id_to_score.get(str(row.chunk_id), 0.0),
+            }
+            for row in rows
+        }
+        candidates = [id_to_candidate[chunk_id] for chunk_id in chunk_ids if chunk_id in id_to_candidate]
+        trace["candidate_chunks"] = len(candidates)
+        trace["candidate_documents"] = len({candidate.get("document_id") for candidate in candidates})
+
         if not candidates:
-            trace["embedding_skip_reason"] = "no_semantic_candidates"
+            trace["embedding_skip_reason"] = "vector_store_rows_missing"
             return [], trace
 
         selected, selected_docs, cap_applied = self._apply_document_cap(
@@ -262,140 +191,13 @@ class EmbeddingRetriever:
         trace["selected_documents"] = selected_docs
         trace["per_document_cap_applied"] = cap_applied
 
-        hits = [
-            self._expand_context_hit(
-                session,
-                project_id=project_id,
-                anchor=anchor,
-                target_chars=CONTEXT_TARGET_CHARS,
-            )
-            for anchor in selected
-        ]
+        hits = self._expand_context_hits(
+            session,
+            project_id=project_id,
+            anchors=selected,
+            target_chars=CONTEXT_TARGET_CHARS,
+        )
         return hits, trace
-
-    def _backfill_missing_embeddings(
-        self,
-        session: Session,
-        *,
-        project_id: str,
-        config: ServiceConfig,
-        client: OpenAICompatibleClient,
-        filters: RetrievalFilters | None,
-    ) -> dict[str, int]:
-        stmt = (
-            select(TextChunk.id, TextChunk.content)
-            .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-            .where(
-                TextChunk.project_id == project_id,
-                DocumentRecord.ingest_status == "ready",
-                or_(TextChunk.embedding_vector.is_(None), TextChunk.embedding_model != config.model),
-            )
-        )
-        if filters and filters.source_types:
-            stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
-        result = session.execute(stmt)
-        missing_before = 0
-        embedded_chunks = 0
-        batches = 0
-        while True:
-            rows = result.fetchmany(EMBEDDING_BATCH_SIZE)
-            if not rows:
-                break
-            missing_before += len(rows)
-            batch_ids = [str(row.id) for row in rows]
-            batch_inputs = [str(row.content or "") for row in rows]
-            vectors = client.embeddings(batch_inputs, model=config.model)
-            chunks = list(session.scalars(select(TextChunk).where(TextChunk.id.in_(batch_ids))))
-            chunk_map = {chunk.id: chunk for chunk in chunks}
-            for chunk_id, vector in zip(batch_ids, vectors):
-                chunk = chunk_map.get(chunk_id)
-                if not chunk:
-                    continue
-                chunk.embedding_vector = vector
-                chunk.embedding_model = config.model
-                embedded_chunks += 1
-            batches += 1
-            session.flush()
-        return {
-            "missing_before": missing_before,
-            "embedded_chunks": embedded_chunks,
-            "batches": batches,
-        }
-
-    def _rank_semantic_candidates(
-        self,
-        session: Session,
-        *,
-        project_id: str,
-        query_vector: list[float],
-        config: ServiceConfig,
-        limit: int,
-        filters: RetrievalFilters | None,
-    ) -> tuple[list[dict[str, Any]], int, int]:
-        pool_size = max(limit * SEMANTIC_POOL_MULTIPLIER, SEMANTIC_POOL_MIN)
-        stmt = (
-            select(
-                TextChunk.id.label("chunk_id"),
-                TextChunk.document_id.label("document_id"),
-                TextChunk.chunk_index.label("chunk_index"),
-                TextChunk.page_number.label("page_number"),
-                TextChunk.content.label("content"),
-                TextChunk.embedding_vector.label("embedding_vector"),
-                TextChunk.metadata_json.label("metadata_json"),
-                DocumentRecord.filename.label("filename"),
-                DocumentRecord.title.label("document_title"),
-                DocumentRecord.source_type.label("source_type"),
-            )
-            .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
-            .where(
-                TextChunk.project_id == project_id,
-                DocumentRecord.ingest_status == "ready",
-                TextChunk.embedding_model == config.model,
-                TextChunk.embedding_vector.is_not(None),
-            )
-        )
-        if filters and filters.source_types:
-            stmt = stmt.where(DocumentRecord.source_type.in_(filters.source_types))
-        
-        # Use yield_per to stream results and prevent memory buffering of entire tables
-        result = session.execute(stmt.execution_options(yield_per=256))
-
-        candidate_chunks = 0
-        candidate_docs: set[str] = set()
-        heap: list[tuple[float, int, dict[str, Any]]] = []
-        serial = 0
-        while True:
-            rows = result.fetchmany(256)
-            if not rows:
-                break
-            for row in rows:
-                candidate_chunks += 1
-                doc_id = str(row.document_id)
-                candidate_docs.add(doc_id)
-                vector = row.embedding_vector
-                if not isinstance(vector, (list, tuple)):
-                    continue
-                score = cosine_similarity(query_vector, list(vector))
-                payload = {
-                    "chunk_id": str(row.chunk_id),
-                    "document_id": doc_id,
-                    "chunk_index": int(row.chunk_index),
-                    "page_number": row.page_number,
-                    "content": str(row.content or ""),
-                    "metadata": dict(row.metadata_json or {}),
-                    "filename": str(row.filename or ""),
-                    "document_title": str(row.document_title or row.filename or ""),
-                    "source_type": str(row.source_type or "document"),
-                    "score": float(score),
-                }
-                entry = (float(score), serial, payload)
-                serial += 1
-                if len(heap) < pool_size:
-                    heapq.heappush(heap, entry)
-                elif score > heap[0][0]:
-                    heapq.heapreplace(heap, entry)
-        ordered = sorted(heap, key=lambda item: item[0], reverse=True)
-        return [item[2] for item in ordered], candidate_chunks, len(candidate_docs)
 
     @staticmethod
     def _apply_document_cap(
@@ -436,66 +238,118 @@ class EmbeddingRetriever:
         selected_docs = len({str(item.get("document_id") or "") for item in selected if item.get("document_id")})
         return selected[:limit], selected_docs, cap_applied
 
-    def _expand_context_hit(
+    def _expand_context_hits(
         self,
         session: Session,
         *,
         project_id: str,
-        anchor: dict[str, Any],
+        anchors: list[dict[str, Any]],
         target_chars: int,
-    ) -> RetrievedChunk:
-        anchor_text = str(anchor.get("content") or "").strip()
-        anchor_index = int(anchor.get("chunk_index") or 0)
-        if len(anchor_text) >= target_chars:
-            snippet = anchor_text[:target_chars]
-            return RetrievedChunk(
-                chunk_id=str(anchor.get("chunk_id") or ""),
-                document_id=str(anchor.get("document_id") or ""),
-                document_title=str(anchor.get("document_title") or ""),
-                filename=str(anchor.get("filename") or ""),
-                source_type=str(anchor.get("source_type") or "document"),
-                content=snippet,
-                score=float(anchor.get("score") or 0.0),
-                page_number=anchor.get("page_number"),
-                metadata=dict(anchor.get("metadata") or {}),
-                anchor_chunk_id=str(anchor.get("chunk_id") or ""),
-                anchor_chunk_index=anchor_index,
-                context_span={"left": 0, "right": 0, "total_chars": len(snippet)},
+    ) -> list[RetrievedChunk]:
+        if not anchors:
+            return []
+
+        direct_hits: dict[str, RetrievedChunk] = {}
+        intervals_by_document: dict[str, list[tuple[int, int]]] = defaultdict(list)
+
+        for anchor in anchors:
+            chunk_id = str(anchor.get("chunk_id") or "")
+            anchor_text = str(anchor.get("content") or "").strip()
+            if not chunk_id:
+                continue
+            if len(anchor_text) >= target_chars:
+                direct_hits[chunk_id] = self._build_trimmed_hit(anchor, target_chars)
+                continue
+            document_id = str(anchor.get("document_id") or "")
+            if not document_id:
+                direct_hits[chunk_id] = self._build_trimmed_hit(anchor, target_chars)
+                continue
+            anchor_index = int(anchor.get("chunk_index") or 0)
+            intervals_by_document[document_id].append(
+                (
+                    anchor_index - CONTEXT_NEIGHBOR_WINDOW,
+                    anchor_index + CONTEXT_NEIGHBOR_WINDOW,
+                )
             )
 
-        stmt = (
-            select(
-                TextChunk.id.label("chunk_id"),
-                TextChunk.chunk_index.label("chunk_index"),
-                TextChunk.content.label("content"),
-                TextChunk.page_number.label("page_number"),
+        conditions = []
+        for document_id, ranges in intervals_by_document.items():
+            for start, end in self._merge_ranges(ranges):
+                conditions.append(
+                    and_(
+                        TextChunk.document_id == document_id,
+                        TextChunk.chunk_index >= start,
+                        TextChunk.chunk_index <= end,
+                    )
+                )
+
+        row_maps: dict[str, dict[int, Any]] = defaultdict(dict)
+        if conditions:
+            stmt = (
+                select(
+                    TextChunk.document_id.label("document_id"),
+                    TextChunk.id.label("chunk_id"),
+                    TextChunk.chunk_index.label("chunk_index"),
+                    TextChunk.content.label("content"),
+                    TextChunk.page_number.label("page_number"),
+                )
+                .where(TextChunk.project_id == project_id, or_(*conditions))
+                .order_by(TextChunk.document_id.asc(), TextChunk.chunk_index.asc())
             )
-            .where(
-                TextChunk.project_id == project_id,
-                TextChunk.document_id == str(anchor.get("document_id") or ""),
-                TextChunk.chunk_index >= anchor_index - CONTEXT_NEIGHBOR_WINDOW,
-                TextChunk.chunk_index <= anchor_index + CONTEXT_NEIGHBOR_WINDOW,
+            rows = session.execute(stmt).all()
+            for row in rows:
+                row_maps[str(row.document_id)][int(row.chunk_index)] = row
+
+        return [
+            direct_hits.get(str(anchor.get("chunk_id") or ""))
+            or self._build_context_hit(
+                anchor,
+                row_maps.get(str(anchor.get("document_id") or ""), {}),
+                target_chars,
             )
-            .order_by(TextChunk.chunk_index.asc())
+            for anchor in anchors
+        ]
+
+    @staticmethod
+    def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        if not ranges:
+            return []
+        ordered = sorted(ranges, key=lambda item: item[0])
+        merged = [ordered[0]]
+        for start, end in ordered[1:]:
+            current_start, current_end = merged[-1]
+            if start <= current_end + 1:
+                merged[-1] = (current_start, max(current_end, end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    def _build_trimmed_hit(self, anchor: dict[str, Any], target_chars: int) -> RetrievedChunk:
+        snippet = str(anchor.get("content") or "").strip()[:target_chars]
+        return RetrievedChunk(
+            chunk_id=str(anchor.get("chunk_id") or ""),
+            document_id=str(anchor.get("document_id") or ""),
+            document_title=str(anchor.get("document_title") or ""),
+            filename=str(anchor.get("filename") or ""),
+            source_type=str(anchor.get("source_type") or "document"),
+            content=snippet,
+            score=float(anchor.get("score") or 0.0),
+            page_number=anchor.get("page_number"),
+            metadata=dict(anchor.get("metadata") or {}),
+            anchor_chunk_id=str(anchor.get("chunk_id") or ""),
+            anchor_chunk_index=int(anchor.get("chunk_index") or 0),
+            context_span={"left": 0, "right": 0, "total_chars": len(snippet)},
         )
-        rows = session.execute(stmt).all()
-        row_map = {int(row.chunk_index): row for row in rows}
+
+    def _build_context_hit(
+        self,
+        anchor: dict[str, Any],
+        row_map: dict[int, Any],
+        target_chars: int,
+    ) -> RetrievedChunk:
+        anchor_index = int(anchor.get("chunk_index") or 0)
         if anchor_index not in row_map:
-            snippet = anchor_text[:target_chars]
-            return RetrievedChunk(
-                chunk_id=str(anchor.get("chunk_id") or ""),
-                document_id=str(anchor.get("document_id") or ""),
-                document_title=str(anchor.get("document_title") or ""),
-                filename=str(anchor.get("filename") or ""),
-                source_type=str(anchor.get("source_type") or "document"),
-                content=snippet,
-                score=float(anchor.get("score") or 0.0),
-                page_number=anchor.get("page_number"),
-                metadata=dict(anchor.get("metadata") or {}),
-                anchor_chunk_id=str(anchor.get("chunk_id") or ""),
-                anchor_chunk_index=anchor_index,
-                context_span={"left": 0, "right": 0, "total_chars": len(snippet)},
-            )
+            return self._build_trimmed_hit(anchor, target_chars)
 
         chosen_indices = {anchor_index}
         total_chars = len(str(row_map[anchor_index].content or "").strip())
@@ -557,3 +411,10 @@ class EmbeddingRetriever:
             anchor_chunk_index=anchor_index,
             context_span={"left": left_added, "right": right_added, "total_chars": len(combined)},
         )
+
+
+def _format_exception(exc: Exception) -> str:
+    text = str(exc).strip()
+    if text:
+        return text
+    return exc.__class__.__name__

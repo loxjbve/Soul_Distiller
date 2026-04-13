@@ -18,7 +18,7 @@ from app.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk, utcnow
 from app.pipeline.chunking import chunk_segments
 from app.pipeline.extractors import ExtractionError, extract_text
-from app.retrieval.vector_store import VectorStoreManager
+from app.retrieval.vector_store import VectorStoreBatch, VectorStoreManager
 from app.schemas import ServiceConfig
 from app.storage import repository
 
@@ -253,7 +253,7 @@ class IngestTaskManager:
             ) or 0
             if total <= 0:
                 return
-            self._update_task(task, stages={"embedding_total": total})
+            self._update_task(task, stages={"embedding_total": total, "embedding_model": resolved_model})
 
             query = select(TextChunk.id, TextChunk.content).where(TextChunk.document_id == task.document_id).order_by(TextChunk.chunk_index)
             # Load all chunks at once; 13MB is ~40MB in RAM which is perfectly safe
@@ -314,29 +314,7 @@ class IngestTaskManager:
                 self._update_task(task, stages={"embedding_processed": processed_count}, progress_percent=new_progress)
 
     def _store_to_vector_db(self, task: IngestTask) -> None:
-        store = self.vector_store_manager.get_store(task.project_id)
-        with self.db.session() as session:
-            chunks = list(session.scalars(
-                select(TextChunk).where(TextChunk.document_id == task.document_id)
-            ))
-            # Only use chunks that have valid embeddings
-            valid_chunks = [c for c in chunks if c.embedding_vector]
-            chunk_ids = [str(c.id) for c in valid_chunks]
-            vectors = [c.embedding_vector for c in valid_chunks]
-            if vectors and chunk_ids:
-                payloads = [
-                    {"content": c.content, "filename": task.filename, "chunk_index": c.chunk_index}
-                    for c in valid_chunks
-                ]
-                # Insert to vector db in safe batches to prevent payload limits / OOM
-                batch_size = 1000
-                for i in range(0, len(chunk_ids), batch_size):
-                    store.add(
-                        ids=chunk_ids[i:i + batch_size],
-                        vectors=vectors[i:i + batch_size],
-                        payloads=payloads[i:i + batch_size]
-                    )
-                self.vector_store_manager.mark_dirty(task.project_id)
+        self._update_task(task, stages={"vector_store_sync": "pending"})
 
     def _finalize_document(self, task: IngestTask) -> None:
         with self._lock:
@@ -355,7 +333,7 @@ class IngestTaskManager:
                 document.ingest_status = "ready"
                 session.commit()
         if should_flush_project:
-            self.vector_store_manager.save_project(task.project_id)
+            self._sync_project_vector_store(task.project_id)
 
     def _mark_document_failed(self, task: IngestTask, error_message: str) -> None:
         with self._lock:
@@ -375,7 +353,15 @@ class IngestTaskManager:
                 document.error_message = error_message
                 session.commit()
         if should_flush_project:
-            self.vector_store_manager.save_project(task.project_id)
+            try:
+                self._sync_project_vector_store(task.project_id)
+            except Exception:
+                import logging
+
+                logging.getLogger(__name__).exception(
+                    "Failed to sync vector store for project %s after document failure.",
+                    task.project_id,
+                )
 
     def _handle_failure(self, task: IngestTask, exc: Exception) -> None:
         import traceback
@@ -395,3 +381,32 @@ class IngestTaskManager:
                     task.stages.update(value)
                 elif hasattr(task, key):
                     setattr(task, key, value)
+
+    def _sync_project_vector_store(self, project_id: str) -> None:
+        batches_by_model: dict[str, VectorStoreBatch] = {}
+        with self.db.session() as session:
+            stmt = (
+                select(
+                    TextChunk.id.label("chunk_id"),
+                    TextChunk.embedding_vector.label("embedding_vector"),
+                    TextChunk.embedding_model.label("embedding_model"),
+                )
+                .join(DocumentRecord, TextChunk.document_id == DocumentRecord.id)
+                .where(
+                    TextChunk.project_id == project_id,
+                    DocumentRecord.ingest_status == "ready",
+                    TextChunk.embedding_vector.is_not(None),
+                    TextChunk.embedding_model.is_not(None),
+                )
+                .order_by(TextChunk.embedding_model.asc(), TextChunk.document_id.asc(), TextChunk.chunk_index.asc())
+            )
+            rows = session.execute(stmt).all()
+        for row in rows:
+            model = str(row.embedding_model or "").strip()
+            vector = row.embedding_vector
+            if not model or not isinstance(vector, (list, tuple)):
+                continue
+            batch = batches_by_model.setdefault(model, VectorStoreBatch(ids=[], vectors=[]))
+            batch.ids.append(str(row.chunk_id))
+            batch.vectors.append(list(vector))
+        self.vector_store_manager.rebuild_project(project_id, batches_by_model)

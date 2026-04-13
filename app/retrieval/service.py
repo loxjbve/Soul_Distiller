@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.orm import Session
 
 from app.llm.client import OpenAICompatibleClient
@@ -45,6 +44,13 @@ class RetrievalService:
             "lexical_candidate_count": 0,
             "lexical_result_count": 0,
             "fallback_reason": "embedding_not_configured" if not embedding_config else None,
+            "vector_store_backend": None,
+            "vector_store_provider": None,
+            "vector_store_model": None,
+            "vector_store_available": False,
+            "vector_store_error": None,
+            "semantic_degraded": False,
+            "degraded_reason": None,
         }
         
         # Query Rewriting
@@ -100,16 +106,19 @@ class RetrievalService:
                 trace.update(embedding_trace)
                 trace["embedding_attempted"] = bool(trace.get("embedding_attempted"))
                 trace["embedding_api_called"] = bool(trace.get("embedding_api_called"))
-                if embedding_results:
+                if embedding_results and not trace.get("semantic_degraded") and trace.get("vector_store_available"):
                     trace["embedding_success"] = True
                 else:
-                    trace["embedding_success"] = bool(trace.get("embedding_api_called"))
-                    trace["fallback_reason"] = str(trace.get("embedding_skip_reason")) or "empty_hybrid_results"
+                    trace["embedding_success"] = False
+                    trace["fallback_reason"] = (
+                        str(trace.get("degraded_reason"))
+                        or str(trace.get("embedding_skip_reason"))
+                        or "empty_hybrid_results"
+                    )
             except Exception as exc:
                 trace["embedding_error"] = _format_exception(exc)
                 trace["fallback_reason"] = "embedding_exception"
                 trace["embedding_success"] = False
-                trace["embedding_api_called"] = True
         else:
             # Fallback lexical only
             lexical_results = self.lexical.search(

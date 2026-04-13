@@ -103,7 +103,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         max_workers=4,
         llm_log_path=str(config.llm_log_path),
     )
-    rechunk_manager = RechunkTaskManager(database, llm_log_path=str(config.llm_log_path), max_workers=1)
+    rechunk_manager = RechunkTaskManager(
+        database,
+        vector_store_manager,
+        llm_log_path=str(config.llm_log_path),
+        max_workers=1,
+    )
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
     _recover_interrupted_analysis_runs(database)
