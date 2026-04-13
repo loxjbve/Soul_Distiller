@@ -310,7 +310,8 @@ class IngestTaskManager:
                         update_session.commit()
                 
                 processed_count += len(ids)
-                self._update_task(task, stages={"embedding_processed": processed_count})
+                new_progress = 70 + int((processed_count / max(total, 1)) * 20)
+                self._update_task(task, stages={"embedding_processed": processed_count}, progress_percent=new_progress)
 
     def _store_to_vector_db(self, task: IngestTask) -> None:
         store = self.vector_store_manager.get_store(task.project_id)
