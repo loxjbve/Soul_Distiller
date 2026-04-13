@@ -55,9 +55,14 @@ body {
     overflow-x: hidden;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 a {
-    color: inherit;
+    color: var(--accent);
     text-decoration: none;
+    transition: all 0.3s;
 }
 
 button,
