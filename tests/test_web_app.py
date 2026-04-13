@@ -110,6 +110,9 @@ def test_end_to_end_project_flow(client, app):
     assert skill_draft["asset_kind"] == "skill"
     assert "System Role" in skill_draft["markdown_text"]
     assert "Alice 本人" in skill_draft["markdown_text"]
+    assert "## 回答工作流" in skill_draft["markdown_text"]
+    assert "## 核心心智模型" in skill_draft["markdown_text"]
+    assert "## 诚实边界" in skill_draft["markdown_text"]
     assert "documents" in skill_draft["json_payload"]
     assert "# 核心身份与精神底色" in skill_draft["markdown_text"]
     assert "# 核心记忆与经历" in skill_draft["markdown_text"]
@@ -680,7 +683,7 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
         elif index == 2:
             content = "# 核心记忆与经历\n\n## 关键记忆\n- 记得旧事细节\n- 长期混迹线上社群\n\n## 长期经历脉络\n这些经历塑造了她对社群秩序和旧账细节的敏感。"
         else:
-            content = "# System Role: 扮演 Alice 本人\n\n## 角色定位\n保持第一人称、边界清楚。\n\n## 高置信领域\n- 线上社群互动\n\n## 世界观与现实约束\n- 不编造未证实经历\n\n## 互动规则\n- 先短句回应，再视情况补充\n\n## 语言指纹\n- 常用短句\n- 语气直接\n\n## 格式约束\n- 少铺垫\n\n## 触发话题\n- 社群旧事\n\n## 禁区\n- 未证实的现实细节\n\n## Few-Shot 切片\n- 行，就这样。\n\n## 冲突备注\n- 无"
+            content = "# System Role: 扮演 Alice 本人\n\n## 角色扮演规则\n- 保持第一人称、边界清楚。\n- 不把自己说成万能助手。\n\n## 回答工作流\n- 先判断是否属于高置信领域。\n- 如果系统提供检索，则先看记忆切片再回答。\n\n## 身份卡\n- 我是谁：Alice 本人，强自我边界的第一人称角色位。\n- 我的现实坐标：长期冷静、克制，但保持警惕。\n\n## 核心心智模型\n- 模型：边界先于热情。证据：不编造未证实经历。场景：被追问隐私或现实细节时。局限：面对极熟的人会松动。\n\n## 决策启发式\n- 快捷规则：先短句回应，再决定是否展开。\n\n## 高置信领域\n- 线上社群互动\n\n## 表达 DNA\n- 常用短句\n- 语气直接\n- 节奏偏向先表态再补理由\n\n## 人物时间线\n- 长期混迹线上社群\n- 记得旧事细节\n\n## 价值观与反模式\n- 追求什么：说话算数，边界清楚。\n- 拒绝什么：不编造未证实经历。\n- 还没想清楚的：想保持距离，但又会记住社群旧事。\n\n## 智识谱系\n- 文化母体：社群旧事和圈层经验。\n\n## 诚实边界\n- 未证实的现实细节不展开。\n\n## Few-Shot 切片\n### 语气切片 1\n- Context: 社群旧事\n- Reply: 行，就这样。\n\n## 调研来源\n- 语言风格：2 条证据切片，主要锚定短句和直接语气。\n\n## 冲突备注\n- 无"
             if callable(stream_handler):
                 stream_handler(content)
         return ChatCompletionResult(
@@ -699,6 +702,8 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
     assert len(llm_calls) == 3
     assert retrieval_queries == ["性格特质 精神状态 自我认知 核心身份", "核心记忆 经历 过往重要事件"]
     assert documents["skill"]["markdown"].startswith("# System Role:")
+    assert "## 回答工作流" in documents["skill"]["markdown"]
+    assert "## 调研来源" in documents["skill"]["markdown"]
     assert documents["personality"]["markdown"].startswith("# 核心身份与精神底色")
     assert documents["memories"]["markdown"].startswith("# 核心记忆与经历")
     assert documents["merge"]["markdown"] == payload["markdown_text"]

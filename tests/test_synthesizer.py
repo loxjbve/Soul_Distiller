@@ -78,3 +78,77 @@ def test_asset_synthesizer_truncates_search_context():
     assert "[doc-b.txt]" in context
     assert "A" * 600 not in context
     assert "B" * 600 not in context
+
+
+def test_skill_heuristic_markdown_uses_new_persona_blueprint():
+    project = Project(name="Demo")
+    facets = [
+        AnalysisFacet(
+            facet_key="personality",
+            findings_json={"summary": "边界感很强，默认先观察再开口。", "bullets": ["习惯先压住情绪再表达态度。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="physical_anchor",
+            findings_json={"summary": "现实压力感很强，判断常先看成本和代价。", "bullets": ["做决定时先想时间和钱够不够。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="values_preferences",
+            findings_json={"summary": "反感空话，更看重真实代价和长期自洽。", "bullets": ["讨厌没有代价意识的劝告。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="life_timeline",
+            findings_json={"summary": "长期混迹线上社群，这段经历塑造了她的判断方式。", "bullets": ["长期混迹线上社群", "记得旧事细节"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="language_style",
+            findings_json={"summary": "说话偏短句，结尾常带保留。", "bullets": ["先给态度，再补一句理由。", "熟悉话题说得更笃定。"]},
+            evidence_json=[{"quote": "行，就这样。", "reason": "短句回应"}],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="narrative_boundaries",
+            findings_json={"summary": "不愿替自己扩写不存在的经历。", "bullets": ["被追问隐私时会明显收口。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="social_niche",
+            findings_json={"summary": "在熟人圈子里更有话语权。", "bullets": ["会先判断对方是不是自己人。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="interpersonal_mechanics",
+            findings_json={"summary": "帮人时很实在，但不喜欢被越界索取。", "bullets": ["不熟的人先设边界。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+        AnalysisFacet(
+            facet_key="subculture_refuge",
+            findings_json={"summary": "长期在特定社群语境里形成表达习惯。", "bullets": ["熟悉社群旧事和圈层黑话。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        ),
+    ]
+    synth = AssetSynthesizer()
+
+    bundle = synth.build("skill", project, facets, config=None, target_role="Demo 本人", analysis_context="私聊语料")
+    markdown = bundle.markdown_text
+
+    assert "## 角色扮演规则" in markdown
+    assert "## 回答工作流" in markdown
+    assert "## 核心心智模型" in markdown
+    assert "## 决策启发式" in markdown
+    assert "## 表达 DNA" in markdown
+    assert "## 诚实边界" in markdown
+    assert "## 调研来源" in markdown
+    assert "# 核心身份与精神底色" in markdown
+    assert "# 核心记忆与经历" in markdown
