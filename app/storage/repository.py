@@ -413,6 +413,13 @@ def get_skill_draft(session: Session, draft_id: str) -> SkillDraft | None:
     return get_asset_draft(session, draft_id, asset_kind="skill")
 
 
+def get_asset_version(session: Session, version_id: str, *, asset_kind: str | None = None) -> SkillVersion | None:
+    stmt = select(SkillVersion).where(SkillVersion.id == version_id)
+    if asset_kind:
+        stmt = stmt.where(SkillVersion.asset_kind == asset_kind)
+    return session.scalar(stmt)
+
+
 def list_asset_versions(session: Session, project_id: str, *, asset_kind: str) -> list[SkillVersion]:
     stmt = (
         select(SkillVersion)

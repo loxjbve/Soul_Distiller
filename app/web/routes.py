@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import io
 import json
+import re
 import shutil
 import time
+import zipfile
 from queue import Empty
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 import asyncio
@@ -63,6 +67,13 @@ ANALYSIS_SUMMARY_PREVIEW_LIMIT = 420
 ANALYSIS_LIVE_TEXT_PREVIEW_LIMIT = 3200
 ANALYSIS_RESPONSE_TEXT_PREVIEW_LIMIT = 2400
 ANALYSIS_REQUEST_PAYLOAD_PREVIEW_LIMIT = 1600
+SKILL_DOCUMENT_ORDER = ("skill", "personality", "memories", "merge")
+SKILL_DOCUMENT_FILENAMES = {
+    "skill": "Skill.md",
+    "personality": "personality.md",
+    "memories": "memories.md",
+    "merge": "Skill_merge.md",
+}
 
 
 class ProjectCreatePayload(BaseModel):
@@ -331,10 +342,6 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
 
 @router.get("/projects/{project_id}/analysis/export")
 def export_analysis_zip(request: Request, project_id: str, session: SessionDep, run_id: str | None = Query(default=None)):
-    import io
-    import zipfile
-    from fastapi.responses import StreamingResponse
-    
     project = _ensure_project(session, project_id)
     run = _resolve_run(session, project_id, run_id)
     if not run:
@@ -359,7 +366,7 @@ def export_analysis_zip(request: Request, project_id: str, session: SessionDep, 
     return StreamingResponse(
         iter([zip_buffer.getvalue()]), 
         media_type="application/zip",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers=_download_headers(filename, fallback_name=f"analysis_export_{run.id[:8]}.zip")
     )
 
 
@@ -393,6 +400,68 @@ def assets_page(
             draft_json_pretty=json.dumps(draft.json_payload, ensure_ascii=False, indent=2) if draft else "{}",
         ),
     )
+
+
+@router.get("/api/projects/{project_id}/assets/{draft_id}/exports/{document_key}")
+def download_asset_draft_document_api(project_id: str, draft_id: str, document_key: str, session: SessionDep):
+    draft = repository.get_asset_draft(session, draft_id)
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    if document_key == "bundle":
+        filename, payload = _build_skill_export_zip(
+            draft.asset_kind,
+            draft.json_payload,
+            draft.markdown_text,
+            base_name=f"skill_bundle_draft_{draft.id[:8]}",
+        )
+        return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
+    filename, content = _resolve_skill_export_document(draft.asset_kind, draft.json_payload, draft.markdown_text, document_key)
+    return _markdown_download_response(filename, content)
+
+
+@router.get("/api/projects/{project_id}/assets/{draft_id}/exports/bundle")
+def download_asset_draft_bundle_api(project_id: str, draft_id: str, session: SessionDep):
+    draft = repository.get_asset_draft(session, draft_id)
+    if not draft or draft.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Draft not found.")
+    filename, payload = _build_skill_export_zip(
+        draft.asset_kind,
+        draft.json_payload,
+        draft.markdown_text,
+        base_name=f"skill_bundle_draft_{draft.id[:8]}",
+    )
+    return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
+
+
+@router.get("/api/projects/{project_id}/asset-versions/{version_id}/exports/{document_key}")
+def download_asset_version_document_api(project_id: str, version_id: str, document_key: str, session: SessionDep):
+    version = repository.get_asset_version(session, version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Asset version not found.")
+    if document_key == "bundle":
+        filename, payload = _build_skill_export_zip(
+            version.asset_kind,
+            version.json_payload,
+            version.markdown_text,
+            base_name=f"skill_bundle_v{version.version_number}",
+        )
+        return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
+    filename, content = _resolve_skill_export_document(version.asset_kind, version.json_payload, version.markdown_text, document_key)
+    return _markdown_download_response(filename, content)
+
+
+@router.get("/api/projects/{project_id}/asset-versions/{version_id}/exports/bundle")
+def download_asset_version_bundle_api(project_id: str, version_id: str, session: SessionDep):
+    version = repository.get_asset_version(session, version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Asset version not found.")
+    filename, payload = _build_skill_export_zip(
+        version.asset_kind,
+        version.json_payload,
+        version.markdown_text,
+        base_name=f"skill_bundle_v{version.version_number}",
+    )
+    return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
 
 
 @router.get("/projects/{project_id}/skill", response_class=HTMLResponse)
@@ -429,9 +498,16 @@ def save_asset_draft_form(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
+    payload_data = json.loads(json_payload)
+    normalized_payload, normalized_prompt = _normalize_saved_asset_content(
+        draft.asset_kind,
+        payload_data,
+        markdown_text,
+        (prompt_text or system_prompt or "").strip(),
+    )
     draft.markdown_text = markdown_text
-    draft.json_payload = json.loads(json_payload)
-    draft.system_prompt = (prompt_text or system_prompt or "").strip()
+    draft.json_payload = normalized_payload
+    draft.system_prompt = normalized_prompt
     draft.notes = notes
     _persist_asset_files(
         request,
@@ -491,9 +567,15 @@ def save_skill_draft_form(
     draft = repository.get_skill_draft(session, draft_id)
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
+    normalized_payload, normalized_prompt = _normalize_saved_asset_content(
+        "skill",
+        json.loads(json_payload),
+        markdown_text,
+        system_prompt,
+    )
     draft.markdown_text = markdown_text
-    draft.json_payload = json.loads(json_payload)
-    draft.system_prompt = system_prompt
+    draft.json_payload = normalized_payload
+    draft.system_prompt = normalized_prompt
     draft.notes = notes
     _persist_asset_files(request, project_id, "skill", f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
     return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill", status_code=303)
@@ -1100,9 +1182,15 @@ def save_asset_api(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到资产草稿。")
+    normalized_payload, normalized_prompt = _normalize_saved_asset_content(
+        draft.asset_kind,
+        payload.json_payload,
+        payload.markdown_text,
+        payload.prompt_text,
+    )
     draft.markdown_text = payload.markdown_text
-    draft.json_payload = payload.json_payload
-    draft.system_prompt = payload.prompt_text
+    draft.json_payload = normalized_payload
+    draft.system_prompt = normalized_prompt
     draft.notes = payload.notes
     _persist_asset_files(
         request,
@@ -1577,6 +1665,160 @@ def _persist_asset_files(
     (asset_dir / f"{base_name}.md").write_text(markdown_text, encoding="utf-8")
     (asset_dir / f"{base_name}.json").write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (asset_dir / f"{base_name}.prompt.txt").write_text(prompt_text, encoding="utf-8")
+    if asset_kind == "skill":
+        for key, document in _skill_documents_for_export(asset_kind, json_payload, markdown_text).items():
+            filename = document["filename"]
+            content = document["markdown"]
+            (asset_dir / f"{base_name}.{filename}").write_text(content, encoding="utf-8")
+
+
+def _download_headers(filename: str, *, fallback_name: str | None = None) -> dict[str, str]:
+    ascii_name = _safe_ascii_filename(fallback_name or filename)
+    return {
+        "Content-Disposition": f"attachment; filename={ascii_name}; filename*=UTF-8''{quote(filename)}"
+    }
+
+
+def _safe_ascii_filename(value: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    candidate = candidate.strip("._")
+    return candidate or "download"
+
+
+def _markdown_download_response(filename: str, content: str) -> StreamingResponse:
+    return StreamingResponse(
+        iter([(content or "").encode("utf-8")]),
+        media_type="text/markdown; charset=utf-8",
+        headers=_download_headers(filename),
+    )
+
+
+def _skill_documents_for_export(
+    asset_kind: str,
+    json_payload: dict[str, Any] | None,
+    markdown_text: str,
+) -> dict[str, dict[str, str]]:
+    if asset_kind != "skill":
+        raise HTTPException(status_code=400, detail="Only skill assets support split document export.")
+
+    payload = json_payload or {}
+    documents = payload.get("documents") if isinstance(payload, dict) else None
+    export_docs: dict[str, dict[str, str]] = {}
+
+    if isinstance(documents, dict):
+        for key in SKILL_DOCUMENT_ORDER:
+            document = documents.get(key) or {}
+            if isinstance(document, dict):
+                export_docs[key] = {
+                    "filename": str(document.get("filename") or SKILL_DOCUMENT_FILENAMES[key]),
+                    "markdown": str(document.get("markdown") or "").strip(),
+                }
+
+    if export_docs:
+        for key in SKILL_DOCUMENT_ORDER:
+            export_docs.setdefault(
+                key,
+                {"filename": SKILL_DOCUMENT_FILENAMES[key], "markdown": ""},
+            )
+        merge_markdown = str(markdown_text or export_docs.get("merge", {}).get("markdown") or "").strip()
+        if merge_markdown:
+            export_docs["merge"] = {
+                "filename": export_docs.get("merge", {}).get("filename", SKILL_DOCUMENT_FILENAMES["merge"]),
+                "markdown": merge_markdown,
+            }
+        return export_docs
+
+    core_identity = str(payload.get("core_identity") or "").strip()
+    mental_state = str(payload.get("mental_state") or "").strip()
+    memories = [str(item).strip() for item in (payload.get("memories") or []) if str(item).strip()]
+    personality_lines = [
+        "# 核心身份与精神底色",
+        "",
+        "## 核心身份",
+        core_identity or "旧版 Skill 未提供可拆分的人格文档，导出时仅保留现有身份摘要。",
+        "",
+        "## 精神底色",
+        mental_state or "旧版 Skill 未提供独立精神底色描述。",
+    ]
+    memories_lines = [
+        "# 核心记忆与经历",
+        "",
+        "## 关键记忆",
+        *(f"- {item}" for item in memories),
+        "",
+        "## 长期经历脉络",
+        "旧版 Skill 未保存独立记忆文档，导出时仅从已有记忆列表回填。",
+    ]
+    if not memories:
+        memories_lines.insert(3, "- 旧版 Skill 未保存可拆分的记忆条目。")
+    merge_markdown = str(markdown_text or "").strip()
+    return {
+        "skill": {
+            "filename": SKILL_DOCUMENT_FILENAMES["skill"],
+            "markdown": merge_markdown,
+        },
+        "personality": {
+            "filename": SKILL_DOCUMENT_FILENAMES["personality"],
+            "markdown": "\n".join(personality_lines).strip(),
+        },
+        "memories": {
+            "filename": SKILL_DOCUMENT_FILENAMES["memories"],
+            "markdown": "\n".join(memories_lines).strip(),
+        },
+        "merge": {
+            "filename": SKILL_DOCUMENT_FILENAMES["merge"],
+            "markdown": merge_markdown,
+        },
+    }
+
+
+def _resolve_skill_export_document(
+    asset_kind: str,
+    json_payload: dict[str, Any] | None,
+    markdown_text: str,
+    document_key: str,
+) -> tuple[str, str]:
+    documents = _skill_documents_for_export(asset_kind, json_payload, markdown_text)
+    if document_key not in documents:
+        raise HTTPException(status_code=404, detail="Document export not found.")
+    document = documents[document_key]
+    return document["filename"], document["markdown"]
+
+
+def _build_skill_export_zip(
+    asset_kind: str,
+    json_payload: dict[str, Any] | None,
+    markdown_text: str,
+    *,
+    base_name: str,
+) -> tuple[str, bytes]:
+    documents = _skill_documents_for_export(asset_kind, json_payload, markdown_text)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for key in SKILL_DOCUMENT_ORDER:
+            document = documents[key]
+            zip_file.writestr(document["filename"], document["markdown"])
+    buffer.seek(0)
+    return f"{base_name}.zip", buffer.getvalue()
+
+
+def _normalize_saved_asset_content(
+    asset_kind: str,
+    json_payload: dict[str, Any],
+    markdown_text: str,
+    prompt_text: str,
+) -> tuple[dict[str, Any], str]:
+    if asset_kind != "skill":
+        return json_payload, prompt_text
+
+    payload = dict(json_payload or {})
+    documents = dict(payload.get("documents") or {})
+    merge_document = dict(documents.get("merge") or {})
+    merge_document["filename"] = str(merge_document.get("filename") or SKILL_DOCUMENT_FILENAMES["merge"])
+    merge_document["markdown"] = markdown_text
+    documents["merge"] = merge_document
+    payload["documents"] = documents
+    return payload, markdown_text
 
 
 def _ordered_facets(facets: list[AnalysisFacet]) -> list[AnalysisFacet]:
