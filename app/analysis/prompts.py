@@ -6,6 +6,7 @@ from app.analysis.facets import FacetDefinition
 
 ASSET_KIND_LABELS = {
     "skill": "角色技能",
+    "cc_skill": "Claude Code Skill",
     "profile_report": "用户剖析报告",
 }
 
@@ -134,6 +135,57 @@ def build_memories_messages(
     ]
 
 
+def build_cc_skill_messages(
+    project_id: str,
+    project_name: str,
+    facet_dump: str,
+    *,
+    personality_markdown: str,
+    memories_markdown: str,
+    target_role: str | None,
+    analysis_context: str | None,
+) -> list[dict[str, str]]:
+    context_block = _context_block(target_role, analysis_context)
+    fallback_slug = f"roleplay-{(project_id or '')[:8] or 'unknown'}"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 Claude Code 自定义 Skill 的编写器。\n"
+                "你只能输出一份可直接保存为 SKILL.md 的 Markdown 文档。\n"
+                "不要输出 JSON，不要解释，不要使用代码块。\n"
+                "文档必须以 YAML frontmatter 开头（--- 包裹），至少包含 name 和 description 字段。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"项目：{project_name}\n"
+                f"project_id：{project_id}\n"
+                f"{context_block}\n\n"
+                "请生成 Claude Code 的 SKILL.md，必须满足：\n"
+                "1) 文件开头必须是 YAML frontmatter：\n"
+                "---\n"
+                "name: <kebab-case>\n"
+                "description: <一句话描述>\n"
+                "---\n"
+                "2) name 规则（必须自检并确保通过）：\n"
+                "- 只能包含小写字母/数字/短横线（kebab-case），不得出现下划线、空格、中文。\n"
+                "- 长度 <= 64。\n"
+                "- 不得包含保留词：claude、anthropic（大小写不敏感）。\n"
+                f"- 若无法可靠生成合法 name（例如中文为主），使用兜底：{fallback_slug}\n"
+                "3) description：一句话说明这个 Skill 做什么、什么时候用（例如“当需要以某角色语气写作/复盘/决策时”）。\n"
+                "4) 正文写成可执行规则，至少包含：角色扮演规则、回答工作流（SOP）、高置信领域、诚实边界。\n"
+                "5) 正文中必须用相对路径提示按需阅读：references/personality.md 与 references/memories.md。\n\n"
+                "附属文档（可引用但不要把全文照抄进正文）：\n"
+                f"[references/personality.md]\n{personality_markdown.strip()}\n\n"
+                f"[references/memories.md]\n{memories_markdown.strip()}\n\n"
+                f"十维分析摘要：\n{facet_dump}"
+            ),
+        },
+    ]
+
+
 def build_asset_messages(
     asset_kind: str,
     project_name: str,
@@ -190,6 +242,16 @@ def build_asset_messages(
                 ),
             },
         ]
+    if asset_kind == "cc_skill":
+        return build_cc_skill_messages(
+            "unknown",
+            project_name,
+            facet_dump,
+            personality_markdown="",
+            memories_markdown="",
+            target_role=target_role,
+            analysis_context=analysis_context,
+        )
     return [
         {
             "role": "system",

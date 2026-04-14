@@ -1,0 +1,8 @@
+- [x] 新增资产类型 `cc_skill` 可在 API 与 UI 中被识别与选择
+- [x] 生成 `cc_skill` 时会产出并落盘 `SKILL.md`（必需），且可查看与保存草稿
+- [x] `SKILL.md` 顶部 YAML frontmatter 至少包含 `name` 与 `description`，且符合 kebab-case / 长度 / 保留词约束
+- [x] 当项目名/角色名为中文时，`name` 仍可稳定生成（兜底 slug 可重复、可预测）
+- [x] `references/personality.md` 与 `references/memories.md` 默认生成（有检索时用检索片段增强；无检索时保守生成）
+- [x] `SKILL.md` 正文引用 `references/personality.md` 与 `references/memories.md`（相对路径），并提供可执行的扮演规则与回答 SOP
+- [x] 现有 `skill` 与 `profile_report` 输出格式与逻辑不受影响
+- [x] 测试通过（包含 cc_skill 的单测与端到端生成保存流程）
