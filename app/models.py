@@ -33,6 +33,9 @@ class Project(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     mode: Mapped[str] = mapped_column(String(32), default="group")
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    lifecycle_state: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    delete_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deletion_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     documents: Mapped[list["DocumentRecord"]] = relationship(back_populates="project")
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(back_populates="project")

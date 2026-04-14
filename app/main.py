@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 import os
-from pathlib import Path
 import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -23,6 +23,7 @@ from app.db import Database
 from app.models import utcnow
 from app.pipeline.ingest import DocumentIngestService
 from app.pipeline.ingest_task import IngestTaskManager
+from app.pipeline.project_deletion import ProjectDeletionManager
 from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
@@ -37,7 +38,7 @@ def _recover_interrupted_analysis_runs(database: Database) -> None:
         active_runs = repository.list_active_analysis_runs(session)
         for run in active_runs:
             summary = dict(run.summary_json or {})
-            summary["current_stage"] = "服务重启，旧的后台任务已终止"
+            summary["current_stage"] = "Service restarted and the previous background analysis task was stopped."
             summary["current_facet"] = None
             summary["finished_at"] = utcnow().isoformat()
             run.summary_json = summary
@@ -48,28 +49,7 @@ def _recover_interrupted_analysis_runs(database: Database) -> None:
                 run.id,
                 event_type="lifecycle",
                 level="warning",
-                message="检测到服务重启，之前未完成的分析任务已标记为失败。",
-                payload_json={"recovered_after_restart": True},
-            )
-
-
-def _recover_interrupted_analysis_runs(database: Database) -> None:
-    with database.session() as session:
-        active_runs = repository.list_active_analysis_runs(session)
-        for run in active_runs:
-            summary = dict(run.summary_json or {})
-            summary["current_stage"] = "服务重启，旧的后台任务已终止"
-            summary["current_facet"] = None
-            summary["finished_at"] = utcnow().isoformat()
-            run.summary_json = summary
-            run.status = "failed"
-            run.finished_at = utcnow()
-            repository.add_analysis_event(
-                session,
-                run.id,
-                event_type="lifecycle",
-                level="warning",
-                message="检测到服务重启，之前未完成的分析任务已标记为失败。",
+                message="Detected a service restart. The unfinished analysis task was marked as failed.",
                 payload_json={"recovered_after_restart": True},
             )
 
@@ -79,6 +59,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     config.ensure_dirs()
     database = Database(config)
     database.create_all()
+
     vector_store_manager = VectorStoreManager(config.data_dir)
     retrieval = RetrievalService(vector_store=vector_store_manager)
     analysis_stream_hub = AnalysisStreamHub()
@@ -111,13 +92,25 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
+    project_deletion_manager = ProjectDeletionManager(
+        db=database,
+        config=config,
+        vector_store_manager=vector_store_manager,
+        ingest_task_manager=ingest_task_manager,
+        rechunk_manager=rechunk_manager,
+        analysis_runner=analysis_runner,
+        preprocess_service=preprocess_service,
+    )
+
     _recover_interrupted_analysis_runs(database)
+    project_deletion_manager.resume_pending_deletions()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             yield
         finally:
+            project_deletion_manager.shutdown()
             analysis_runner.shutdown()
             preprocess_service.shutdown()
             rechunk_manager.shutdown()
@@ -139,10 +132,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.asset_synthesizer = asset_synthesizer
     app.state.skill_synthesizer = asset_synthesizer
     app.state.preprocess_service = preprocess_service
+    app.state.project_deletion_manager = project_deletion_manager
+
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.include_router(router)
-
     return app
 
 

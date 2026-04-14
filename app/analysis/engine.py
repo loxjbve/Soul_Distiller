@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import traceback
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from time import perf_counter
@@ -43,6 +44,10 @@ GLOBAL_PERSONA_CARD_LABELS = (
     "诚实边界",
     "智识谱系",
 )
+
+
+class AnalysisCancelledError(RuntimeError):
+    pass
 
 
 def _parse_confidence(val: Any, default: float) -> float:
@@ -258,6 +263,7 @@ class AnalysisEngine:
         use_processes: bool = True,
         facet_max_workers: int = DEFAULT_ANALYSIS_CONCURRENCY,
         stream_hub: AnalysisStreamHub | None = None,
+        cancel_checker: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.retrieval = retrieval or RetrievalService()
         self.db = db
@@ -265,6 +271,10 @@ class AnalysisEngine:
         self.use_processes = use_processes
         self.facet_max_workers = _normalize_concurrency(facet_max_workers)
         self.stream_hub = stream_hub
+        self.cancel_checker = cancel_checker
+
+    def set_cancel_checker(self, cancel_checker: Callable[[str, str], bool] | None) -> None:
+        self.cancel_checker = cancel_checker
 
     def create_run(
         self,
@@ -362,6 +372,7 @@ class AnalysisEngine:
         project = repository.get_project(session, run.project_id)
         if not project:
             raise ValueError("Project not found.")
+        self._ensure_run_active(run.id, run.project_id)
 
         chat_config = repository.get_service_config(session, "chat_service")
         embedding_config = repository.get_service_config(session, "embedding_service")
@@ -386,6 +397,7 @@ class AnalysisEngine:
             payload_json={"llm_enabled": bool(chat_config), "embedding_enabled": bool(embedding_config)},
         )
         self._persist_progress(session, run.id)
+        self._ensure_run_active(run.id, run.project_id)
 
         if self.use_processes:
             results = self._run_parallel_processes(
@@ -404,6 +416,7 @@ class AnalysisEngine:
                 embedding_config=embedding_config,
             )
 
+        self._ensure_run_active(run.id, run.project_id)
         summary = dict(run.summary_json or {})
         total_processed = int(summary.get("completed_facets", 0)) + int(summary.get("failed_facets", 0))
         run.finished_at = utcnow()
@@ -434,6 +447,7 @@ class AnalysisEngine:
         project = repository.get_project(session, project_id)
         if not run or not project:
             raise ValueError("Analysis run not found.")
+        self._ensure_run_active(run.id, run.project_id)
         facet_def = next((item for item in FACETS if item.key == facet_key), None)
         if not facet_def:
             raise ValueError("Unknown facet.")
@@ -459,6 +473,7 @@ class AnalysisEngine:
             embedding_config=embedding_config,
             llm_payload=llm_payload,
         )
+        self._ensure_run_active(run.id, run.project_id)
         if not prepared:
             run.finished_at = utcnow()
             summary = dict(run.summary_json or {})
@@ -492,6 +507,7 @@ class AnalysisEngine:
                 self._build_stream_callback(run.id, facet_def),
             )
         )
+        self._ensure_run_active(run.id, run.project_id)
         self._apply_facet_result(session, run, facet_def, retrieval_mode, retrieval_trace, len(hits), result)
         run.finished_at = utcnow()
         summary = dict(run.summary_json or {})
@@ -520,7 +536,8 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         run_concurrency = self._resolve_run_concurrency(run)
-        with ProcessPoolExecutor(max_workers=min(len(FACETS), run_concurrency)) as executor:
+        executor = ProcessPoolExecutor(max_workers=min(len(FACETS), run_concurrency))
+        try:
             return self._execute_facets_with_executor(
                 session,
                 run,
@@ -529,6 +546,11 @@ class AnalysisEngine:
                 embedding_config=embedding_config,
                 executor=executor,
             )
+        except AnalysisCancelledError:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     def _run_parallel_threads(
         self,
@@ -540,10 +562,11 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         run_concurrency = self._resolve_run_concurrency(run)
-        with ThreadPoolExecutor(
+        executor = ThreadPoolExecutor(
             max_workers=min(len(FACETS), run_concurrency),
             thread_name_prefix="facet-thread",
-        ) as executor:
+        )
+        try:
             return self._execute_facets_with_executor(
                 session,
                 run,
@@ -552,6 +575,11 @@ class AnalysisEngine:
                 embedding_config=embedding_config,
                 executor=executor,
             )
+        except AnalysisCancelledError:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     def _execute_facets_with_executor(
         self,
@@ -568,54 +596,64 @@ class AnalysisEngine:
         run_concurrency = self._resolve_run_concurrency(run)
         results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
 
-        while pending_facets or future_map:
-            while pending_facets and len(future_map) < run_concurrency:
-                facet = pending_facets.pop(0)
-                self._mark_facet_preparing(session, run, facet)
-                prepared = self._prepare_facet_execution(
-                    session,
-                    run,
-                    facet,
-                    embedding_config=embedding_config,
-                    llm_payload=llm_payload,
-                )
-                if not prepared:
+        try:
+            while pending_facets or future_map:
+                self._ensure_run_active(run.id, run.project_id)
+                while pending_facets and len(future_map) < run_concurrency:
+                    self._ensure_run_active(run.id, run.project_id)
+                    facet = pending_facets.pop(0)
+                    self._mark_facet_preparing(session, run, facet)
+                    prepared = self._prepare_facet_execution(
+                        session,
+                        run,
+                        facet,
+                        embedding_config=embedding_config,
+                        llm_payload=llm_payload,
+                    )
+                    self._ensure_run_active(run.id, run.project_id)
+                    if not prepared:
+                        continue
+
+                    hits, retrieval_mode, retrieval_trace = prepared
+                    self._mark_facet_running(
+                        session,
+                        run,
+                        facet,
+                        retrieval_mode,
+                        retrieval_trace,
+                        len(hits),
+                        llm_payload=llm_payload,
+                    )
+                    future = self._submit_facet_work(
+                        executor,
+                        run,
+                        facet,
+                        project_name,
+                        hits,
+                        llm_payload=llm_payload,
+                    )
+                    future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
+
+                if not future_map:
                     continue
 
-                hits, retrieval_mode, retrieval_trace = prepared
-                self._mark_facet_running(
-                    session,
-                    run,
-                    facet,
-                    retrieval_mode,
-                    retrieval_trace,
-                    len(hits),
-                    llm_payload=llm_payload,
-                )
-                future = self._submit_facet_work(
-                    executor,
-                    run,
-                    facet,
-                    project_name,
-                    hits,
-                    llm_payload=llm_payload,
-                )
-                future_map[future] = (facet, retrieval_mode, retrieval_trace, len(hits))
+                completed_futures, _ = wait(list(future_map.keys()), timeout=0.25, return_when=FIRST_COMPLETED)
+                self._ensure_run_active(run.id, run.project_id)
+                for future in completed_futures:
+                    facet, retrieval_mode, retrieval_trace, hit_count = future_map.pop(future)
+                    self._ensure_run_active(run.id, run.project_id)
+                    try:
+                        result = FacetResult(**future.result())
+                    except Exception as exc:
+                        result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
+                    self._ensure_run_active(run.id, run.project_id)
+                    self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
+                    results.append((facet, retrieval_mode, hit_count, result))
 
-            if not future_map:
-                continue
-
-            completed_futures, _ = wait(list(future_map.keys()), return_when=FIRST_COMPLETED)
-            for future in completed_futures:
-                facet, retrieval_mode, retrieval_trace, hit_count = future_map.pop(future)
-                try:
-                    result = FacetResult(**future.result())
-                except Exception as exc:
-                    result = self._build_failed_facet_result(facet, exc, llm_called=bool(llm_payload))
-                self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
-                results.append((facet, retrieval_mode, hit_count, result))
-
-        return results
+            return results
+        finally:
+            for future in future_map:
+                future.cancel()
 
     def _submit_facet_work(
         self,
@@ -1349,6 +1387,8 @@ class AnalysisEngine:
                     run = repository.get_analysis_run(session, run_id)
                     if not run:
                         return True
+                    if self._is_run_cancelled(run.id, run.project_id):
+                        return True
                     facet_record = repository.get_facet(session, run_id, facet.key)
                     if facet_record:
                         findings = dict(facet_record.findings_json or {})
@@ -1506,6 +1546,18 @@ class AnalysisEngine:
         session.commit()
         if run_id and self.stream_hub:
             self.stream_hub.publish(run_id)
+
+    def _is_run_cancelled(self, run_id: str, project_id: str) -> bool:
+        if not self.cancel_checker:
+            return False
+        try:
+            return bool(self.cancel_checker(run_id, project_id))
+        except Exception:
+            return False
+
+    def _ensure_run_active(self, run_id: str, project_id: str) -> None:
+        if self._is_run_cancelled(run_id, project_id):
+            raise AnalysisCancelledError("Analysis run cancelled.")
 
 
 def _analyze_with_llm(

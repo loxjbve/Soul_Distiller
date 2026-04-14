@@ -23,6 +23,10 @@ from app.models import (
 )
 from app.schemas import ServiceConfig
 
+PROJECT_LIFECYCLE_ACTIVE = "active"
+PROJECT_LIFECYCLE_DELETING = "deleting"
+PROJECT_LIFECYCLE_DELETE_FAILED = "delete_failed"
+
 
 def list_projects(session: Session) -> list[Project]:
     stmt = select(Project).where(Project.parent_id.is_(None)).order_by(desc(Project.updated_at))
@@ -67,6 +71,71 @@ def get_project(session: Session, project_id: str) -> Project | None:
     return session.scalar(stmt)
 
 
+def get_projects(session: Session, project_ids: list[str]) -> list[Project]:
+    if not project_ids:
+        return []
+    stmt = select(Project).where(Project.id.in_(project_ids))
+    return list(session.scalars(stmt))
+
+
+def list_projects_by_lifecycle(session: Session, lifecycle_state: str) -> list[Project]:
+    stmt = (
+        select(Project)
+        .where(Project.lifecycle_state == lifecycle_state)
+        .order_by(desc(Project.updated_at))
+    )
+    return list(session.scalars(stmt))
+
+
+def get_project_tree_ids(session: Session, project_id: str) -> list[str]:
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    frontier = [project_id]
+    while frontier:
+        next_frontier: list[str] = []
+        for current_id in frontier:
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            ordered_ids.append(current_id)
+        child_rows = session.scalars(select(Project.id).where(Project.parent_id.in_(frontier))).all()
+        for child_id in child_rows:
+            if child_id not in seen:
+                next_frontier.append(child_id)
+        frontier = next_frontier
+    return ordered_ids
+
+
+def mark_projects_for_deletion(session: Session, project_ids: list[str]) -> None:
+    if not project_ids:
+        return
+    requested_at = utcnow()
+    for project in get_projects(session, project_ids):
+        project.lifecycle_state = PROJECT_LIFECYCLE_DELETING
+        project.delete_requested_at = requested_at
+        project.deletion_error = None
+    session.flush()
+
+
+def mark_projects_delete_failed(session: Session, project_ids: list[str], *, error: str) -> None:
+    if not project_ids:
+        return
+    for project in get_projects(session, project_ids):
+        project.lifecycle_state = PROJECT_LIFECYCLE_DELETE_FAILED
+        project.deletion_error = error
+    session.flush()
+
+
+def restore_projects_active(session: Session, project_ids: list[str]) -> None:
+    if not project_ids:
+        return
+    for project in get_projects(session, project_ids):
+        project.lifecycle_state = PROJECT_LIFECYCLE_ACTIVE
+        project.deletion_error = None
+        project.delete_requested_at = None
+    session.flush()
+
+
 def delete_project(session: Session, project_id: str) -> None:
     session.execute(delete(Project).where(Project.id == project_id))
 
@@ -83,6 +152,114 @@ def delete_project_cascade(session: Session, project_id: str) -> None:
     session.execute(delete(SkillVersion).where(SkillVersion.project_id == project_id))
     session.execute(delete(ChatSession).where(ChatSession.project_id == project_id))
     session.execute(delete(Project).where(Project.id == project_id))
+
+
+def list_analysis_run_ids_for_projects(session: Session, project_ids: list[str], *, limit: int) -> list[str]:
+    if not project_ids or limit <= 0:
+        return []
+    stmt = select(AnalysisRun.id).where(AnalysisRun.project_id.in_(project_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def list_analysis_facet_ids_for_run_ids(session: Session, run_ids: list[str], *, limit: int) -> list[str]:
+    if not run_ids or limit <= 0:
+        return []
+    stmt = select(AnalysisFacet.id).where(AnalysisFacet.run_id.in_(run_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def list_analysis_event_ids_for_run_ids(session: Session, run_ids: list[str], *, limit: int) -> list[str]:
+    if not run_ids or limit <= 0:
+        return []
+    stmt = select(AnalysisEvent.id).where(AnalysisEvent.run_id.in_(run_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def list_chat_session_ids_for_projects(session: Session, project_ids: list[str], *, limit: int) -> list[str]:
+    if not project_ids or limit <= 0:
+        return []
+    stmt = select(ChatSession.id).where(ChatSession.project_id.in_(project_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def list_chat_turn_ids_for_session_ids(session: Session, session_ids: list[str], *, limit: int) -> list[str]:
+    if not session_ids or limit <= 0:
+        return []
+    stmt = select(ChatTurn.id).where(ChatTurn.session_id.in_(session_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def list_project_model_ids(session: Session, model, project_ids: list[str], *, limit: int) -> list[str]:
+    if not project_ids or limit <= 0:
+        return []
+    stmt = select(model.id).where(model.project_id.in_(project_ids)).limit(limit)
+    return [str(item) for item in session.scalars(stmt).all()]
+
+
+def delete_analysis_facets_by_ids(session: Session, facet_ids: list[str]) -> int:
+    if not facet_ids:
+        return 0
+    return session.execute(delete(AnalysisFacet).where(AnalysisFacet.id.in_(facet_ids))).rowcount or 0
+
+
+def delete_analysis_events_by_ids(session: Session, event_ids: list[str]) -> int:
+    if not event_ids:
+        return 0
+    return session.execute(delete(AnalysisEvent).where(AnalysisEvent.id.in_(event_ids))).rowcount or 0
+
+
+def delete_chat_turns_by_ids(session: Session, turn_ids: list[str]) -> int:
+    if not turn_ids:
+        return 0
+    return session.execute(delete(ChatTurn).where(ChatTurn.id.in_(turn_ids))).rowcount or 0
+
+
+def delete_generated_artifacts_by_ids(session: Session, artifact_ids: list[str]) -> int:
+    if not artifact_ids:
+        return 0
+    return session.execute(delete(GeneratedArtifact).where(GeneratedArtifact.id.in_(artifact_ids))).rowcount or 0
+
+
+def delete_skill_versions_by_ids(session: Session, version_ids: list[str]) -> int:
+    if not version_ids:
+        return 0
+    return session.execute(delete(SkillVersion).where(SkillVersion.id.in_(version_ids))).rowcount or 0
+
+
+def delete_skill_drafts_by_ids(session: Session, draft_ids: list[str]) -> int:
+    if not draft_ids:
+        return 0
+    return session.execute(delete(SkillDraft).where(SkillDraft.id.in_(draft_ids))).rowcount or 0
+
+
+def delete_chat_sessions_by_ids(session: Session, session_ids: list[str]) -> int:
+    if not session_ids:
+        return 0
+    return session.execute(delete(ChatSession).where(ChatSession.id.in_(session_ids))).rowcount or 0
+
+
+def delete_text_chunks_by_ids(session: Session, chunk_ids: list[str]) -> int:
+    if not chunk_ids:
+        return 0
+    return session.execute(delete(TextChunk).where(TextChunk.id.in_(chunk_ids))).rowcount or 0
+
+
+def delete_documents_by_ids(session: Session, document_ids: list[str]) -> int:
+    if not document_ids:
+        return 0
+    return session.execute(delete(DocumentRecord).where(DocumentRecord.id.in_(document_ids))).rowcount or 0
+
+
+def delete_analysis_runs_by_ids(session: Session, run_ids: list[str]) -> int:
+    if not run_ids:
+        return 0
+    return session.execute(delete(AnalysisRun).where(AnalysisRun.id.in_(run_ids))).rowcount or 0
+
+
+def delete_projects_by_ids(session: Session, project_ids: list[str]) -> int:
+    if not project_ids:
+        return 0
+    return session.execute(delete(Project).where(Project.id.in_(project_ids))).rowcount or 0
 
 
 def create_document(session: Session, **kwargs: Any) -> DocumentRecord:

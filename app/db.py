@@ -58,11 +58,23 @@ def upgrade_schema(engine) -> None:
                 connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN mode VARCHAR(32) DEFAULT 'group'")
             if "parent_id" not in project_columns:
                 connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN parent_id VARCHAR(36) DEFAULT NULL")
+            if "lifecycle_state" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN lifecycle_state VARCHAR(32) DEFAULT 'active'")
+            if "delete_requested_at" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN delete_requested_at DATETIME")
+            if "deletion_error" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN deletion_error TEXT")
             connection.exec_driver_sql(
                 "UPDATE projects SET mode = 'group' WHERE mode IS NULL OR mode = ''"
             )
             connection.exec_driver_sql(
+                "UPDATE projects SET lifecycle_state = 'active' WHERE lifecycle_state IS NULL OR lifecycle_state = ''"
+            )
+            connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_projects_parent_updated ON projects (parent_id, updated_at)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_projects_lifecycle_state ON projects (lifecycle_state, updated_at)"
             )
 
         if "documents" in tables:

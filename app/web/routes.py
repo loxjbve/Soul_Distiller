@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.analysis.facets import FACETS
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, GeneratedArtifact, utcnow
+from app.pipeline.project_deletion import ACTIVE_TASK_STATUSES
 from app.schemas import (
     ASSET_KINDS,
     DEFAULT_ANALYSIS_CONCURRENCY,
@@ -230,10 +231,8 @@ def update_project_form(
 
 @router.post("/projects/{project_id}/delete")
 def delete_project_form(request: Request, project_id: str, session: SessionDep):
-    project = _ensure_project(session, project_id)
+    project, _task = _schedule_project_deletion(request, session, project_id)
     parent_id = project.parent_id
-    _delete_project_resources(request, session, project.id)
-    session.commit()
     if parent_id:
         return RedirectResponse(url=f"/projects/{parent_id}", status_code=303)
     return RedirectResponse(url="/", status_code=303)
@@ -747,6 +746,30 @@ def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
         name=project.name,
         description=project.description,
         mode=project.mode,
+    )
+
+
+@router.delete("/api/projects/{project_id}")
+def delete_project_api_v2(request: Request, project_id: str, session: SessionDep):
+    project, task = _schedule_project_deletion(request, session, project_id)
+    return _task_response("已受理项目删除任务。", task, ok=True, project_id=project.id)
+
+
+@router.get("/api/projects/{project_id}/deletion")
+def get_project_deletion_api(request: Request, project_id: str, session: SessionDep):
+    task = request.app.state.project_deletion_manager.get_by_project(project_id)
+    if task:
+        return _task_response("已返回项目删除任务状态。", task, project_id=project_id)
+    project = repository.get_project(session, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if project.lifecycle_state == repository.PROJECT_LIFECYCLE_ACTIVE:
+        raise HTTPException(status_code=404, detail="No project deletion task found.")
+    return _ok_response(
+        "已返回项目删除状态。",
+        project_id=project.id,
+        lifecycle_state=project.lifecycle_state,
+        deletion_error=project.deletion_error,
     )
 
 
@@ -1961,6 +1984,64 @@ def _normalize_analysis_concurrency(value: Any) -> int:
     except (TypeError, ValueError):
         candidate = DEFAULT_ANALYSIS_CONCURRENCY
     return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+
+
+def _project_write_block_detail(project) -> dict[str, Any]:
+    message = "项目正在删除中，当前操作已禁用。" if project.lifecycle_state == repository.PROJECT_LIFECYCLE_DELETING else "项目删除失败，当前仅允许重试删除。"
+    return {
+        "message": message,
+        "project_id": project.id,
+        "lifecycle_state": project.lifecycle_state,
+        "deletion_error": project.deletion_error,
+    }
+
+
+def _ensure_project(session: Session, project_id: str, *, require_active: bool = False):
+    project = repository.get_project(session, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    if require_active and project.lifecycle_state != repository.PROJECT_LIFECYCLE_ACTIVE:
+        raise HTTPException(status_code=409, detail=_project_write_block_detail(project))
+    return project
+
+
+def _ensure_project_writable(session: Session, project_id: str):
+    return _ensure_project(session, project_id, require_active=True)
+
+
+def _get_project_document(
+    session: Session,
+    project_id: str,
+    document_id: str,
+    *,
+    require_active: bool = False,
+) -> DocumentRecord:
+    _ensure_project(session, project_id, require_active=require_active)
+    document = repository.get_document(session, document_id)
+    if not document or document.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    return document
+
+
+def _schedule_project_deletion(request: Request, session: Session, project_id: str):
+    manager = request.app.state.project_deletion_manager
+    existing_task = manager.get_by_project(project_id)
+    if existing_task and existing_task.get("status") in ACTIVE_TASK_STATUSES:
+        project = _ensure_project(session, project_id)
+        return project, existing_task
+
+    project = _ensure_project(session, project_id)
+    project_ids = repository.get_project_tree_ids(session, project.id)
+    repository.mark_projects_for_deletion(session, project_ids)
+    session.commit()
+    try:
+        task = manager.submit(project.id, project_ids=project_ids)
+    except Exception as exc:
+        error_text = str(exc).strip() or exc.__class__.__name__
+        with request.app.state.db.session() as repair_session:
+            repository.mark_projects_delete_failed(repair_session, project_ids, error=error_text)
+        raise HTTPException(status_code=500, detail=f"Failed to enqueue project deletion: {error_text}") from exc
+    return project, task
 
 
 def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:

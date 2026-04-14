@@ -84,8 +84,32 @@ class RechunkTaskManager:
             task = self._tasks.get(task_id)
             return deepcopy(task) if task else None
 
+    def cancel_project(self, project_id: str) -> bool:
+        with self._lock:
+            task_id = self._active_by_project.get(project_id)
+            if not task_id:
+                return True
+            task = self._tasks.get(task_id)
+            if not task:
+                return True
+            task["cancel_requested"] = True
+            return False
+
+    def has_project_activity(self, project_id: str) -> bool:
+        with self._lock:
+            task_id = self._active_by_project.get(project_id)
+            if not task_id:
+                return False
+            task = self._tasks.get(task_id) or {}
+            return task.get("status") in {"queued", "running"}
+
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=True)
+
+    def _is_cancelled(self, task_id: str) -> bool:
+        with self._lock:
+            task = self._tasks.get(task_id) or {}
+            return bool(task.get("cancel_requested"))
 
     def _run_task(self, task_id: str, project_id: str, embedding_config: ServiceConfig | None) -> None:
         self._update(
@@ -104,6 +128,8 @@ class RechunkTaskManager:
                 self._update(task_id, document_total=len(document_ids))
                 total_chunks = 0
                 for index, doc_id in enumerate(document_ids, start=1):
+                    if self._is_cancelled(task_id):
+                        raise RuntimeError("Rechunk task cancelled.")
                     document = session.get(DocumentRecord, doc_id)
                     if not document:
                         continue
@@ -138,8 +164,12 @@ class RechunkTaskManager:
                     )
 
             if embedding_config:
+                if self._is_cancelled(task_id):
+                    raise RuntimeError("Rechunk task cancelled.")
                 self._update(task_id, stage="rebuild_embeddings", progress_percent=65)
                 self._rebuild_embeddings(task_id, project_id, embedding_config)
+            if self._is_cancelled(task_id):
+                raise RuntimeError("Rechunk task cancelled.")
             self._sync_project_vector_store(project_id)
 
             self._update(
@@ -150,11 +180,14 @@ class RechunkTaskManager:
                 finished_at=utcnow().isoformat(),
             )
         except Exception as exc:
+            error_text = str(exc)
+            if self._is_cancelled(task_id) and "cancelled" in error_text.lower():
+                error_text = "Rechunk task cancelled."
             self._update(
                 task_id,
                 status="failed",
                 stage="failed",
-                error=str(exc),
+                error=error_text,
                 finished_at=utcnow().isoformat(),
             )
         finally:
@@ -206,9 +239,13 @@ class RechunkTaskManager:
                     return []
                 import time
                 for attempt in range(3):
+                    if self._is_cancelled(task_id):
+                        return []
                     try:
                         return client.embeddings(texts, model=resolved_model, timeout=180.0)
                     except Exception:
+                        if self._is_cancelled(task_id):
+                            return []
                         if attempt == 2:
                             raise
                         time.sleep(2.0 * (attempt + 1))
@@ -226,6 +263,8 @@ class RechunkTaskManager:
                         
                 future_to_ids = {future: ids for future, ids in zip(futures, batch_ids)}
                 for future in as_completed(futures):
+                    if self._is_cancelled(task_id):
+                        raise RuntimeError("Rechunk task cancelled.")
                     ids = future_to_ids[future]
                     vectors = future.result()
                     

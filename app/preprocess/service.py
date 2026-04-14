@@ -47,6 +47,7 @@ class StreamState:
     message: str
     events: Queue[dict[str, Any]] = field(default_factory=Queue)
     done: Event = field(default_factory=Event)
+    cancelled: Event = field(default_factory=Event)
 
 
 class PreprocessAgentService:
@@ -70,6 +71,23 @@ class PreprocessAgentService:
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=True, cancel_futures=True)
+
+    def cancel_project(self, project_id: str) -> None:
+        with self.lock:
+            stream_ids = [stream_id for stream_id, state in self.streams.items() if state.project_id == project_id]
+        for stream_id in stream_ids:
+            with self.lock:
+                state = self.streams.get(stream_id)
+                future = self.futures.get(stream_id)
+            if not state:
+                continue
+            state.cancelled.set()
+            if future:
+                future.cancel()
+
+    def has_project_activity(self, project_id: str) -> bool:
+        with self.lock:
+            return any(not state.done.is_set() for state in self.streams.values() if state.project_id == project_id)
 
     def start_stream(self, *, project_id: str, session_id: str, message: str) -> dict[str, str]:
         with self.db.session() as session:
@@ -141,6 +159,11 @@ class PreprocessAgentService:
             with background_task_slot():
                 with self.db.session() as session:
                     self._run_turn(session, state)
+        except RuntimeError as exc:
+            if str(exc) == "Preprocess stream cancelled.":
+                self._emit(state, "status", {"label": "预分析已取消"})
+            else:
+                raise
         except Exception as exc:
             self._emit(state, "error", {"message": str(exc)})
             self._emit(state, "stream_error", {"message": str(exc)})
@@ -165,6 +188,7 @@ class PreprocessAgentService:
             state.done.set()
 
     def _run_turn(self, session: Session, state: StreamState) -> None:
+        self._ensure_stream_active(state)
         self._emit(state, "status", {"label": "准备上下文"})
         blocks: list[dict[str, Any]] = [{"type": "status", "label": "准备上下文"}]
         config = repository.get_service_config(session, "chat_service")
@@ -258,6 +282,7 @@ class PreprocessAgentService:
         assistant_text = ""
 
         for step_index in range(MAX_TOOL_STEPS):
+            self._ensure_stream_active(state)
             self._emit(state, "status", {"label": f"推理中 · step {step_index + 1}"})
             blocks.append({"type": "status", "label": f"推理中 · step {step_index + 1}"})
             try:
@@ -341,6 +366,7 @@ class PreprocessAgentService:
         else:
             assistant_text = "本轮工具调用达到上限，请缩小范围或指定更明确的文件。"
 
+        self._ensure_stream_active(state)
         assistant_turn = repository.add_chat_turn(
             session,
             session_id=state.session_id,
@@ -361,6 +387,11 @@ class PreprocessAgentService:
         )
         repository.attach_artifacts_to_turn(session, artifact_ids, turn_id=assistant_turn.id)
         self._stream_assistant(state, assistant_text, assistant_turn.id)
+
+    @staticmethod
+    def _ensure_stream_active(state: StreamState) -> None:
+        if state.cancelled.is_set():
+            raise RuntimeError("Preprocess stream cancelled.")
 
     def _build_messages(
         self,
