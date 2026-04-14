@@ -25,8 +25,8 @@ SKILL_DOCUMENT_FILENAMES = {
 }
 CC_SKILL_DOCUMENT_FILENAMES = {
     "skill": "SKILL.md",
-    "personality": "personality.md",
-    "memories": "memories.md",
+    "personality": "references/personality.md",
+    "memories": "references/memories.md",
 }
 
 
@@ -818,10 +818,10 @@ class AssetSynthesizer:
                     frontmatter_body = "\n".join(lines[end_index + 1 :]).strip()
 
         resolved_body = frontmatter_body or raw_skill_markdown
-        if "personality.md" not in resolved_body:
-            resolved_body = f"{resolved_body.strip()}\n\n更多人格底色见 personality.md。".strip()
-        if "memories.md" not in resolved_body:
-            resolved_body = f"{resolved_body.strip()}\n\n更多记忆与经历见 memories.md。".strip()
+        if "references/personality.md" not in resolved_body:
+            resolved_body = f"{resolved_body.strip()}\n\n更多人格底色见 references/personality.md。".strip()
+        if "references/memories.md" not in resolved_body:
+            resolved_body = f"{resolved_body.strip()}\n\n更多记忆与经历见 references/memories.md。".strip()
 
         name_candidate = frontmatter_name.strip() if frontmatter_name else expected_name
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name_candidate or ""):

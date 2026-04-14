@@ -7,9 +7,9 @@
 - 新增第三种资产输出：`cc_skill`（Claude Code 兼容 Skill）
 - `cc_skill` 生成结果改为 Claude Code Skill 目录所需的文件与格式：
   - `SKILL.md`：以 YAML frontmatter 开头，至少包含 `name` 与 `description`，正文为可执行的扮演规则与工作流
-  - `personality.md`（可选但默认生成）：核心身份与精神底色
-  - `memories.md`（可选但默认生成）：核心记忆与经历
-- `SKILL.md` 正文通过相对路径引用 `personality.md` / `memories.md`，以支持“按需加载”的使用方式
+  - `references/personality.md`（可选但默认生成）：核心身份与精神底色
+  - `references/memories.md`（可选但默认生成）：核心记忆与经历
+- `SKILL.md` 正文通过相对路径引用 `references/personality.md` / `references/memories.md`，以支持“按需加载”的使用方式
 - 生成流程参考现有 `skill` 输出：允许多次调用 LLM（至少 3 次：personality / memories / SKILL）
 - 为 `cc_skill` 增加稳健的 `name` 生成与校验策略，确保即使项目名/角色名为中文也能产出符合约束的 `name`
 - Web UI / API / 资产落盘逻辑支持选择并生成 `cc_skill`
@@ -31,8 +31,8 @@
 - **WHEN** 用户在资产生成入口选择 `cc_skill` 并触发生成
 - **THEN** 系统返回并落盘以下文件内容：
   - `SKILL.md`（必需）
-  - `personality.md`（默认生成）
-  - `memories.md`（默认生成）
+  - `references/personality.md`（默认生成）
+  - `references/memories.md`（默认生成）
 - **AND** 资产草稿在列表/详情页可被查看、保存、再次生成
 
 ### Requirement: SKILL.md 标准格式兼容
@@ -53,12 +53,12 @@
   - 回答工作流（SOP）
   - 高置信领域与诚实边界（越界处理）
 - 在正文中提供“按需阅读”入口：
-  - `personality.md`
-  - `memories.md`
+  - `references/personality.md`
+  - `references/memories.md`
 
 #### Scenario: Claude Code 中按需加载
 - **WHEN** 用户在 Claude Code 中安装该 Skill 并触发使用
-- **THEN** Claude 可先加载 `SKILL.md` 决策是否进一步读取 `personality.md` / `memories.md`（通过引用引导）
+- **THEN** Claude 可先加载 `SKILL.md` 决策是否进一步读取 `references/personality.md` / `references/memories.md`（通过引用引导）
 
 ### Requirement: 允许多次调用 LLM（流程对齐 skill 输出）
 系统 SHALL 允许 `cc_skill` 的生成过程中进行多次 LLM 调用，并沿用现有 `skill` 的检索增强生成方式：

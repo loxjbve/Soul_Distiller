@@ -798,8 +798,8 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
                 "---\n\n"
                 "# System Role: 扮演 Alice 本人\n\n"
                 "## 角色扮演规则\n- 保持第一人称、边界清楚。\n\n"
-                "更多人格底色见 personality.md。\n\n"
-                "更多记忆与经历见 memories.md。\n"
+                "更多人格底色见 references/personality.md。\n\n"
+                "更多记忆与经历见 references/memories.md。\n"
             )
             if callable(stream_handler):
                 stream_handler(content)
@@ -821,8 +821,8 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
     assert documents["skill"]["filename"] == "SKILL.md"
     assert documents["skill"]["markdown"].startswith("---")
     assert "name: roleplay-alice" in documents["skill"]["markdown"]
-    assert "personality.md" in documents["skill"]["markdown"]
-    assert "memories.md" in documents["skill"]["markdown"]
+    assert "references/personality.md" in documents["skill"]["markdown"]
+    assert "references/memories.md" in documents["skill"]["markdown"]
     assert payload["markdown_text"].startswith("---")
     assert payload["prompt_text"] == payload["markdown_text"]
 
@@ -930,7 +930,7 @@ def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app)
     bundle_response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/bundle")
     assert bundle_response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as archive:
-        assert set(archive.namelist()) == {"SKILL.md", "personality.md", "memories.md"}
+        assert set(archive.namelist()) == {"SKILL.md", "references/personality.md", "references/memories.md"}
 
     publish_payload = client.post(
         f"/api/projects/{project_id}/assets/{draft_id}/publish",

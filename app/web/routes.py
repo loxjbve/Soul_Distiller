@@ -79,8 +79,8 @@ SKILL_DOCUMENT_FILENAMES = {
 CC_SKILL_DOCUMENT_ORDER = ("skill", "personality", "memories")
 CC_SKILL_DOCUMENT_FILENAMES = {
     "skill": "SKILL.md",
-    "personality": "personality.md",
-    "memories": "memories.md",
+    "personality": "references/personality.md",
+    "memories": "references/memories.md",
 }
 
 
@@ -1678,7 +1678,9 @@ def _persist_asset_files(
         for key, document in _skill_documents_for_export(asset_kind, json_payload, markdown_text).items():
             filename = document["filename"]
             content = document["markdown"]
-            (asset_dir / f"{base_name}.{filename}").write_text(content, encoding="utf-8")
+            doc_path = asset_dir / f"{base_name}.{filename}"
+            doc_path.parent.mkdir(parents=True, exist_ok=True)
+            doc_path.write_text(content, encoding="utf-8")
 
 
 def _download_headers(filename: str, *, fallback_name: str | None = None) -> dict[str, str]:

@@ -172,8 +172,8 @@ def test_cc_skill_heuristic_generates_frontmatter_and_references():
     assert markdown.startswith("---")
     assert "\nname: " in markdown
     assert "\ndescription: " in markdown
-    assert "personality.md" in markdown
-    assert "memories.md" in markdown
+    assert "references/personality.md" in markdown
+    assert "references/memories.md" in markdown
 
 
 def test_cc_skill_llm_output_missing_frontmatter_is_wrapped(monkeypatch):
@@ -201,5 +201,5 @@ def test_cc_skill_llm_output_missing_frontmatter_is_wrapped(monkeypatch):
     markdown = bundle.markdown_text
     assert markdown.startswith("---")
     assert "\nname: demo\n" in markdown
-    assert "personality.md" in markdown
-    assert "memories.md" in markdown
+    assert "references/personality.md" in markdown
+    assert "references/memories.md" in markdown

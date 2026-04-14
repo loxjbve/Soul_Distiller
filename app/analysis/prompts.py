@@ -176,10 +176,10 @@ def build_cc_skill_messages(
                 f"- 若无法可靠生成合法 name（例如中文为主），使用兜底：{fallback_slug}\n"
                 "3) description：一句话说明这个 Skill 做什么、什么时候用（例如“当需要以某角色语气写作/复盘/决策时”）。\n"
                 "4) 正文写成可执行规则，至少包含：角色扮演规则、回答工作流（SOP）、高置信领域、诚实边界。\n"
-                "5) 正文中必须用相对路径提示按需阅读：personality.md 与 memories.md。\n\n"
+                "5) 正文中必须用相对路径提示按需阅读：references/personality.md 与 references/memories.md。\n\n"
                 "附属文档（可引用但不要把全文照抄进正文）：\n"
-                f"[personality.md]\n{personality_markdown.strip()}\n\n"
-                f"[memories.md]\n{memories_markdown.strip()}\n\n"
+                f"[references/personality.md]\n{personality_markdown.strip()}\n\n"
+                f"[references/memories.md]\n{memories_markdown.strip()}\n\n"
                 f"十维分析摘要：\n{facet_dump}"
             ),
         },

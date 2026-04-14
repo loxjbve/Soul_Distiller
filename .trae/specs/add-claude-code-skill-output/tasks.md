@@ -1,7 +1,7 @@
 # Tasks
 - [x] Task 1: 增加新的资产类型 cc_skill
   - [x] SubTask 1.1: 扩展资产类型枚举与标签（`ASSET_KINDS`、UI label、normalize 逻辑）
-  - [x] SubTask 1.2: 更新资产保存/落盘逻辑，支持为 cc_skill 写入 `SKILL.md` / `personality.md` / `memories.md`
+  - [x] SubTask 1.2: 更新资产保存/落盘逻辑，支持为 cc_skill 写入 `SKILL.md` / `references/personality.md` / `references/memories.md`
 
 - [x] Task 2: 设计并实现 cc_skill 的 Prompt 编排
   - [x] SubTask 2.1: 增加 cc_skill 的 prompt 生成函数（system/user messages），确保生成 `SKILL.md` YAML frontmatter + 正文
