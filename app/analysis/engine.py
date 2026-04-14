@@ -12,7 +12,7 @@ from app.db import Database
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.analysis.facets import FACETS, FacetDefinition
+from app.analysis.facets import FACETS, FacetDefinition, get_facet_prompt_profile
 from app.analysis.streaming import AnalysisStreamHub
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, TextChunk, utcnow
@@ -29,7 +29,20 @@ from app.storage import repository
 from app.utils.text import top_terms
 
 FACET_EVIDENCE_LIMIT = 20
+FACET_BULLET_LIMIT = 8
 RAW_TEXT_PREVIEW_LIMIT = 20000
+GLOBAL_PERSONA_CARD_LABELS = (
+    "角色规则",
+    "心智模型",
+    "决策启发式",
+    "表达DNA",
+    "表达 DNA",
+    "时间线",
+    "价值观",
+    "反模式",
+    "诚实边界",
+    "智识谱系",
+)
 
 
 def _parse_confidence(val: Any, default: float) -> float:
@@ -57,6 +70,88 @@ def _normalize_concurrency(value: Any) -> int:
     except (TypeError, ValueError):
         candidate = DEFAULT_ANALYSIS_CONCURRENCY
     return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+
+
+def _collapse_whitespace(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _strip_persona_card_label(text: str) -> tuple[str | None, str]:
+    for label in GLOBAL_PERSONA_CARD_LABELS:
+        for separator in ("：", ":", "-", " - "):
+            prefix = f"{label}{separator}"
+            if text.startswith(prefix):
+                return label, text[len(prefix):].strip()
+    return None, text
+
+
+def _facet_keyword_score(text: str, facet_key: str) -> int:
+    profile = get_facet_prompt_profile(facet_key)
+    return sum(1 for term in profile.relevance_terms if term and term in text)
+
+
+def _best_foreign_facet_match(text: str, facet_key: str) -> tuple[str | None, int]:
+    best_key: str | None = None
+    best_score = 0
+    for other in FACETS:
+        if other.key == facet_key:
+            continue
+        score = _facet_keyword_score(text, other.key)
+        if score > best_score:
+            best_key = other.key
+            best_score = score
+    return best_key, best_score
+
+
+def _normalize_facet_bullets(items: list[Any], facet: FacetDefinition) -> tuple[list[str], int]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    removed = 0
+    for item in list(items or [])[: FACET_BULLET_LIMIT * 3]:
+        raw_text = _collapse_whitespace(item)
+        if not raw_text:
+            continue
+        _, stripped_text = _strip_persona_card_label(raw_text)
+        text = _collapse_whitespace(stripped_text)
+        if not text:
+            removed += 1
+            continue
+        current_score = _facet_keyword_score(text, facet.key)
+        _, foreign_score = _best_foreign_facet_match(text, facet.key)
+        if current_score == 0 and foreign_score > 0:
+            removed += 1
+            continue
+        if current_score == 0 and stripped_text != raw_text:
+            removed += 1
+            continue
+        if text in seen:
+            continue
+        normalized.append(text)
+        seen.add(text)
+        if len(normalized) >= FACET_BULLET_LIMIT:
+            break
+    return normalized, removed
+
+
+def _build_facet_summary_from_bullets(facet: FacetDefinition, bullets: list[str]) -> str:
+    cleaned_bullets = [item.rstrip("。；;，, ") for item in bullets if item]
+    if not cleaned_bullets:
+        return f"现有证据主要支持从 {facet.label} 继续观察，但可直接复用的细节仍然有限。"
+    if len(cleaned_bullets) == 1:
+        return f"围绕 {facet.label}，材料最稳定地显示：{cleaned_bullets[0]}。"
+    return f"围绕 {facet.label}，材料最稳定地显示：{cleaned_bullets[0]}；{cleaned_bullets[1]}。"
+
+
+def _normalize_facet_summary(summary: Any, bullets: list[str], facet: FacetDefinition) -> tuple[str, bool]:
+    text = _collapse_whitespace(summary)
+    if not text:
+        return _build_facet_summary_from_bullets(facet, bullets), True
+    current_score = _facet_keyword_score(text, facet.key)
+    _, foreign_score = _best_foreign_facet_match(text, facet.key)
+    global_label_hits = sum(1 for label in GLOBAL_PERSONA_CARD_LABELS if label in text)
+    if current_score == 0 and (foreign_score > 0 or global_label_hits >= 2):
+        return _build_facet_summary_from_bullets(facet, bullets), True
+    return text, False
 
 
 def analyze_facet_worker(
@@ -1467,7 +1562,7 @@ def _analyze_with_llm(
                 parsed = parse_json_response(completion.content, fallback=True)
                 llm_success = False
                 llm_error_text = str(exc)
-            normalized = _normalize_facet_payload(parsed, chunks)
+            normalized = _normalize_facet_payload(parsed, chunks, facet)
             if not llm_success:
                 normalized["notes"] = (
                     f"{normalized.get('notes') or ''}\n"
@@ -1518,17 +1613,20 @@ def _analyze_heuristically(
     started = perf_counter()
     joined = "\n".join(chunk["content"] for chunk in chunks)
     terms = top_terms(joined, limit=10)
+    profile = get_facet_prompt_profile(facet.key)
+    label_cycle = iter(profile.bullet_labels)
     bullets: list[str] = []
     if target_role:
-        bullets.append(f"目标角色：{target_role}")
+        bullets.append(f"{next(label_cycle, profile.bullet_labels[-1])}：分析对象为 {target_role}，当前只归纳 {facet.label}。")
     if analysis_context:
-        bullets.append(f"用户补充说明：{analysis_context[:100]}")
+        bullets.append(f"{next(label_cycle, profile.bullet_labels[-1])}：语境约束为 {analysis_context[:100]}。")
     if terms:
-        bullets.append(f"高频关键词：{', '.join(terms[:5])}")
-    for chunk in chunks[:3]:
+        bullets.append(f"{next(label_cycle, profile.bullet_labels[-1])}：高频词包括 {', '.join(terms[:5])}。")
+    for chunk in chunks[:4]:
         preview = chunk["content"][:100].replace("\n", " ")
-        bullets.append(f"代表片段来自 {chunk['filename']}：{preview}")
-    summary_focus = ", ".join(terms[:4]) or "代表性表达"
+        bullets.append(f"{next(label_cycle, profile.bullet_labels[-1])}：{preview}")
+    bullets, _ = _normalize_facet_bullets(bullets, facet)
+    summary_focus = "、".join(terms[:4]) or profile.focus.split("、", 1)[0]
     evidence = [
         {
             "chunk_id": chunk["chunk_id"],
@@ -1541,8 +1639,11 @@ def _analyze_heuristically(
         for chunk in chunks[:FACET_EVIDENCE_LIMIT]
     ]
     return {
-        "summary": f"{facet.label}主要由 {len(chunks)} 个高相关片段归纳，重点围绕 {summary_focus}。",
-        "bullets": bullets[:6],
+        "summary": (
+            f"围绕 {facet.label}，现有 {len(chunks)} 个高相关片段主要指向 {summary_focus}；"
+            "由于未调用 LLM，当前结果以证据驱动的保守归纳为主。"
+        ),
+        "bullets": bullets[:FACET_BULLET_LIMIT],
         "confidence": min(0.45 + (len(chunks) * 0.07), 0.78),
         "evidence": evidence,
         "conflicts": [],
@@ -1559,7 +1660,11 @@ def _analyze_heuristically(
     }
 
 
-def _normalize_facet_payload(payload: dict[str, Any], chunks: list[dict[str, Any]]) -> dict[str, Any]:
+def _normalize_facet_payload(
+    payload: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    facet: FacetDefinition,
+) -> dict[str, Any]:
     chunk_map = {chunk["chunk_id"]: chunk for chunk in chunks}
     evidence: list[dict[str, Any]] = []
     for item in payload.get("evidence", [])[:FACET_EVIDENCE_LIMIT]:
@@ -1594,17 +1699,30 @@ def _normalize_facet_payload(payload: dict[str, Any], chunks: list[dict[str, Any
             }
         )
         seen.add(chunk["chunk_id"])
+    bullets, removed_bullets = _normalize_facet_bullets(payload.get("bullets", []), facet)
+    summary, summary_rebuilt = _normalize_facet_summary(payload.get("summary", ""), bullets, facet)
+    notes_parts = []
+    raw_notes = _collapse_whitespace(payload.get("notes"))
+    if raw_notes:
+        notes_parts.append(raw_notes)
+    if removed_bullets:
+        notes_parts.append(
+            f"Normalization removed {removed_bullets} off-facet bullet(s) so {facet.label} stays scoped to the current dimension."
+        )
+    if summary_rebuilt:
+        notes_parts.append("Summary was rebuilt during normalization to keep the result focused on the current facet.")
     return {
-        "summary": str(payload.get("summary", "")),
-        "bullets": [str(item) for item in payload.get("bullets", [])[:6]],
+        "summary": summary,
+        "bullets": bullets,
         "confidence": _parse_confidence(payload.get("confidence"), 0.65),
         "evidence": evidence,
         "conflicts": [
             {
-                "title": str(item.get("title", "")),
-                "detail": str(item.get("detail", "")),
+                "title": _collapse_whitespace(item.get("title")),
+                "detail": _collapse_whitespace(item.get("detail")),
             }
             for item in payload.get("conflicts", [])[:5]
+            if _collapse_whitespace(item.get("title")) or _collapse_whitespace(item.get("detail"))
         ],
-        "notes": payload.get("notes"),
+        "notes": "\n".join(notes_parts) or None,
     }

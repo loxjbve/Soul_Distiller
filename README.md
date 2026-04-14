@@ -47,6 +47,8 @@ source .venv/bin/activate
 python -m pip install -e .[dev]
 ```
 
+This install now includes the vector-store runtime dependencies (`faiss-cpu` and `chromadb`) automatically.
+
 ### 3. 启动服务
 
 ```bash

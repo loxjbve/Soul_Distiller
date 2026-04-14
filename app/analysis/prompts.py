@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.analysis.facets import FacetDefinition
+from app.analysis.facets import FacetDefinition, get_facet_prompt_profile
 
 ASSET_KIND_LABELS = {
     "skill": "角色技能",
@@ -21,11 +21,13 @@ def build_facet_analysis_messages(
 ) -> list[dict[str, str]]:
     context_block = _context_block(target_role, analysis_context)
     focus_guidance = _facet_focus_guidance(facet)
+    output_contract = _facet_output_contract(facet)
     return [
         {
             "role": "system",
             "content": (
                 "你是一名赛博人类学分析师和行为画像专家。\n"
+                "你当前只负责分析一个维度，不要把人物十维总卡、全人格总结或其他维度的结论塞进当前输出。\n"
                 "你需要从噪声较多的原始文本中提炼具体、可验证的行为模式。\n"
                 "避免空泛夸奖、套话式总结或模糊的人格评语。\n"
                 "每一条重要判断都必须严格锚定到提供的 chunk_id。\n"
@@ -34,8 +36,9 @@ def build_facet_analysis_messages(
                 "evidence 必须是对象列表，每个对象包含 chunk_id、reason、quote。\n"
                 "conflicts 必须是对象列表，每个对象包含 title、detail。\n"
                 "chunk_id 必须与输入完全一致。quote 优先使用简短直接引语或接近原话的转述。\n"
-                "summary 要写成可供下游 Skill 编排直接引用的一段骨架摘要，优先回答：这个人如何看世界、如何做判断、在哪些边界上会失真。\n"
-                "bullets 必须尽量写成可执行条目，允许并鼓励使用这些前缀：角色规则：、心智模型：、决策启发式：、表达DNA：、时间线：、价值观：、反模式：、诚实边界：、智识谱系：。\n"
+                "summary 必须只总结当前维度，写成一段详细、可引用的中文摘要，不要扩写成人物全貌。\n"
+                "bullets 必须是当前维度下的细节观察，优先使用这个维度自己的小标签，不要机械复用通用人格卡栏目名。\n"
+                "如果某条证据更适合别的维度，只能在 notes 里简短提示，不要写进 summary 或 bullets。\n"
                 "notes 用来记录适用范围、证据薄弱点和你不敢下死结论的部分。"
             ),
         },
@@ -46,11 +49,12 @@ def build_facet_analysis_messages(
                 f"分析维度：{facet.label} ({facet.key})\n"
                 f"分析目标：{facet.purpose}\n"
                 f"{context_block}\n"
-                "重点分析具体行为、社交逻辑、语言特征、现实约束与内部矛盾。\n"
-                "当证据支持时，要明确指出禁区、底线、现实压力、亚文化标记、内在张力和诚实边界。\n"
-                "除了该维度本身，还要尽量抽取：角色规则、心智模型、决策启发式、表达 DNA、时间线影响、智识来源/影响对象。\n"
-                "bullets 必须写得足够具体，能够直接用于实现，不要写成抽象标签。\n"
+                "只分析这个维度，不要顺手总结其他维度，不要补全整个人物画像。\n"
+                "如果证据不足，就明确写不足，不要用其他维度内容来凑数。\n"
+                "重点抓具体行为、触发条件、稳定模式、例外情况和内部张力，避免只有一句泛化判断。\n"
+                "bullets 必须写得足够具体，能够直接用于实现，不要写成抽象标签或简洁总述。\n"
                 f"本维度的额外抽取提醒：{focus_guidance}\n\n"
+                f"本维度的输出结构要求：{output_contract}\n\n"
                 f"证据摘录：\n{excerpt_text}"
             ),
         },
@@ -289,16 +293,14 @@ def _context_block(target_role: str | None, analysis_context: str | None) -> str
 
 
 def _facet_focus_guidance(facet: FacetDefinition) -> str:
-    guidance = {
-        "personality": "优先抽取稳定自我定位、长期情绪底盘、人格张力，以及会反复主导判断的底层认知框架。",
-        "language_style": "优先抽取节奏、断句、词汇癖好、确定性程度、幽默方式、引用习惯、辩论策略和回复起手式。",
-        "values_preferences": "优先抽取原则、底线、反模式、取舍逻辑，以及可反复复用的决策启发式。",
-        "life_timeline": "优先抽取关键节点、转折点，以及这些节点如何改写角色的看法、口气和风险偏好。",
-        "relationship_network": "优先抽取谁影响了他、他影响谁、他如何区分自己人和外人，以及关系中的站位。",
-        "narrative_boundaries": "优先抽取禁区、回避方式、诚实边界，以及他在证据不足时会怎样收口或自保。",
-        "physical_anchor": "优先抽取现实压力、阶层感、资源稀缺感、生存约束，以及这些约束如何塑造世界观。",
-        "social_niche": "优先抽取群体站位、权力感知、资格判断和新手/外人的处理方式。",
-        "interpersonal_mechanics": "优先抽取同理模式、冲突反应、反击手法、亲疏切换和关系中的决策规则。",
-        "subculture_refuge": "优先抽取文化母体、精神避难所、审美来源、圈层黑话，以及可推断的智识谱系。",
-    }
-    return guidance.get(facet.key, "优先抽取可执行的人设约束、判断路径、表达方式和边界。")
+    return get_facet_prompt_profile(facet.key).focus
+
+
+def _facet_output_contract(facet: FacetDefinition) -> str:
+    profile = get_facet_prompt_profile(facet.key)
+    labels = "、".join(profile.bullet_labels)
+    return (
+        "summary 必须围绕当前维度展开，至少交代稳定模式、触发条件和边界/例外之一；"
+        f"bullets 建议写 4 到 8 条，并优先使用这些小标签：{labels}；"
+        "若材料明显属于其他维度，只在 notes 里一句话标注，不要在正文展开。"
+    )

@@ -5,6 +5,8 @@ Summary: Local web app for distilling document collections into persona imitatio
 Requires-Python: >=3.12
 Description-Content-Type: text/markdown
 Requires-Dist: beautifulsoup4>=4.12.3
+Requires-Dist: chromadb>=1.5.7
+Requires-Dist: faiss-cpu>=1.13.2
 Requires-Dist: fastapi>=0.115.0
 Requires-Dist: httpx>=0.27.0
 Requires-Dist: jinja2>=3.1.4
@@ -64,6 +66,8 @@ source .venv/bin/activate
 ```bash
 python -m pip install -e .[dev]
 ```
+
+This install now includes the vector-store runtime dependencies (`faiss-cpu` and `chromadb`) automatically.
 
 ### 3. 启动服务
 

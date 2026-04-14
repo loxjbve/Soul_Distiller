@@ -153,7 +153,20 @@ def test_embedding_degrades_to_lexical_when_vector_store_is_unavailable(app, mon
             filename="memo.txt",
             contents=["Only tea notes live here."],
         )
-        hits, mode, trace = app.state.retrieval.search(
+        retrieval = RetrievalService(
+            vector_store=DummyVectorStoreManager(
+                VectorStoreResolution(
+                    store=None,
+                    backend="disabled",
+                    provider="auto",
+                    model="text-embedding-3-small",
+                    model_key=model_key_for("text-embedding-3-small"),
+                    available=False,
+                    degraded_reason="vector_store_unavailable",
+                )
+            )
+        )
+        hits, mode, trace = retrieval.search(
             session,
             project_id=project.id,
             query="tea notes",
