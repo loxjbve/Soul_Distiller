@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
-from app.analysis.prompts import build_asset_messages
+from app.analysis.prompts import build_asset_messages, build_cc_skill_messages
 from app.llm.client import LLMError, OpenAICompatibleClient, parse_json_response
 from app.models import AnalysisFacet, Project
 from app.schemas import ASSET_KINDS, AssetBundle, ServiceConfig
@@ -21,6 +22,11 @@ SKILL_DOCUMENT_FILENAMES = {
     "personality": "personality.md",
     "memories": "memories.md",
     "merge": "Skill_merge.md",
+}
+CC_SKILL_DOCUMENT_FILENAMES = {
+    "skill": "SKILL.md",
+    "personality": "personality.md",
+    "memories": "memories.md",
 }
 
 
@@ -87,6 +93,9 @@ class AssetSynthesizer:
         if normalized_kind == "skill":
             markdown = self._get_skill_merge_markdown(structured)
             prompt_text = markdown
+        elif normalized_kind == "cc_skill":
+            markdown = self._get_cc_skill_markdown(structured)
+            prompt_text = markdown
         else:
             markdown = self._render_profile_report_markdown(project.name, structured)
             prompt_text = self._render_profile_report_prompt(project.name, structured)
@@ -131,6 +140,35 @@ class AssetSynthesizer:
         if asset_kind == "skill":
             try:
                 return self._build_skill_documents_with_llm(
+                    client,
+                    config,
+                    project,
+                    facet_dump,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                    stream_callback=stream_callback,
+                    progress_callback=progress_callback,
+                    session=session,
+                    retrieval_service=retrieval_service,
+                )
+            except (LLMError, ValueError, KeyError, TypeError):
+                self._emit_progress(
+                    progress_callback,
+                    phase="fallback",
+                    progress_percent=68,
+                    message="模型输出不可用，正在回退为本地规则草稿",
+                )
+                return self._heuristic(
+                    asset_kind,
+                    project,
+                    facets,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                )
+
+        if asset_kind == "cc_skill":
+            try:
+                return self._build_cc_skill_documents_with_llm(
                     client,
                     config,
                     project,
@@ -378,6 +416,105 @@ class AssetSynthesizer:
             analysis_context=analysis_context,
         )
 
+    def _build_cc_skill_documents_with_llm(
+        self,
+        client: OpenAICompatibleClient,
+        config: ServiceConfig,
+        project: Project,
+        facet_dump: str,
+        *,
+        target_role: str | None,
+        analysis_context: str | None,
+        stream_callback: Any | None,
+        progress_callback: Any | None,
+        session: Any | None,
+        retrieval_service: Any | None,
+    ) -> dict[str, Any]:
+        from app.analysis.prompts import build_memories_messages, build_personality_messages
+        from app.storage import repository
+
+        personality_markdown = ""
+        memories_markdown = ""
+        embedding_config = repository.get_service_config(session, "embedding_service") if session else None
+
+        if session and retrieval_service:
+            personality_markdown = self._build_retrieved_skill_document(
+                client,
+                config,
+                project.id,
+                project.name,
+                facet_dump,
+                query="性格特质 精神状态 自我认知 核心身份",
+                phase="personality_context",
+                progress_percent=24,
+                progress_message="正在生成 personality.md",
+                message_builder=build_personality_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+                session=session,
+                retrieval_service=retrieval_service,
+                embedding_config=embedding_config,
+            )
+            memories_markdown = self._build_retrieved_skill_document(
+                client,
+                config,
+                project.id,
+                project.name,
+                facet_dump,
+                query="核心记忆 经历 过往重要事件",
+                phase="memory_context",
+                progress_percent=36,
+                progress_message="正在生成 memories.md",
+                message_builder=build_memories_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+                session=session,
+                retrieval_service=retrieval_service,
+                embedding_config=embedding_config,
+            )
+
+        self._emit_progress(
+            progress_callback,
+            phase="synthesis",
+            progress_percent=52,
+            message="LLM 正在生成 SKILL.md",
+        )
+        messages = build_cc_skill_messages(
+            project.id,
+            project.name,
+            facet_dump,
+            personality_markdown=personality_markdown,
+            memories_markdown=memories_markdown,
+            target_role=target_role,
+            analysis_context=analysis_context,
+        )
+        response = client.chat_completion_result(
+            messages,
+            model=config.model,
+            temperature=0.2,
+            max_tokens=None,
+            stream_handler=stream_callback,
+        )
+        flush_remaining = getattr(stream_callback, "_flush_remaining", None)
+        if callable(flush_remaining):
+            flush_remaining()
+
+        return self._normalize_cc_skill_payload(
+            {
+                "target_role": target_role or project.name,
+                "source_context": analysis_context or "",
+                "skill_markdown": response.content,
+                "personality_markdown": personality_markdown,
+                "memories_markdown": memories_markdown,
+            },
+            project_name=project.name,
+            project_id=project.id,
+            target_role=target_role,
+            analysis_context=analysis_context,
+        )
+
     def _build_retrieved_skill_document(
         self,
         client: OpenAICompatibleClient,
@@ -428,6 +565,14 @@ class AssetSynthesizer:
             merge_doc = documents.get("merge") or {}
             if isinstance(merge_doc, dict):
                 return str(merge_doc.get("markdown") or "").strip()
+        return ""
+
+    def _get_cc_skill_markdown(self, payload: dict[str, Any]) -> str:
+        documents = payload.get("documents") if isinstance(payload, dict) else {}
+        if isinstance(documents, dict):
+            skill_doc = documents.get("skill") or {}
+            if isinstance(skill_doc, dict):
+                return str(skill_doc.get("markdown") or "").strip()
         return ""
 
     def _merge_skill_documents(self, *documents: str) -> str:
@@ -508,6 +653,34 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
             )
+        if asset_kind == "cc_skill":
+            skill_payload = _build_skill_payload_from_facets(
+                project_name=project.name,
+                target_role=target_role or project.name,
+                analysis_context=analysis_context or "",
+                summary_by_key=summary_by_key,
+                evidence_by_key=evidence_by_key,
+                conflict_notes=conflict_notes,
+            )
+            return self._normalize_cc_skill_payload(
+                {
+                    "target_role": target_role or project.name,
+                    "source_context": analysis_context or "",
+                    "skill_markdown": self._render_skill_markdown(project.name, skill_payload),
+                    "personality_markdown": self._render_personality_document(
+                        core_identity=str(skill_payload["core_identity"]),
+                        mental_state=str(skill_payload["mental_state"]),
+                    ),
+                    "memories_markdown": self._render_memories_document(
+                        [str(item) for item in skill_payload["memories"]],
+                        fallback_summary=str(summary_by_key.get("life_timeline", {}).get("summary", "")),
+                    ),
+                },
+                project_name=project.name,
+                project_id=project.id,
+                target_role=target_role,
+                analysis_context=analysis_context,
+            )
         return {
             "headline": summary_by_key.get("personality", {}).get("summary", f"{project.name} 的人物剖析"),
             "executive_summary": summary_by_key.get("personality", {}).get("summary", ""),
@@ -562,6 +735,127 @@ class AssetSynthesizer:
                 "merge": {
                     "filename": SKILL_DOCUMENT_FILENAMES["merge"],
                     "markdown": merge_markdown,
+                },
+            },
+        }
+
+    @staticmethod
+    def _slugify_kebab(value: str) -> str:
+        text = str(value or "").strip().lower()
+        text = re.sub(r"[^a-z0-9]+", "-", text)
+        text = re.sub(r"-{2,}", "-", text).strip("-")
+        return text
+
+    def _build_cc_skill_name(self, *, project_id: str, target_role: str, project_name: str) -> str:
+        fallback = f"roleplay-{str(project_id or '')[:8] or 'unknown'}"
+        candidate = self._slugify_kebab(target_role) or self._slugify_kebab(project_name) or fallback
+        reserved = ("claude", "anthropic")
+        if len(candidate) > 64:
+            candidate = fallback
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", candidate or ""):
+            candidate = fallback
+        if any(word in candidate for word in reserved):
+            candidate = fallback
+        candidate = (candidate or fallback)[:64].strip("-") or fallback
+        if any(word in candidate for word in reserved):
+            candidate = fallback
+        return candidate
+
+    @staticmethod
+    def _wrap_cc_skill_frontmatter(*, name: str, description: str, body: str) -> str:
+        safe_description = str(description or "").strip().replace("\n", " ")
+        safe_body = str(body or "").strip()
+        return "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: {safe_description}",
+                "---",
+                "",
+                safe_body,
+            ]
+        ).strip()
+
+    def _normalize_cc_skill_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        project_name: str,
+        project_id: str,
+        target_role: str | None,
+        analysis_context: str | None,
+    ) -> dict[str, Any]:
+        resolved_target_role = str(payload.get("target_role", target_role or project_name))
+        resolved_source_context = str(payload.get("source_context", analysis_context or ""))
+        personality_markdown = str(payload.get("personality_markdown", "") or "").strip()
+        memories_markdown = str(payload.get("memories_markdown", "") or "").strip()
+        raw_skill_markdown = str(payload.get("skill_markdown", "") or "").strip()
+        expected_name = self._build_cc_skill_name(
+            project_id=project_id,
+            target_role=resolved_target_role,
+            project_name=project_name,
+        )
+        expected_description = f"当需要以 {resolved_target_role} 的语气、立场与规则进行输出时使用。".strip()
+
+        text = raw_skill_markdown.lstrip()
+        frontmatter_body = ""
+        frontmatter_name = ""
+        frontmatter_description = ""
+        if text.startswith("---"):
+            lines = text.splitlines()
+            if lines and lines[0].strip() == "---":
+                end_index = None
+                for i in range(1, len(lines)):
+                    if lines[i].strip() == "---":
+                        end_index = i
+                        break
+                if end_index is not None:
+                    for line in lines[1:end_index]:
+                        if line.startswith("name:"):
+                            frontmatter_name = line.split(":", 1)[1].strip()
+                        if line.startswith("description:"):
+                            frontmatter_description = line.split(":", 1)[1].strip()
+                    frontmatter_body = "\n".join(lines[end_index + 1 :]).strip()
+
+        resolved_body = frontmatter_body or raw_skill_markdown
+        if "personality.md" not in resolved_body:
+            resolved_body = f"{resolved_body.strip()}\n\n更多人格底色见 personality.md。".strip()
+        if "memories.md" not in resolved_body:
+            resolved_body = f"{resolved_body.strip()}\n\n更多记忆与经历见 memories.md。".strip()
+
+        name_candidate = frontmatter_name.strip() if frontmatter_name else expected_name
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name_candidate or ""):
+            name_candidate = expected_name
+        if len(name_candidate) > 64:
+            name_candidate = expected_name
+        if any(word in name_candidate for word in ("claude", "anthropic")):
+            name_candidate = expected_name
+
+        description_candidate = frontmatter_description.strip() if frontmatter_description else expected_description
+        if not description_candidate:
+            description_candidate = expected_description
+
+        skill_markdown = self._wrap_cc_skill_frontmatter(
+            name=name_candidate,
+            description=description_candidate,
+            body=resolved_body,
+        )
+
+        return {
+            "target_role": resolved_target_role,
+            "source_context": resolved_source_context,
+            "documents": {
+                "skill": {
+                    "filename": CC_SKILL_DOCUMENT_FILENAMES["skill"],
+                    "markdown": skill_markdown,
+                },
+                "personality": {
+                    "filename": CC_SKILL_DOCUMENT_FILENAMES["personality"],
+                    "markdown": personality_markdown,
+                },
+                "memories": {
+                    "filename": CC_SKILL_DOCUMENT_FILENAMES["memories"],
+                    "markdown": memories_markdown,
                 },
             },
         }

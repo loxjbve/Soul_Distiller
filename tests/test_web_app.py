@@ -710,6 +710,123 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
     assert payload["prompt_text"] == payload["markdown_text"]
 
 
+def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Alice"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        repository.upsert_setting(
+            session,
+            "chat_service",
+            {
+                "provider_kind": "openai-compatible",
+                "base_url": "https://example.com/v1",
+                "api_key": "sk-test",
+                "model": "demo-model",
+                "api_mode": "responses",
+            },
+        )
+        repository.upsert_setting(
+            session,
+            "embedding_service",
+            {
+                "provider_kind": "openai-compatible",
+                "base_url": "https://example.com/v1",
+                "api_key": "sk-test",
+                "model": "demo-embedding",
+                "api_mode": "responses",
+            },
+        )
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "Alice 本人", "analysis_context": "Focus on realistic imitation."},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.9,
+            findings_json={"label": "Personality", "summary": "冷静、克制、强自我边界", "bullets": ["自我认知明确"]},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    retrieval_queries = []
+
+    def fake_search(session, *, project_id, query, embedding_config, **kwargs):
+        del session, project_id, embedding_config, kwargs
+        retrieval_queries.append(query)
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id="chunk-1",
+                    document_id="doc-1",
+                    document_title="Memo",
+                    filename="memo.txt",
+                    source_type="text",
+                    content="Alice 反复强调自己记得以前发生的细节，也会明确描述自己的状态。",
+                    score=1.0,
+                    page_number=None,
+                    metadata={},
+                )
+            ],
+            "hybrid",
+            {},
+        )
+
+    monkeypatch.setattr(app.state.retrieval, "search", fake_search)
+
+    llm_calls = []
+
+    def fake_chat_completion_result(self, messages, *, model, temperature, max_tokens=None, stream_handler=None):
+        del self, model, temperature, max_tokens
+        llm_calls.append(messages)
+        index = len(llm_calls)
+        if index == 1:
+            content = "# 核心身份与精神底色\n\n## 核心身份\nAlice 本人处于强自我边界的第一人称角色位。\n\n## 精神底色\n长期冷静、克制，但保持警惕。"
+        elif index == 2:
+            content = "# 核心记忆与经历\n\n## 关键记忆\n- 记得旧事细节\n\n## 长期经历脉络\n这些经历塑造了她对社群秩序和旧账细节的敏感。"
+        else:
+            content = (
+                "---\n"
+                "name: roleplay-alice\n"
+                "description: 当需要以 Alice 本人 的语气、立场与规则进行输出时使用。\n"
+                "---\n\n"
+                "# System Role: 扮演 Alice 本人\n\n"
+                "## 角色扮演规则\n- 保持第一人称、边界清楚。\n\n"
+                "更多人格底色见 personality.md。\n\n"
+                "更多记忆与经历见 memories.md。\n"
+            )
+            if callable(stream_handler):
+                stream_handler(content)
+        return ChatCompletionResult(
+            content=content,
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
+
+    response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"})
+    assert response.status_code == 200
+    payload = response.json()
+    documents = payload["json_payload"]["documents"]
+
+    assert len(llm_calls) == 3
+    assert retrieval_queries == ["性格特质 精神状态 自我认知 核心身份", "核心记忆 经历 过往重要事件"]
+    assert documents["skill"]["filename"] == "SKILL.md"
+    assert documents["skill"]["markdown"].startswith("---")
+    assert "name: roleplay-alice" in documents["skill"]["markdown"]
+    assert "personality.md" in documents["skill"]["markdown"]
+    assert "memories.md" in documents["skill"]["markdown"]
+    assert payload["markdown_text"].startswith("---")
+    assert payload["prompt_text"] == payload["markdown_text"]
+
+
 def test_skill_split_document_exports_work_for_draft_and_version(client, app):
     project_payload = client.post("/api/projects", json={"name": "Export Skill"}).json()
     project_id = project_payload["id"]
@@ -772,6 +889,58 @@ def test_skill_split_document_exports_work_for_draft_and_version(client, app):
     version_response = client.get(f"/api/projects/{project_id}/asset-versions/{version_id}/exports/merge")
     assert version_response.status_code == 200
     assert "# 核心身份与精神底色" in version_response.text
+
+
+def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app):
+    project_payload = client.post("/api/projects", json={"name": "Export CC Skill"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "Export CC Skill 本人", "analysis_context": "export docs"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={"label": "Personality", "summary": "边界清楚", "bullets": ["不多话"]},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    draft_payload = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"}).json()
+    draft_id = draft_payload["id"]
+
+    document_expectations = {
+        "skill": "---",
+        "personality": "# 核心身份与精神底色",
+        "memories": "# 核心记忆与经历",
+    }
+    for key, marker in document_expectations.items():
+        response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/{key}")
+        assert response.status_code == 200
+        assert marker in response.text
+
+    bundle_response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/bundle")
+    assert bundle_response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as archive:
+        assert set(archive.namelist()) == {"SKILL.md", "personality.md", "memories.md"}
+
+    publish_payload = client.post(
+        f"/api/projects/{project_id}/assets/{draft_id}/publish",
+        json={"asset_kind": "cc_skill"},
+    ).json()
+    version_id = publish_payload["id"]
+
+    version_response = client.get(f"/api/projects/{project_id}/asset-versions/{version_id}/exports/skill")
+    assert version_response.status_code == 200
+    assert "---" in version_response.text
 
 
 def test_analysis_export_uses_utf8_filename_for_unicode_project_names(client, app):

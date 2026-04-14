@@ -47,6 +47,7 @@ API_MODE_OPTIONS = (
 )
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
+    {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户剖析报告"},
 )
 
@@ -59,6 +60,7 @@ PROVIDER_OPTIONS = (
 )
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
+    {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
 )
 
@@ -73,6 +75,12 @@ SKILL_DOCUMENT_FILENAMES = {
     "personality": "personality.md",
     "memories": "memories.md",
     "merge": "Skill_merge.md",
+}
+CC_SKILL_DOCUMENT_ORDER = ("skill", "personality", "memories")
+CC_SKILL_DOCUMENT_FILENAMES = {
+    "skill": "SKILL.md",
+    "personality": "personality.md",
+    "memories": "memories.md",
 }
 
 
@@ -392,6 +400,7 @@ def assets_page(
             asset_label=_asset_label(asset_kind),
             asset_options=(
                 {"value": "skill", "label": "Skill"},
+                {"value": "cc_skill", "label": "Claude Code Skill"},
                 {"value": "profile_report", "label": "用户画像报告"},
             ),
             draft=draft,
@@ -1665,7 +1674,7 @@ def _persist_asset_files(
     (asset_dir / f"{base_name}.md").write_text(markdown_text, encoding="utf-8")
     (asset_dir / f"{base_name}.json").write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
     (asset_dir / f"{base_name}.prompt.txt").write_text(prompt_text, encoding="utf-8")
-    if asset_kind == "skill":
+    if asset_kind in {"skill", "cc_skill"}:
         for key, document in _skill_documents_for_export(asset_kind, json_payload, markdown_text).items():
             filename = document["filename"]
             content = document["markdown"]
@@ -1698,34 +1707,38 @@ def _skill_documents_for_export(
     json_payload: dict[str, Any] | None,
     markdown_text: str,
 ) -> dict[str, dict[str, str]]:
-    if asset_kind != "skill":
+    if asset_kind not in {"skill", "cc_skill"}:
         raise HTTPException(status_code=400, detail="Only skill assets support split document export.")
+
+    document_order = CC_SKILL_DOCUMENT_ORDER if asset_kind == "cc_skill" else SKILL_DOCUMENT_ORDER
+    filename_map = CC_SKILL_DOCUMENT_FILENAMES if asset_kind == "cc_skill" else SKILL_DOCUMENT_FILENAMES
 
     payload = json_payload or {}
     documents = payload.get("documents") if isinstance(payload, dict) else None
     export_docs: dict[str, dict[str, str]] = {}
 
     if isinstance(documents, dict):
-        for key in SKILL_DOCUMENT_ORDER:
+        for key in document_order:
             document = documents.get(key) or {}
             if isinstance(document, dict):
                 export_docs[key] = {
-                    "filename": str(document.get("filename") or SKILL_DOCUMENT_FILENAMES[key]),
+                    "filename": str(document.get("filename") or filename_map[key]),
                     "markdown": str(document.get("markdown") or "").strip(),
                 }
 
     if export_docs:
-        for key in SKILL_DOCUMENT_ORDER:
+        for key in document_order:
             export_docs.setdefault(
                 key,
-                {"filename": SKILL_DOCUMENT_FILENAMES[key], "markdown": ""},
+                {"filename": filename_map[key], "markdown": ""},
             )
-        merge_markdown = str(markdown_text or export_docs.get("merge", {}).get("markdown") or "").strip()
-        if merge_markdown:
-            export_docs["merge"] = {
-                "filename": export_docs.get("merge", {}).get("filename", SKILL_DOCUMENT_FILENAMES["merge"]),
-                "markdown": merge_markdown,
-            }
+        if asset_kind == "skill":
+            merge_markdown = str(markdown_text or export_docs.get("merge", {}).get("markdown") or "").strip()
+            if merge_markdown:
+                export_docs["merge"] = {
+                    "filename": export_docs.get("merge", {}).get("filename", filename_map["merge"]),
+                    "markdown": merge_markdown,
+                }
         return export_docs
 
     core_identity = str(payload.get("core_identity") or "").strip()
@@ -1752,24 +1765,26 @@ def _skill_documents_for_export(
     if not memories:
         memories_lines.insert(3, "- 旧版 Skill 未保存可拆分的记忆条目。")
     merge_markdown = str(markdown_text or "").strip()
-    return {
+    legacy_docs = {
         "skill": {
-            "filename": SKILL_DOCUMENT_FILENAMES["skill"],
+            "filename": filename_map["skill"],
             "markdown": merge_markdown,
         },
         "personality": {
-            "filename": SKILL_DOCUMENT_FILENAMES["personality"],
+            "filename": filename_map["personality"],
             "markdown": "\n".join(personality_lines).strip(),
         },
         "memories": {
-            "filename": SKILL_DOCUMENT_FILENAMES["memories"],
+            "filename": filename_map["memories"],
             "markdown": "\n".join(memories_lines).strip(),
         },
-        "merge": {
-            "filename": SKILL_DOCUMENT_FILENAMES["merge"],
-            "markdown": merge_markdown,
-        },
     }
+    if asset_kind == "skill":
+        legacy_docs["merge"] = {
+            "filename": filename_map["merge"],
+            "markdown": merge_markdown,
+        }
+    return legacy_docs
 
 
 def _resolve_skill_export_document(
@@ -1795,7 +1810,8 @@ def _build_skill_export_zip(
     documents = _skill_documents_for_export(asset_kind, json_payload, markdown_text)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        for key in SKILL_DOCUMENT_ORDER:
+        document_order = CC_SKILL_DOCUMENT_ORDER if asset_kind == "cc_skill" else SKILL_DOCUMENT_ORDER
+        for key in document_order:
             document = documents[key]
             zip_file.writestr(document["filename"], document["markdown"])
     buffer.seek(0)
@@ -1808,15 +1824,21 @@ def _normalize_saved_asset_content(
     markdown_text: str,
     prompt_text: str,
 ) -> tuple[dict[str, Any], str]:
-    if asset_kind != "skill":
+    if asset_kind not in {"skill", "cc_skill"}:
         return json_payload, prompt_text
 
     payload = dict(json_payload or {})
     documents = dict(payload.get("documents") or {})
-    merge_document = dict(documents.get("merge") or {})
-    merge_document["filename"] = str(merge_document.get("filename") or SKILL_DOCUMENT_FILENAMES["merge"])
-    merge_document["markdown"] = markdown_text
-    documents["merge"] = merge_document
+    if asset_kind == "skill":
+        merge_document = dict(documents.get("merge") or {})
+        merge_document["filename"] = str(merge_document.get("filename") or SKILL_DOCUMENT_FILENAMES["merge"])
+        merge_document["markdown"] = markdown_text
+        documents["merge"] = merge_document
+    else:
+        skill_document = dict(documents.get("skill") or {})
+        skill_document["filename"] = str(skill_document.get("filename") or CC_SKILL_DOCUMENT_FILENAMES["skill"])
+        skill_document["markdown"] = markdown_text
+        documents["skill"] = skill_document
     payload["documents"] = documents
     return payload, markdown_text
 
@@ -2192,7 +2214,11 @@ def _normalize_asset_kind(value: str | None) -> str:
 
 
 def _asset_label(asset_kind: str) -> str:
-    return "用户剖析报告" if asset_kind == "profile_report" else "Skill"
+    if asset_kind == "profile_report":
+        return "用户剖析报告"
+    if asset_kind == "cc_skill":
+        return "Claude Code Skill"
+    return "Skill"
 
 
 def _enqueue_analysis(
@@ -2429,7 +2455,11 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
 
 
 def _asset_label(asset_kind: str) -> str:
-    return "用户画像报告" if asset_kind == "profile_report" else "Skill"
+    if asset_kind == "profile_report":
+        return "用户画像报告"
+    if asset_kind == "cc_skill":
+        return "Claude Code Skill"
+    return "Skill"
 
 
 @router.websocket("/api/projects/{project_id}/documents/ws")

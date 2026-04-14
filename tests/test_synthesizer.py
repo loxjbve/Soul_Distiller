@@ -152,3 +152,54 @@ def test_skill_heuristic_markdown_uses_new_persona_blueprint():
     assert "## 调研来源" in markdown
     assert "# 核心身份与精神底色" in markdown
     assert "# 核心记忆与经历" in markdown
+
+
+def test_cc_skill_heuristic_generates_frontmatter_and_references():
+    project = Project(name="中文项目")
+    facets = [
+        AnalysisFacet(
+            facet_key="personality",
+            findings_json={"summary": "克制，先观察。", "bullets": ["先压住情绪再表达态度。"]},
+            evidence_json=[],
+            conflicts_json=[],
+        )
+    ]
+    synth = AssetSynthesizer()
+
+    bundle = synth.build("cc_skill", project, facets, config=None, target_role="中文角色", analysis_context="语料")
+    markdown = bundle.markdown_text
+
+    assert markdown.startswith("---")
+    assert "\nname: " in markdown
+    assert "\ndescription: " in markdown
+    assert "personality.md" in markdown
+    assert "memories.md" in markdown
+
+
+def test_cc_skill_llm_output_missing_frontmatter_is_wrapped(monkeypatch):
+    def fake_chat_completion_result(self, messages, **kwargs):
+        del messages, kwargs
+        return ChatCompletionResult(
+            content="# System Role: 扮演 Demo",
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        )
+
+    monkeypatch.setattr("app.analysis.synthesizer.OpenAICompatibleClient.chat_completion_result", fake_chat_completion_result)
+
+    project = Project(name="Demo")
+    project.id = "12345678-1234-1234-1234-123456789012"
+    synth = AssetSynthesizer()
+
+    bundle = synth.build(
+        "cc_skill",
+        project,
+        [AnalysisFacet(facet_key="personality", findings_json={"summary": "s", "bullets": []}, evidence_json=[], conflicts_json=[])],
+        ServiceConfig(base_url="https://example.com/v1", api_key="sk-test", model="demo-model"),
+    )
+
+    markdown = bundle.markdown_text
+    assert markdown.startswith("---")
+    assert "\nname: demo\n" in markdown
+    assert "personality.md" in markdown
+    assert "memories.md" in markdown
