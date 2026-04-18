@@ -676,7 +676,8 @@ class TelegramPreprocessWorker:
                         "Do not ask for tools. Do not request more data. Summarize only from the provided lines.\n"
                         "Return JSON with keys: title, summary, keywords, evidence_message_ids, participants.\n"
                         "participants must be objects containing participant_id, role_hint, message_count, mention_count.\n"
-                        "Use participant_id values from the provided participant directory when possible."
+                        "Use participant_id values from the provided participant directory when possible.\n"
+                        "IMPORTANT: You must output all textual content (such as title, summary, keywords, role_hint) in Chinese (中文)."
                     ),
                 },
                 {
