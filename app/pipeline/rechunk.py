@@ -123,7 +123,11 @@ class RechunkTaskManager:
             with self.db.session() as session:
                 document_ids = session.scalars(
                     select(DocumentRecord.id)
-                    .where(DocumentRecord.project_id == project_id, DocumentRecord.ingest_status == "ready")
+                    .where(
+                        DocumentRecord.project_id == project_id,
+                        DocumentRecord.ingest_status == "ready",
+                        DocumentRecord.source_type != "telegram_export",
+                    )
                 ).all()
                 self._update(task_id, document_total=len(document_ids))
                 total_chunks = 0
@@ -294,6 +298,8 @@ class RechunkTaskManager:
 
     @staticmethod
     def _build_document_chunks(document: DocumentRecord) -> list[dict[str, Any]]:
+        if document.source_type == "telegram_export":
+            return []
         clean_text = (document.clean_text or "").strip()
         if not clean_text:
             return []

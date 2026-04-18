@@ -18,6 +18,16 @@ from app.models import (
     Project,
     SkillDraft,
     SkillVersion,
+    TelegramChat,
+    TelegramMessage,
+    TelegramParticipant,
+    TelegramPreprocessTopUser,
+    TelegramPreprocessActiveUser,
+    TelegramPreprocessRun,
+    TelegramPreprocessWeeklyTopicCandidate,
+    TelegramPreprocessTopic,
+    TelegramPreprocessTopicParticipant,
+    TelegramTopicReport,
     TextChunk,
     utcnow,
 )
@@ -145,6 +155,16 @@ def delete_project_cascade(session: Session, project_id: str) -> None:
     for cid in child_ids:
         delete_project_cascade(session, cid)
 
+    session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.run_id.in_(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.project_id == project_id))))
+    session.execute(delete(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.project_id == project_id))
+    session.execute(delete(TelegramPreprocessTopUser).where(TelegramPreprocessTopUser.project_id == project_id))
+    session.execute(delete(TelegramPreprocessTopic).where(TelegramPreprocessTopic.project_id == project_id))
+    session.execute(delete(TelegramPreprocessActiveUser).where(TelegramPreprocessActiveUser.project_id == project_id))
+    session.execute(delete(TelegramPreprocessRun).where(TelegramPreprocessRun.project_id == project_id))
+    session.execute(delete(TelegramTopicReport).where(TelegramTopicReport.project_id == project_id))
+    session.execute(delete(TelegramMessage).where(TelegramMessage.project_id == project_id))
+    session.execute(delete(TelegramParticipant).where(TelegramParticipant.project_id == project_id))
+    session.execute(delete(TelegramChat).where(TelegramChat.project_id == project_id))
     session.execute(delete(TextChunk).where(TextChunk.project_id == project_id))
     session.execute(delete(DocumentRecord).where(DocumentRecord.project_id == project_id))
     session.execute(delete(AnalysisRun).where(AnalysisRun.project_id == project_id))
@@ -365,6 +385,661 @@ def get_document(session: Session, document_id: str) -> DocumentRecord | None:
     return session.scalar(stmt)
 
 
+def list_telegram_chats(session: Session, project_id: str) -> list[TelegramChat]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramChat)
+        .where(TelegramChat.project_id == target_project_id)
+        .order_by(desc(TelegramChat.created_at))
+    )
+    return list(session.scalars(stmt))
+
+
+def get_telegram_chat(session: Session, chat_id: str) -> TelegramChat | None:
+    stmt = select(TelegramChat).where(TelegramChat.id == chat_id)
+    return session.scalar(stmt)
+
+
+def get_latest_telegram_chat(session: Session, project_id: str) -> TelegramChat | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramChat)
+        .where(TelegramChat.project_id == target_project_id)
+        .order_by(desc(TelegramChat.created_at))
+    )
+    return session.scalars(stmt).first()
+
+
+def delete_telegram_export_by_document(session: Session, document_id: str) -> None:
+    chat_ids = list(
+        session.scalars(select(TelegramChat.id).where(TelegramChat.document_id == document_id))
+    )
+    if not chat_ids:
+        return
+    run_ids = list(
+        session.scalars(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.chat_id.in_(chat_ids)))
+    )
+    if run_ids:
+        session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.run_id.in_(run_ids)))
+        session.execute(delete(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.run_id.in_(run_ids)))
+        session.execute(delete(TelegramPreprocessTopUser).where(TelegramPreprocessTopUser.run_id.in_(run_ids)))
+        session.execute(delete(TelegramPreprocessTopic).where(TelegramPreprocessTopic.run_id.in_(run_ids)))
+        session.execute(delete(TelegramPreprocessActiveUser).where(TelegramPreprocessActiveUser.run_id.in_(run_ids)))
+        session.execute(delete(TelegramPreprocessRun).where(TelegramPreprocessRun.id.in_(run_ids)))
+    session.execute(delete(TelegramTopicReport).where(TelegramTopicReport.chat_id.in_(chat_ids)))
+    session.execute(delete(TelegramMessage).where(TelegramMessage.chat_id.in_(chat_ids)))
+    session.execute(delete(TelegramParticipant).where(TelegramParticipant.chat_id.in_(chat_ids)))
+    session.execute(delete(TelegramChat).where(TelegramChat.id.in_(chat_ids)))
+    session.flush()
+
+
+def replace_document_telegram_export(
+    session: Session,
+    *,
+    project_id: str,
+    document_id: str,
+    chat_payload: dict[str, Any],
+    participants: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> TelegramChat:
+    delete_telegram_export_by_document(session, document_id)
+
+    chat = TelegramChat(
+        project_id=project_id,
+        document_id=document_id,
+        telegram_chat_id=str(chat_payload.get("telegram_chat_id") or "") or None,
+        chat_type=str(chat_payload.get("chat_type") or "") or None,
+        title=str(chat_payload.get("title") or "") or None,
+        message_count=int(chat_payload.get("message_count") or 0),
+        participant_count=int(chat_payload.get("participant_count") or 0),
+        metadata_json=chat_payload.get("metadata_json"),
+    )
+    session.add(chat)
+    session.flush()
+
+    participant_id_by_key: dict[str, str] = {}
+    created_participants: list[TelegramParticipant] = []
+    for payload in participants:
+        participant = TelegramParticipant(
+            project_id=project_id,
+            chat_id=chat.id,
+            participant_key=str(payload.get("participant_key") or ""),
+            telegram_user_id=str(payload.get("telegram_user_id") or "") or None,
+            display_name=str(payload.get("display_name") or "") or None,
+            username=str(payload.get("username") or "") or None,
+            first_seen_at=payload.get("first_seen_at"),
+            last_seen_at=payload.get("last_seen_at"),
+            message_count=int(payload.get("message_count") or 0),
+            service_event_count=int(payload.get("service_event_count") or 0),
+            metadata_json=payload.get("metadata_json"),
+        )
+        session.add(participant)
+        created_participants.append(participant)
+    session.flush()
+
+    for participant in created_participants:
+        participant_id_by_key[participant.participant_key] = participant.id
+
+    for payload in messages:
+        participant_key = str(payload.get("participant_key") or "")
+        session.add(
+            TelegramMessage(
+                project_id=project_id,
+                chat_id=chat.id,
+                participant_id=participant_id_by_key.get(participant_key) if participant_key else None,
+                telegram_message_id=payload.get("telegram_message_id"),
+                message_type=str(payload.get("message_type") or "message"),
+                sent_at=payload.get("sent_at"),
+                sent_at_text=str(payload.get("sent_at_text") or "") or None,
+                unix_ts=payload.get("unix_ts"),
+                sender_name=str(payload.get("sender_name") or "") or None,
+                sender_ref=str(payload.get("sender_ref") or "") or None,
+                reply_to_message_id=payload.get("reply_to_message_id"),
+                reply_to_peer_id=str(payload.get("reply_to_peer_id") or "") or None,
+                media_type=str(payload.get("media_type") or "") or None,
+                action_type=str(payload.get("action_type") or "") or None,
+                file_path=str(payload.get("file_path") or "") or None,
+                file_name=str(payload.get("file_name") or "") or None,
+                mime_type=str(payload.get("mime_type") or "") or None,
+                width=payload.get("width"),
+                height=payload.get("height"),
+                duration_seconds=payload.get("duration_seconds"),
+                forwarded_from=str(payload.get("forwarded_from") or "") or None,
+                forwarded_from_id=str(payload.get("forwarded_from_id") or "") or None,
+                text_normalized=str(payload.get("text_normalized") or ""),
+                text_raw_json=payload.get("text_raw_json"),
+                reactions_json=payload.get("reactions_json"),
+                metadata_json=payload.get("metadata_json"),
+            )
+        )
+    session.flush()
+    return chat
+
+
+def list_telegram_participants(
+    session: Session,
+    project_id: str,
+    *,
+    chat_id: str | None = None,
+    limit: int | None = None,
+) -> list[TelegramParticipant]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramParticipant)
+        .where(TelegramParticipant.project_id == target_project_id)
+        .order_by(TelegramParticipant.message_count.desc(), TelegramParticipant.display_name.asc())
+    )
+    if chat_id:
+        stmt = stmt.where(TelegramParticipant.chat_id == chat_id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def list_telegram_messages(
+    session: Session,
+    project_id: str,
+    *,
+    chat_id: str | None = None,
+    participant_ids: list[str] | None = None,
+    text_query: str | None = None,
+    message_id_start: int | None = None,
+    message_id_end: int | None = None,
+    limit: int | None = None,
+    ascending: bool = True,
+) -> list[TelegramMessage]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = select(TelegramMessage).where(TelegramMessage.project_id == target_project_id)
+    if chat_id:
+        stmt = stmt.where(TelegramMessage.chat_id == chat_id)
+    if participant_ids:
+        stmt = stmt.where(TelegramMessage.participant_id.in_(participant_ids))
+    if text_query:
+        needle = f"%{text_query.strip()}%"
+        stmt = stmt.where(TelegramMessage.text_normalized.ilike(needle))
+    if message_id_start is not None:
+        stmt = stmt.where(TelegramMessage.telegram_message_id >= int(message_id_start))
+    if message_id_end is not None:
+        stmt = stmt.where(TelegramMessage.telegram_message_id <= int(message_id_end))
+    order_column = TelegramMessage.telegram_message_id.asc() if ascending else TelegramMessage.telegram_message_id.desc()
+    stmt = stmt.order_by(order_column)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_telegram_message_by_telegram_id(
+    session: Session,
+    project_id: str,
+    telegram_message_id: int,
+) -> TelegramMessage | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramMessage)
+        .where(
+            TelegramMessage.project_id == target_project_id,
+            TelegramMessage.telegram_message_id == telegram_message_id,
+        )
+        .order_by(desc(TelegramMessage.sent_at))
+    )
+    return session.scalars(stmt).first()
+
+
+def get_telegram_message_context(
+    session: Session,
+    project_id: str,
+    telegram_message_id: int,
+    *,
+    before: int = 3,
+    after: int = 3,
+) -> list[TelegramMessage]:
+    message = get_telegram_message_by_telegram_id(session, project_id, telegram_message_id)
+    if not message or message.telegram_message_id is None:
+        return []
+    return list_telegram_messages(
+        session,
+        project_id,
+        chat_id=message.chat_id,
+        message_id_start=message.telegram_message_id - max(before, 0),
+        message_id_end=message.telegram_message_id + max(after, 0),
+        limit=max(before, 0) + max(after, 0) + 1,
+        ascending=True,
+    )
+
+
+def replace_telegram_topic_reports(
+    session: Session,
+    *,
+    project_id: str,
+    chat_id: str,
+    reports: list[dict[str, Any]],
+) -> list[TelegramTopicReport]:
+    session.execute(delete(TelegramTopicReport).where(TelegramTopicReport.chat_id == chat_id))
+    created: list[TelegramTopicReport] = []
+    for payload in reports:
+        report = TelegramTopicReport(
+            project_id=project_id,
+            chat_id=chat_id,
+            stage_index=int(payload.get("stage_index") or 0),
+            status=str(payload.get("status") or "completed"),
+            title=str(payload.get("title") or "") or None,
+            summary=str(payload.get("summary") or ""),
+            time_summary=str(payload.get("time_summary") or "") or None,
+            start_message_id=payload.get("start_message_id"),
+            end_message_id=payload.get("end_message_id"),
+            start_at=payload.get("start_at"),
+            end_at=payload.get("end_at"),
+            message_count=int(payload.get("message_count") or 0),
+            participant_count=int(payload.get("participant_count") or 0),
+            topics_json=payload.get("topics_json"),
+            participants_json=payload.get("participants_json"),
+            evidence_json=payload.get("evidence_json"),
+            metadata_json=payload.get("metadata_json"),
+            llm_model=str(payload.get("llm_model") or "") or None,
+        )
+        session.add(report)
+        created.append(report)
+    session.flush()
+    return created
+
+
+def list_telegram_topic_reports(
+    session: Session,
+    project_id: str,
+    *,
+    chat_id: str | None = None,
+    limit: int | None = None,
+) -> list[TelegramTopicReport]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramTopicReport)
+        .where(TelegramTopicReport.project_id == target_project_id)
+        .order_by(TelegramTopicReport.stage_index.asc(), TelegramTopicReport.created_at.asc())
+    )
+    if chat_id:
+        stmt = stmt.where(TelegramTopicReport.chat_id == chat_id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def create_telegram_preprocess_run(
+    session: Session,
+    *,
+    project_id: str,
+    chat_id: str | None,
+    status: str = "queued",
+    llm_model: str | None = None,
+    summary_json: dict[str, Any] | None = None,
+) -> TelegramPreprocessRun:
+    run = TelegramPreprocessRun(
+        project_id=project_id,
+        chat_id=chat_id,
+        status=status,
+        llm_model=llm_model,
+        summary_json=summary_json,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def get_telegram_preprocess_run(session: Session, run_id: str) -> TelegramPreprocessRun | None:
+    stmt = (
+        select(TelegramPreprocessRun)
+        .where(TelegramPreprocessRun.id == run_id)
+        .options(
+            selectinload(TelegramPreprocessRun.top_users),
+            selectinload(TelegramPreprocessRun.weekly_topic_candidates),
+            selectinload(TelegramPreprocessRun.topics).selectinload(TelegramPreprocessTopic.participants),
+            selectinload(TelegramPreprocessRun.active_users),
+        )
+    )
+    return session.scalar(stmt)
+
+
+def list_telegram_preprocess_runs(session: Session, project_id: str, *, limit: int | None = None) -> list[TelegramPreprocessRun]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessRun)
+        .where(TelegramPreprocessRun.project_id == target_project_id)
+        .order_by(desc(TelegramPreprocessRun.created_at))
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(session.scalars(stmt))
+
+
+def get_latest_telegram_preprocess_run(
+    session: Session,
+    project_id: str,
+    *,
+    status: str | None = None,
+) -> TelegramPreprocessRun | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessRun)
+        .where(TelegramPreprocessRun.project_id == target_project_id)
+        .order_by(desc(TelegramPreprocessRun.created_at))
+    )
+    if status:
+        stmt = stmt.where(TelegramPreprocessRun.status == status)
+    return session.scalars(stmt).first()
+
+
+def get_latest_successful_telegram_preprocess_run(session: Session, project_id: str) -> TelegramPreprocessRun | None:
+    return get_latest_telegram_preprocess_run(session, project_id, status="completed")
+
+
+def get_active_telegram_preprocess_run(session: Session, project_id: str) -> TelegramPreprocessRun | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessRun)
+        .where(
+            TelegramPreprocessRun.project_id == target_project_id,
+            TelegramPreprocessRun.status.in_(("queued", "running")),
+        )
+        .order_by(desc(TelegramPreprocessRun.created_at))
+    )
+    return session.scalars(stmt).first()
+
+
+def replace_telegram_preprocess_top_users(
+    session: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    chat_id: str | None,
+    top_users: list[dict[str, Any]],
+) -> list[TelegramPreprocessTopUser]:
+    session.execute(delete(TelegramPreprocessTopUser).where(TelegramPreprocessTopUser.run_id == run_id))
+    created: list[TelegramPreprocessTopUser] = []
+    for payload in top_users:
+        participant_id = str(payload.get("participant_id") or "").strip()
+        if not participant_id:
+            continue
+        item = TelegramPreprocessTopUser(
+            run_id=run_id,
+            project_id=project_id,
+            chat_id=chat_id,
+            rank=int(payload.get("rank") or len(created) + 1),
+            participant_id=participant_id,
+            uid=str(payload.get("uid") or "") or None,
+            username=str(payload.get("username") or "") or None,
+            display_name=str(payload.get("display_name") or "") or None,
+            message_count=int(payload.get("message_count") or 0),
+            first_seen_at=payload.get("first_seen_at"),
+            last_seen_at=payload.get("last_seen_at"),
+            metadata_json=dict(payload.get("metadata_json") or {}),
+        )
+        session.add(item)
+        created.append(item)
+    session.flush()
+    return created
+
+
+def list_telegram_preprocess_top_users(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str,
+) -> list[TelegramPreprocessTopUser]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessTopUser)
+        .where(
+            TelegramPreprocessTopUser.project_id == target_project_id,
+            TelegramPreprocessTopUser.run_id == run_id,
+        )
+        .options(selectinload(TelegramPreprocessTopUser.participant))
+        .order_by(TelegramPreprocessTopUser.rank.asc(), TelegramPreprocessTopUser.created_at.asc())
+    )
+    return list(session.scalars(stmt))
+
+
+def get_telegram_preprocess_top_user(session: Session, top_user_id: str) -> TelegramPreprocessTopUser | None:
+    stmt = (
+        select(TelegramPreprocessTopUser)
+        .where(TelegramPreprocessTopUser.id == top_user_id)
+        .options(selectinload(TelegramPreprocessTopUser.participant))
+    )
+    return session.scalar(stmt)
+
+
+def replace_telegram_preprocess_weekly_topic_candidates(
+    session: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    chat_id: str | None,
+    weekly_candidates: list[dict[str, Any]],
+) -> list[TelegramPreprocessWeeklyTopicCandidate]:
+    session.execute(delete(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.run_id == run_id))
+    created: list[TelegramPreprocessWeeklyTopicCandidate] = []
+    for payload in weekly_candidates:
+        item = TelegramPreprocessWeeklyTopicCandidate(
+            run_id=run_id,
+            project_id=project_id,
+            chat_id=chat_id,
+            week_key=str(payload.get("week_key") or "").strip(),
+            start_at=payload.get("start_at"),
+            end_at=payload.get("end_at"),
+            start_message_id=payload.get("start_message_id"),
+            end_message_id=payload.get("end_message_id"),
+            message_count=int(payload.get("message_count") or 0),
+            participant_count=int(payload.get("participant_count") or 0),
+            top_participants_json=list(payload.get("top_participants_json") or []),
+            sample_messages_json=list(payload.get("sample_messages_json") or []),
+            metadata_json=dict(payload.get("metadata_json") or {}),
+        )
+        session.add(item)
+        created.append(item)
+    session.flush()
+    return created
+
+
+def list_telegram_preprocess_weekly_topic_candidates(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str,
+) -> list[TelegramPreprocessWeeklyTopicCandidate]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessWeeklyTopicCandidate)
+        .where(
+            TelegramPreprocessWeeklyTopicCandidate.project_id == target_project_id,
+            TelegramPreprocessWeeklyTopicCandidate.run_id == run_id,
+        )
+        .order_by(
+            TelegramPreprocessWeeklyTopicCandidate.week_key.asc(),
+            TelegramPreprocessWeeklyTopicCandidate.start_at.asc(),
+            TelegramPreprocessWeeklyTopicCandidate.created_at.asc(),
+        )
+    )
+    return list(session.scalars(stmt))
+
+
+def get_telegram_preprocess_weekly_topic_candidate(
+    session: Session,
+    candidate_id: str,
+) -> TelegramPreprocessWeeklyTopicCandidate | None:
+    stmt = select(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.id == candidate_id)
+    return session.scalar(stmt)
+
+
+def replace_telegram_preprocess_topics(
+    session: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    chat_id: str | None,
+    topics: list[dict[str, Any]],
+) -> list[TelegramPreprocessTopic]:
+    existing_topic_ids = list(
+        session.scalars(select(TelegramPreprocessTopic.id).where(TelegramPreprocessTopic.run_id == run_id))
+    )
+    if existing_topic_ids:
+        session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.topic_id.in_(existing_topic_ids)))
+    session.execute(delete(TelegramPreprocessTopic).where(TelegramPreprocessTopic.run_id == run_id))
+
+    created: list[TelegramPreprocessTopic] = []
+    for payload in topics:
+        topic = TelegramPreprocessTopic(
+            run_id=run_id,
+            project_id=project_id,
+            chat_id=chat_id,
+            topic_index=int(payload.get("topic_index") or len(created) + 1),
+            title=str(payload.get("title") or "").strip() or f"Topic {len(created) + 1}",
+            summary=str(payload.get("summary") or "").strip(),
+            start_at=payload.get("start_at"),
+            end_at=payload.get("end_at"),
+            start_message_id=payload.get("start_message_id"),
+            end_message_id=payload.get("end_message_id"),
+            message_count=int(payload.get("message_count") or 0),
+            participant_count=int(payload.get("participant_count") or 0),
+            keywords_json=list(payload.get("keywords_json") or payload.get("keywords") or []),
+            evidence_json=list(payload.get("evidence_json") or []),
+            metadata_json=dict(payload.get("metadata_json") or {}),
+        )
+        session.add(topic)
+        created.append(topic)
+    session.flush()
+
+    topic_id_by_index = {topic.topic_index: topic.id for topic in created}
+    topic_id_by_title = {topic.title: topic.id for topic in created}
+    for payload in topics:
+        topic_id = payload.get("topic_id")
+        if not topic_id:
+            topic_id = topic_id_by_index.get(int(payload.get("topic_index") or 0))
+        if not topic_id:
+            topic_id = topic_id_by_title.get(str(payload.get("title") or "").strip())
+        if not topic_id:
+            continue
+        for participant_payload in payload.get("participants") or []:
+            participant_id = str(participant_payload.get("participant_id") or "").strip()
+            if not participant_id:
+                continue
+            session.add(
+                TelegramPreprocessTopicParticipant(
+                    run_id=run_id,
+                    topic_id=topic_id,
+                    participant_id=participant_id,
+                    role_hint=str(participant_payload.get("role_hint") or "").strip() or None,
+                    message_count=int(participant_payload.get("message_count") or 0),
+                    mention_count=int(participant_payload.get("mention_count") or 0),
+                )
+            )
+    session.flush()
+    return created
+
+
+def replace_telegram_preprocess_active_users(
+    session: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    chat_id: str | None,
+    active_users: list[dict[str, Any]],
+) -> list[TelegramPreprocessActiveUser]:
+    session.execute(delete(TelegramPreprocessActiveUser).where(TelegramPreprocessActiveUser.run_id == run_id))
+    created: list[TelegramPreprocessActiveUser] = []
+    for payload in active_users:
+        participant_id = str(payload.get("participant_id") or "").strip()
+        if not participant_id:
+            continue
+        item = TelegramPreprocessActiveUser(
+            run_id=run_id,
+            project_id=project_id,
+            chat_id=chat_id,
+            participant_id=participant_id,
+            rank=int(payload.get("rank") or len(created) + 1),
+            uid=str(payload.get("uid") or "") or None,
+            username=str(payload.get("username") or "") or None,
+            display_name=str(payload.get("display_name") or "") or None,
+            primary_alias=str(payload.get("primary_alias") or "") or None,
+            aliases_json=list(payload.get("aliases_json") or []),
+            message_count=int(payload.get("message_count") or 0),
+            first_seen_at=payload.get("first_seen_at"),
+            last_seen_at=payload.get("last_seen_at"),
+            evidence_json=list(payload.get("evidence_json") or []),
+        )
+        session.add(item)
+        created.append(item)
+    session.flush()
+    return created
+
+
+def list_telegram_preprocess_topics(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str,
+) -> list[TelegramPreprocessTopic]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessTopic)
+        .where(
+            TelegramPreprocessTopic.project_id == target_project_id,
+            TelegramPreprocessTopic.run_id == run_id,
+        )
+        .options(
+            selectinload(TelegramPreprocessTopic.participants).selectinload(TelegramPreprocessTopicParticipant.participant)
+        )
+        .order_by(TelegramPreprocessTopic.topic_index.asc(), TelegramPreprocessTopic.start_at.asc())
+    )
+    return list(session.scalars(stmt))
+
+
+def list_telegram_preprocess_active_users(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str,
+) -> list[TelegramPreprocessActiveUser]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessActiveUser)
+        .where(
+            TelegramPreprocessActiveUser.project_id == target_project_id,
+            TelegramPreprocessActiveUser.run_id == run_id,
+        )
+        .options(selectinload(TelegramPreprocessActiveUser.participant))
+        .order_by(TelegramPreprocessActiveUser.rank.asc(), TelegramPreprocessActiveUser.created_at.asc())
+    )
+    return list(session.scalars(stmt))
+
+
+def search_telegram_participants(
+    session: Session,
+    project_id: str,
+    query: str,
+    *,
+    limit: int = 20,
+) -> list[TelegramParticipant]:
+    target_project_id = get_target_project_id(session, project_id)
+    needle = f"%{query.strip()}%"
+    stmt = (
+        select(TelegramParticipant)
+        .where(
+            TelegramParticipant.project_id == target_project_id,
+            or_(
+                TelegramParticipant.display_name.ilike(needle),
+                TelegramParticipant.username.ilike(needle),
+                TelegramParticipant.telegram_user_id.ilike(needle),
+                TelegramParticipant.participant_key.ilike(needle),
+            ),
+        )
+        .order_by(TelegramParticipant.message_count.desc(), TelegramParticipant.display_name.asc())
+        .limit(limit)
+    )
+    return list(session.scalars(stmt))
+
+
+def get_telegram_participant(session: Session, participant_id: str) -> TelegramParticipant | None:
+    return session.get(TelegramParticipant, participant_id)
+
+
 def update_document(
     session: Session,
     document: DocumentRecord,
@@ -384,6 +1059,7 @@ def update_document(
 
 
 def delete_document(session: Session, document: DocumentRecord) -> None:
+    delete_telegram_export_by_document(session, document.id)
     session.execute(delete(TextChunk).where(TextChunk.document_id == document.id))
     session.execute(delete(DocumentRecord).where(DocumentRecord.id == document.id))
 

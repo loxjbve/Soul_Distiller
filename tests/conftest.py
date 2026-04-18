@@ -22,11 +22,13 @@ def app():
     application.state.analysis_engine.use_processes = False
     application.state.analysis_runner.run_inline = True
     application.state.preprocess_service.run_inline = True
+    application.state.telegram_preprocess_manager.run_inline = True
     try:
         yield application
     finally:
         application.state.analysis_runner.shutdown()
         application.state.preprocess_service.shutdown()
+        application.state.telegram_preprocess_manager.shutdown()
         application.state.rechunk_manager.shutdown()
         application.state.db.close()
         shutil.rmtree(root_dir, ignore_errors=True)

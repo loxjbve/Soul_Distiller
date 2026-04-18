@@ -74,7 +74,10 @@ class DocumentIngestService:
         mime_type: str | None = None,
         source_type: str | None = None,
     ):
+        project = repository.get_project(session, project_id)
         source = source_type or self._infer_source_type(filename)
+        if project and project.mode == "telegram" and Path(filename).suffix.lower() == ".json":
+            source = "telegram_export"
         document_id = str(uuid4())
         storage_path = self._store_upload(project_id, document_id, filename, content)
 

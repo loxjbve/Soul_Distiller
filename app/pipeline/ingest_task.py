@@ -21,6 +21,9 @@ from app.pipeline.extractors import ExtractionError, extract_text
 from app.retrieval.vector_store import VectorStoreBatch, VectorStoreManager
 from app.schemas import ServiceConfig
 from app.storage import repository
+from app.telegram_support import parse_telegram_export
+
+import json
 
 EMBEDDING_DIMENSION_DEFAULT = 1024
 
@@ -206,6 +209,15 @@ class IngestTaskManager:
             return
         self._update_task(task, status=TaskStage.PARSING, progress_percent=5, started_at=utcnow().isoformat())
         try:
+            with self.db.session() as session:
+                project = repository.get_project(session, task.project_id)
+            if project and project.mode == "telegram":
+                self._process_telegram_document(task, content)
+                self._update_task(task, status=TaskStage.STORING, progress_percent=90)
+                if task.is_cancelled: return
+                self._finalize_document(task)
+                self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
+                return
             if task.is_cancelled: return
             result = extract_text(task.filename, content)
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
@@ -226,6 +238,48 @@ class IngestTaskManager:
         finally:
             if task.is_cancelled:
                 self._discard_task(task)
+
+    def _process_telegram_document(self, task: IngestTask, content: bytes) -> None:
+        try:
+            payload = json.loads(content.decode("utf-8-sig"))
+        except UnicodeDecodeError:
+            payload = json.loads(content.decode("utf-8"))
+        bundle = parse_telegram_export(payload)
+        self._update_task(
+            task,
+            status=TaskStage.CHUNKING,
+            progress_percent=45,
+            stages={
+                "telegram_message_count": len(bundle.messages),
+                "telegram_participant_count": len(bundle.participants),
+            },
+        )
+        with self.db.session() as session:
+            document = repository.get_document(session, task.document_id)
+            if document:
+                document.title = bundle.chat.get("title") or task.filename
+                document.author_guess = None
+                document.created_at_guess = None
+                document.raw_text = bundle.preview_text
+                document.clean_text = bundle.preview_text
+                document.language = "unknown"
+                document.source_type = "telegram_export"
+                document.metadata_json = {
+                    **bundle.metadata,
+                    "telegram_chat": bundle.chat,
+                }
+                document.ingest_status = "processing"
+                session.flush()
+            repository.replace_document_chunks(session, document_id=task.document_id, chunks=[])
+            repository.replace_document_telegram_export(
+                session,
+                project_id=task.project_id,
+                document_id=task.document_id,
+                chat_payload=bundle.chat,
+                participants=bundle.participants,
+                messages=bundle.messages,
+            )
+            session.commit()
 
     def _process_chunks(self, task: IngestTask, extraction_result: Any) -> None:
         chunks = chunk_segments(extraction_result.segments)

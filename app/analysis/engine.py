@@ -15,8 +15,21 @@ from sqlalchemy.orm import Session
 
 from app.analysis.facets import FACETS, FacetDefinition, get_facet_prompt_profile
 from app.analysis.streaming import AnalysisStreamHub
+from app.analysis.telegram_agent import TelegramAnalysisAgent
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
-from app.models import AnalysisFacet, AnalysisRun, DocumentRecord, TextChunk, utcnow
+from app.models import (
+    AnalysisFacet,
+    AnalysisRun,
+    DocumentRecord,
+    Project,
+    TelegramMessage,
+    TelegramParticipant,
+    TelegramPreprocessRun,
+    TelegramPreprocessTopic,
+    TelegramTopicReport,
+    TextChunk,
+    utcnow,
+)
 from app.retrieval.service import RetrievalService
 from app.schemas import (
     DEFAULT_ANALYSIS_CONCURRENCY,
@@ -282,6 +295,8 @@ class AnalysisEngine:
         project_id: str,
         *,
         target_role: str | None = None,
+        target_user_query: str | None = None,
+        participant_id: str | None = None,
         analysis_context: str | None = None,
         concurrency: int | None = None,
     ) -> AnalysisRun:
@@ -292,6 +307,8 @@ class AnalysisEngine:
             session,
             project_id,
             target_role=target_role,
+            target_user_query=target_user_query,
+            participant_id=participant_id,
             analysis_context=analysis_context,
         )
         summary["concurrency"] = _normalize_concurrency(concurrency)
@@ -316,6 +333,10 @@ class AnalysisEngine:
                     "retrieval_mode": None,
                     "hit_count": 0,
                     "target_role": summary.get("target_role"),
+                    "target_user": summary.get("target_user"),
+                    "target_user_query": summary.get("target_user_query"),
+                    "participant_id": summary.get("participant_id"),
+                    "preprocess_run_id": summary.get("preprocess_run_id"),
                     "analysis_context": summary.get("analysis_context"),
                     "llm_called": False,
                     "llm_success": None,
@@ -351,6 +372,8 @@ class AnalysisEngine:
         project_id: str,
         *,
         target_role: str | None = None,
+        target_user_query: str | None = None,
+        participant_id: str | None = None,
         analysis_context: str | None = None,
         concurrency: int | None = None,
     ) -> AnalysisRun:
@@ -358,6 +381,8 @@ class AnalysisEngine:
             session,
             project_id,
             target_role=target_role,
+            target_user_query=target_user_query,
+            participant_id=participant_id,
             analysis_context=analysis_context,
             concurrency=concurrency,
         )
@@ -394,13 +419,19 @@ class AnalysisEngine:
             run.id,
             event_type="lifecycle",
             message="分析任务开始执行。",
-            payload_json={"llm_enabled": bool(chat_config), "embedding_enabled": bool(embedding_config)},
+            payload_json={
+                "llm_enabled": bool(chat_config),
+                "embedding_enabled": bool(embedding_config) and project.mode != "telegram",
+                "analysis_mode": project.mode,
+            },
         )
         self._persist_progress(session, run.id)
         self._ensure_run_active(run.id, run.project_id)
 
-        if self.use_processes:
-            results = self._run_parallel_processes(
+        if project.mode == "telegram":
+            self._execute_telegram_run(session, run, project, chat_config)
+        elif self.use_processes:
+            self._run_parallel_processes(
                 session,
                 run,
                 project.name,
@@ -408,7 +439,7 @@ class AnalysisEngine:
                 embedding_config=embedding_config,
             )
         else:
-            results = self._run_parallel_threads(
+            self._run_parallel_threads(
                 session,
                 run,
                 project.name,
@@ -465,6 +496,15 @@ class AnalysisEngine:
         )
         run.status = "running"
         run.finished_at = None
+        if project.mode == "telegram":
+            return self._rerun_telegram_facet(
+                session,
+                run,
+                project,
+                facet_def,
+                chat_config,
+                llm_payload=llm_payload,
+            )
         self._mark_facet_preparing(session, run, facet_def)
         prepared = self._prepare_facet_execution(
             session,
@@ -521,6 +561,299 @@ class AnalysisEngine:
             event_type="facet",
             message=f"{facet_def.label} 已重新完成。",
             level="success" if result.status == "completed" else "error",
+            payload_json={"facet_key": facet_def.key},
+        )
+        self._persist_progress(session, run.id)
+        return repository.get_analysis_run(session, run.id) or run
+
+    def _build_telegram_agent(
+        self,
+        session: Session,
+        project: Project,
+        chat_config: ServiceConfig | None,
+    ) -> TelegramAnalysisAgent:
+        return TelegramAnalysisAgent(
+            session,
+            project,
+            llm_config=chat_config,
+            log_path=self.llm_log_path,
+        )
+
+    def _refresh_telegram_summary_counts(
+        self,
+        session: Session,
+        run: AnalysisRun,
+    ) -> dict[str, Any]:
+        summary = dict(run.summary_json or {})
+        preprocess_run = None
+        preprocess_run_id = summary.get("preprocess_run_id")
+        if preprocess_run_id:
+            preprocess_run = repository.get_telegram_preprocess_run(session, str(preprocess_run_id))
+        if not preprocess_run:
+            preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, run.project_id)
+        summary["chunk_count"] = 0
+        summary["telegram_message_count"] = int(
+            session.scalar(
+                select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == run.project_id)
+            )
+            or 0
+        )
+        summary["telegram_participant_count"] = int(
+            session.scalar(
+                select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == run.project_id)
+            )
+            or 0
+        )
+        summary["telegram_report_count"] = 0
+        summary["preprocess_run_id"] = preprocess_run.id if preprocess_run else None
+        summary["telegram_preprocess_topic_count"] = (
+            int(
+                session.scalar(
+                    select(func.count()).select_from(TelegramPreprocessTopic).where(
+                        TelegramPreprocessTopic.run_id == preprocess_run.id
+                    )
+                )
+                or 0
+            )
+            if preprocess_run
+            else 0
+        )
+        preprocess_summary = dict(preprocess_run.summary_json or {}) if preprocess_run else {}
+        summary["weekly_candidate_count"] = int(preprocess_summary.get("weekly_candidate_count") or 0)
+        summary["weekly_topic_count"] = int(summary.get("telegram_preprocess_topic_count") or 0)
+        run.summary_json = summary
+        return summary
+
+    @staticmethod
+    def _facet_result_from_payload(
+        facet: FacetDefinition,
+        payload: dict[str, Any],
+    ) -> FacetResult:
+        normalized_payload = dict(payload or {})
+        return FacetResult(
+            facet_key=facet.key,
+            status=str(normalized_payload.get("status") or "completed"),
+            confidence=_parse_confidence(normalized_payload.get("confidence"), 0.65),
+            summary=str(normalized_payload.get("summary") or ""),
+            bullets=list(normalized_payload.get("bullets") or []),
+            evidence=list(normalized_payload.get("evidence") or []),
+            conflicts=list(normalized_payload.get("conflicts") or []),
+            notes=normalized_payload.get("notes"),
+            raw_payload=normalized_payload,
+        )
+
+    def _execute_telegram_run(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        chat_config: ServiceConfig | None,
+    ) -> None:
+        agent = self._build_telegram_agent(session, project, chat_config)
+        summary = self._refresh_telegram_summary_counts(session, run)
+        if not summary.get("preprocess_run_id"):
+            raise ValueError("Telegram analysis requires a completed preprocess run.")
+        target_user = agent.resolve_target_user(
+            target_user_query=(run.summary_json or {}).get("target_user_query"),
+            participant_id=(run.summary_json or {}).get("participant_id"),
+            preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+        )
+        summary["target_user"] = target_user
+        summary["target_role"] = target_user.get("label") or target_user.get("primary_alias") or target_user.get("display_name")
+        run.summary_json = summary
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="lifecycle",
+            message="Telegram preprocess snapshot is ready.",
+            payload_json={
+                "preprocess_run_id": summary.get("preprocess_run_id"),
+                "target_user": target_user,
+                "telegram_message_count": summary.get("telegram_message_count", 0),
+                "telegram_participant_count": summary.get("telegram_participant_count", 0),
+                "telegram_preprocess_topic_count": summary.get("telegram_preprocess_topic_count", 0),
+            },
+        )
+        self._persist_progress(session, run.id)
+
+        llm_payload = asdict(chat_config) if chat_config else None
+        placeholder_trace = {
+            "mode": "telegram_agent",
+            "evidence_kind": "telegram_messages",
+            "tool_calls": [],
+            "preprocess_run_id": summary.get("preprocess_run_id"),
+            "target_user": target_user,
+            "topic_ids": [],
+            "queried_message_ids": [],
+        }
+        for facet_def in FACETS:
+            self._ensure_run_active(run.id, run.project_id)
+            self._mark_facet_preparing(session, run, facet_def)
+            self._mark_facet_running(
+                session,
+                run,
+                facet_def,
+                "telegram_agent",
+                placeholder_trace,
+                0,
+                llm_payload=llm_payload,
+            )
+            try:
+                analysis = agent.analyze_facet(
+                    facet_def,
+                    target_user_query=(run.summary_json or {}).get("target_user_query"),
+                    participant_id=(run.summary_json or {}).get("participant_id"),
+                    analysis_context=(run.summary_json or {}).get("analysis_context"),
+                    preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+                )
+                self._ensure_run_active(run.id, run.project_id)
+                retrieval_trace = dict(analysis.retrieval_trace or {})
+                retrieval_mode = str(retrieval_trace.get("mode") or "telegram_agent")
+                summary = dict(run.summary_json or {})
+                summary["topic_count_used"] = max(
+                    int(summary.get("topic_count_used", 0) or 0),
+                    int(retrieval_trace.get("topic_count_used", 0) or 0),
+                )
+                run.summary_json = summary
+                result = self._facet_result_from_payload(facet_def, analysis.payload)
+                self._apply_facet_result(
+                    session,
+                    run,
+                    facet_def,
+                    retrieval_mode,
+                    retrieval_trace,
+                    int(analysis.hit_count or 0),
+                    result,
+                )
+            except Exception as exc:
+                retrieval_mode = "telegram_agent_failed"
+                retrieval_trace = {
+                    "mode": retrieval_mode,
+                    "evidence_kind": "telegram_messages",
+                    "preprocess_run_id": summary.get("preprocess_run_id"),
+                    "error": self._format_exception(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                result = self._build_failed_facet_result(
+                    facet_def,
+                    exc,
+                    llm_called=bool(chat_config),
+                )
+                self._apply_facet_result(
+                    session,
+                    run,
+                    facet_def,
+                    retrieval_mode,
+                    retrieval_trace,
+                    0,
+                    result,
+                )
+
+    def _rerun_telegram_facet(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        facet_def: FacetDefinition,
+        chat_config: ServiceConfig | None,
+        *,
+        llm_payload: dict[str, Any] | None,
+    ) -> AnalysisRun:
+        agent = self._build_telegram_agent(session, project, chat_config)
+        self._refresh_telegram_summary_counts(session, run)
+        if not (run.summary_json or {}).get("preprocess_run_id"):
+            raise ValueError("Telegram analysis requires a completed preprocess run.")
+        target_user = agent.resolve_target_user(
+            target_user_query=(run.summary_json or {}).get("target_user_query"),
+            participant_id=(run.summary_json or {}).get("participant_id"),
+            preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+        )
+        summary = dict(run.summary_json or {})
+        summary["target_user"] = target_user
+        summary["target_role"] = target_user.get("label") or target_user.get("primary_alias") or target_user.get("display_name")
+        run.summary_json = summary
+        self._mark_facet_preparing(session, run, facet_def)
+        self._mark_facet_running(
+            session,
+            run,
+            facet_def,
+            "telegram_agent",
+            {
+                "mode": "telegram_agent",
+                "evidence_kind": "telegram_messages",
+                "tool_calls": [],
+                "preprocess_run_id": (run.summary_json or {}).get("preprocess_run_id"),
+                "target_user": target_user,
+                "topic_ids": [],
+                "queried_message_ids": [],
+            },
+            0,
+            llm_payload=llm_payload,
+        )
+        try:
+            analysis = agent.analyze_facet(
+                facet_def,
+                target_user_query=(run.summary_json or {}).get("target_user_query"),
+                participant_id=(run.summary_json or {}).get("participant_id"),
+                analysis_context=(run.summary_json or {}).get("analysis_context"),
+                preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+            )
+            self._ensure_run_active(run.id, run.project_id)
+            retrieval_trace = dict(analysis.retrieval_trace or {})
+            retrieval_mode = str(retrieval_trace.get("mode") or "telegram_agent")
+            summary = dict(run.summary_json or {})
+            summary["topic_count_used"] = max(
+                int(summary.get("topic_count_used", 0) or 0),
+                int(retrieval_trace.get("topic_count_used", 0) or 0),
+            )
+            run.summary_json = summary
+            result = self._facet_result_from_payload(facet_def, analysis.payload)
+            self._apply_facet_result(
+                session,
+                run,
+                facet_def,
+                retrieval_mode,
+                retrieval_trace,
+                int(analysis.hit_count or 0),
+                result,
+            )
+        except Exception as exc:
+            retrieval_mode = "telegram_agent_failed"
+            retrieval_trace = {
+                "mode": retrieval_mode,
+                "evidence_kind": "telegram_messages",
+                "preprocess_run_id": (run.summary_json or {}).get("preprocess_run_id"),
+                "error": self._format_exception(exc),
+                "traceback": traceback.format_exc(),
+            }
+            result = self._build_failed_facet_result(
+                facet_def,
+                exc,
+                llm_called=bool(chat_config),
+            )
+            self._apply_facet_result(
+                session,
+                run,
+                facet_def,
+                retrieval_mode,
+                retrieval_trace,
+                0,
+                result,
+            )
+
+        run.finished_at = utcnow()
+        summary = dict(run.summary_json or {})
+        run.status = "completed" if int(summary.get("failed_facets", 0)) == 0 else "partial_failed"
+        summary["finished_at"] = run.finished_at.isoformat()
+        run.summary_json = summary
+        self._recalculate_run_summary(session, run)
+        refreshed_facet = repository.get_facet(session, run.id, facet_def.key)
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="facet",
+            message=f"{facet_def.label} 宸查噸鏂板畬鎴愩€?",
+            level="success" if refreshed_facet and refreshed_facet.status == "completed" else "error",
             payload_json={"facet_key": facet_def.key},
         )
         self._persist_progress(session, run.id)
@@ -867,6 +1200,10 @@ class AnalysisEngine:
                 "retrieval_trace": None,
                 "hit_count": 0,
                 "target_role": summary.get("target_role"),
+                "target_user": summary.get("target_user"),
+                "target_user_query": summary.get("target_user_query"),
+                "participant_id": summary.get("participant_id"),
+                "preprocess_run_id": summary.get("preprocess_run_id"),
                 "analysis_context": summary.get("analysis_context"),
                 "llm_live_text": "",
                 "llm_called": False,
@@ -932,6 +1269,10 @@ class AnalysisEngine:
                 "retrieval_trace": retrieval_trace,
                 "hit_count": hit_count,
                 "target_role": summary.get("target_role"),
+                "target_user": summary.get("target_user"),
+                "target_user_query": summary.get("target_user_query"),
+                "participant_id": summary.get("participant_id"),
+                "preprocess_run_id": summary.get("preprocess_run_id"),
                 "analysis_context": summary.get("analysis_context"),
                 "llm_live_text": existing_findings.get("llm_live_text", ""),
                 "llm_called": False,
@@ -1025,6 +1366,10 @@ class AnalysisEngine:
                 "retrieval_trace": retrieval_trace,
                 "hit_count": hit_count,
                 "target_role": summary.get("target_role"),
+                "target_user": summary.get("target_user"),
+                "target_user_query": summary.get("target_user_query"),
+                "participant_id": summary.get("participant_id"),
+                "preprocess_run_id": summary.get("preprocess_run_id"),
                 "analysis_context": summary.get("analysis_context"),
                 "llm_live_text": "",
                 "llm_called": False,
@@ -1104,6 +1449,10 @@ class AnalysisEngine:
             "retrieval_trace": retrieval_trace,
             "hit_count": hit_count,
             "target_role": (run.summary_json or {}).get("target_role"),
+            "target_user": (run.summary_json or {}).get("target_user"),
+            "target_user_query": (run.summary_json or {}).get("target_user_query"),
+            "participant_id": (run.summary_json or {}).get("participant_id"),
+            "preprocess_run_id": (run.summary_json or {}).get("preprocess_run_id"),
             "analysis_context": (run.summary_json or {}).get("analysis_context"),
             "llm_called": bool(meta.get("llm_called", False)),
             "llm_success": meta.get("llm_success"),
@@ -1446,9 +1795,13 @@ class AnalysisEngine:
         project_id: str,
         *,
         target_role: str | None,
+        target_user_query: str | None,
+        participant_id: str | None,
         analysis_context: str | None,
     ) -> dict[str, Any]:
-        target_project_id = repository.get_target_project_id(session, project_id)
+        project = repository.get_project(session, project_id)
+        is_telegram = bool(project and project.mode == "telegram")
+        target_project_id = project_id if is_telegram else repository.get_target_project_id(session, project_id)
         document_count = (
             session.scalar(
                 select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
@@ -1456,10 +1809,14 @@ class AnalysisEngine:
             or 0
         )
         chunk_count = (
-            session.scalar(
-                select(func.count()).select_from(TextChunk).where(TextChunk.project_id == target_project_id)
+            0
+            if is_telegram
+            else (
+                session.scalar(
+                    select(func.count()).select_from(TextChunk).where(TextChunk.project_id == target_project_id)
+                )
+                or 0
             )
-            or 0
         )
         failed_count = (
             session.scalar(
@@ -1470,12 +1827,59 @@ class AnalysisEngine:
             )
             or 0
         )
+        telegram_message_count = 0
+        telegram_participant_count = 0
+        telegram_report_count = 0
+        preprocess_run_id = None
+        preprocess_topic_count = 0
+        weekly_candidate_count = 0
+        if is_telegram:
+            telegram_message_count = (
+                session.scalar(
+                    select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == project_id)
+                )
+                or 0
+            )
+            telegram_participant_count = (
+                session.scalar(
+                    select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == project_id)
+                )
+                or 0
+            )
+            telegram_report_count = (
+                session.scalar(
+                    select(func.count()).select_from(TelegramTopicReport).where(TelegramTopicReport.project_id == project_id)
+                )
+                or 0
+            )
+            latest_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+            if latest_preprocess_run:
+                preprocess_run_id = latest_preprocess_run.id
+                weekly_candidate_count = int((latest_preprocess_run.summary_json or {}).get("weekly_candidate_count") or 0)
+                preprocess_topic_count = (
+                    session.scalar(
+                        select(func.count()).select_from(TelegramPreprocessTopic).where(TelegramPreprocessTopic.run_id == latest_preprocess_run.id)
+                    )
+                    or 0
+                )
         return {
             "document_count": document_count,
             "chunk_count": chunk_count,
             "failed_document_count": failed_count,
+            "project_mode": project.mode if project else None,
+            "telegram_message_count": telegram_message_count,
+            "telegram_participant_count": telegram_participant_count,
+            "telegram_report_count": telegram_report_count,
+            "preprocess_run_id": preprocess_run_id,
+            "topic_count_used": 0,
+            "weekly_candidate_count": weekly_candidate_count,
+            "weekly_topic_count": preprocess_topic_count,
+            "telegram_preprocess_topic_count": preprocess_topic_count,
             "generated_at": utcnow().isoformat(),
             "target_role": (target_role or "").strip() or None,
+            "target_user_query": (target_user_query or "").strip() or None,
+            "participant_id": (participant_id or "").strip() or None,
+            "target_user": None,
             "analysis_context": (analysis_context or "").strip() or None,
             "total_facets": len(FACETS),
             "completed_facets": 0,

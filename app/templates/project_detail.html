@@ -39,7 +39,14 @@
                 <h2>{{ ui.upload_title }}</h2>
             </div>
             <span class="status-chip tone-processing">
-                {{ ui.workspace_mode }} · {{ ui.group_mode if project.mode == 'group' else ui.single_mode }}
+                {{ ui.workspace_mode }} ·
+                {% if project.mode == 'group' %}
+                    {{ ui.group_mode }}
+                {% elif project.mode == 'telegram' %}
+                    {{ ui.telegram_mode }}
+                {% else %}
+                    {{ ui.single_mode }}
+                {% endif %}
             </span>
         </div>
         <p class="section-note">{{ ui.upload_hint }}</p>
@@ -121,21 +128,48 @@
                 </div>
             </div>
             <form method="post" action="/projects/{{ project.id }}/analyze" class="form-stack" id="analyze-form">
-                <label>
-                    <span>{{ ui.analysis_target_role }}</span>
-                    <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" required>
-                </label>
-                <label>
-                    <span>{{ ui.analysis_context }}</span>
-                    <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
-                </label>
-                <label>
-                    <span>{{ ui.analysis_concurrency }}</span>
-                    <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1" max="20">
-                </label>
+                {% if project.mode == 'telegram' %}
+                    <label>
+                        <span>活跃用户快照</span>
+                        <select name="participant_id">
+                            <option value="">从活跃用户中选择</option>
+                            {% for user in telegram_active_users %}
+                                <option value="{{ user.participant_id }}" {% if analysis_defaults.participant_id == user.participant_id %}selected{% endif %}>
+                                    #{{ user.rank }} · {{ user.primary_alias or user.display_name or user.username or user.uid or user.participant_id }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>
+                        <span>目标用户搜索</span>
+                        <input type="text" name="target_user_query" value="{{ analysis_defaults.target_user_query }}" placeholder="昵称 / username / UID">
+                    </label>
+                    <label>
+                        <span>备注上下文</span>
+                        <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
+                    </label>
+                    <input type="hidden" name="concurrency" value="1">
+                    <p class="section-note">Telegram 分析会先读取预处理得到的用户与话题表，再按用户去原始消息表取证，不会走 embedding。</p>
+                    {% if not latest_successful_preprocess_run %}
+                        <p class="section-note">请先进入“预分析”页面运行一次 Telegram 预处理，成功后才能开始十维分析。</p>
+                    {% endif %}
+                {% else %}
+                    <label>
+                        <span>{{ ui.analysis_target_role }}</span>
+                        <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" required>
+                    </label>
+                    <label>
+                        <span>{{ ui.analysis_context }}</span>
+                        <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
+                    </label>
+                    <label>
+                        <span>{{ ui.analysis_concurrency }}</span>
+                        <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1" max="20">
+                    </label>
+                {% endif %}
                 <p class="section-note">{{ ui.analysis_help }}</p>
-                <button type="submit" class="primary-button" id="analyze-submit-btn" {% if stats.ready_count == 0 %}disabled{% endif %}>
-                    {{ ui.analysis_submit if stats.ready_count > 0 else ui.analysis_submit_disabled }}
+                <button type="submit" class="primary-button" id="analyze-submit-btn" {% if not can_analyze %}disabled{% endif %}>
+                    {{ ui.analysis_submit if can_analyze else ui.analysis_submit_disabled }}
                 </button>
             </form>
         {% endif %}
@@ -220,6 +254,7 @@
                 <select name="mode">
                     <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.group_mode }}</option>
                     <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.single_mode }}</option>
+                    <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.telegram_mode }}</option>
                 </select>
             </label>
             <div class="button-row button-row--end">

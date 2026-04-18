@@ -30,6 +30,7 @@ from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
 from app.storage import repository
+from app.telegram_preprocess import TelegramPreprocessManager
 from app.web.routes import router
 
 
@@ -38,7 +39,7 @@ def _recover_interrupted_analysis_runs(database: Database) -> None:
         active_runs = repository.list_active_analysis_runs(session)
         for run in active_runs:
             summary = dict(run.summary_json or {})
-            summary["current_stage"] = "Service restarted and the previous background analysis task was stopped."
+            summary["current_stage"] = "服务重启，旧的后台任务已终止"
             summary["current_facet"] = None
             summary["finished_at"] = utcnow().isoformat()
             run.summary_json = summary
@@ -49,7 +50,7 @@ def _recover_interrupted_analysis_runs(database: Database) -> None:
                 run.id,
                 event_type="lifecycle",
                 level="warning",
-                message="Detected a service restart. The unfinished analysis task was marked as failed.",
+                message="检测到服务重启，未完成的分析任务已被标记为失败。",
                 payload_json={"recovered_after_restart": True},
             )
 
@@ -63,6 +64,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     vector_store_manager = VectorStoreManager(config.data_dir)
     retrieval = RetrievalService(vector_store=vector_store_manager)
     analysis_stream_hub = AnalysisStreamHub()
+    telegram_preprocess_stream_hub = AnalysisStreamHub()
     analysis_engine = AnalysisEngine(
         retrieval,
         db=database,
@@ -92,6 +94,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
+    telegram_preprocess_manager = TelegramPreprocessManager(
+        database,
+        llm_log_path=str(config.llm_log_path),
+        max_workers=2,
+        stream_hub=telegram_preprocess_stream_hub,
+    )
     project_deletion_manager = ProjectDeletionManager(
         db=database,
         config=config,
@@ -100,9 +108,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         rechunk_manager=rechunk_manager,
         analysis_runner=analysis_runner,
         preprocess_service=preprocess_service,
+        telegram_preprocess_manager=telegram_preprocess_manager,
     )
 
     _recover_interrupted_analysis_runs(database)
+    telegram_preprocess_manager.resume_interrupted_runs()
     project_deletion_manager.resume_pending_deletions()
 
     @asynccontextmanager
@@ -113,6 +123,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             project_deletion_manager.shutdown()
             analysis_runner.shutdown()
             preprocess_service.shutdown()
+            telegram_preprocess_manager.shutdown()
             rechunk_manager.shutdown()
             ingest_task_manager.shutdown()
             vector_store_manager.save_all()
@@ -124,6 +135,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.retrieval = retrieval
     app.state.vector_store_manager = vector_store_manager
     app.state.analysis_stream_hub = analysis_stream_hub
+    app.state.telegram_preprocess_stream_hub = telegram_preprocess_stream_hub
     app.state.analysis_engine = analysis_engine
     app.state.analysis_runner = analysis_runner
     app.state.ingest_service = ingest_service
@@ -132,6 +144,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.asset_synthesizer = asset_synthesizer
     app.state.skill_synthesizer = asset_synthesizer
     app.state.preprocess_service = preprocess_service
+    app.state.telegram_preprocess_manager = telegram_preprocess_manager
     app.state.project_deletion_manager = project_deletion_manager
 
     static_dir = Path(__file__).resolve().parent / "static"

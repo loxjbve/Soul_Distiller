@@ -10,7 +10,7 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.config import AppConfig
 from app.db import Database
@@ -20,6 +20,10 @@ from app.models import (
     GeneratedArtifact,
     SkillDraft,
     SkillVersion,
+    TelegramPreprocessActiveUser,
+    TelegramPreprocessRun,
+    TelegramPreprocessTopic,
+    TelegramPreprocessTopicParticipant,
     TextChunk,
     utcnow,
 )
@@ -45,6 +49,7 @@ class ProjectDeletionManager:
         rechunk_manager: RechunkTaskManager,
         analysis_runner,
         preprocess_service: PreprocessAgentService,
+        telegram_preprocess_manager=None,
         max_workers: int = 1,
         batch_size: int = 1000,
         stop_timeout_s: float = 180.0,
@@ -56,6 +61,7 @@ class ProjectDeletionManager:
         self.rechunk_manager = rechunk_manager
         self.analysis_runner = analysis_runner
         self.preprocess_service = preprocess_service
+        self.telegram_preprocess_manager = telegram_preprocess_manager
         self.batch_size = max(1, batch_size)
         self.stop_timeout_s = max(1.0, stop_timeout_s)
         self.executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="project-delete")
@@ -175,6 +181,8 @@ class ProjectDeletionManager:
             self.rechunk_manager.cancel_project(project_id)
             self.analysis_runner.cancel_project(project_id)
             self.preprocess_service.cancel_project(project_id)
+            if self.telegram_preprocess_manager:
+                self.telegram_preprocess_manager.cancel_project(project_id)
 
     def _wait_for_quiet(self, project_ids: list[str]) -> None:
         deadline = time.time() + self.stop_timeout_s
@@ -191,18 +199,25 @@ class ProjectDeletionManager:
                 self.rechunk_manager.has_project_activity(project_id),
                 self.analysis_runner.has_project_activity(project_id),
                 self.preprocess_service.has_project_activity(project_id),
+                self.telegram_preprocess_manager.has_project_activity(project_id)
+                if self.telegram_preprocess_manager
+                else False,
             )
         )
 
     def _delete_database_rows(self, project_ids: list[str], task_id: str) -> None:
         ordered_project_ids = [str(item) for item in project_ids]
         reversed_project_ids = list(reversed(ordered_project_ids))
-        total_steps = 9
+        total_steps = 10
         completed_steps = 0
 
         def advance_progress() -> None:
             progress = 25 + int((completed_steps / total_steps) * 60)
             self._update_task(task_id, progress_percent=min(progress, 90))
+
+        self._delete_telegram_preprocess_tree(ordered_project_ids)
+        completed_steps += 1
+        advance_progress()
 
         self._delete_analysis_tree(ordered_project_ids)
         completed_steps += 1
@@ -261,6 +276,29 @@ class ProjectDeletionManager:
                         break
                     repository.delete_analysis_events_by_ids(session, event_ids)
                     session.commit()
+
+    def _delete_telegram_preprocess_tree(self, project_ids: list[str]) -> None:
+        with self.db.session() as session:
+            run_ids = [
+                str(item)
+                for item in session.scalars(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.project_id.in_(project_ids))).all()
+            ]
+        if not run_ids:
+            return
+        for index in range(0, len(run_ids), self.batch_size):
+            run_id_batch = run_ids[index:index + self.batch_size]
+            with self.db.session() as session:
+                topic_ids = [
+                    str(item)
+                    for item in session.scalars(select(TelegramPreprocessTopic.id).where(TelegramPreprocessTopic.run_id.in_(run_id_batch))).all()
+                ]
+                if topic_ids:
+                    session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.topic_id.in_(topic_ids)))
+                    session.commit()
+                session.execute(delete(TelegramPreprocessActiveUser).where(TelegramPreprocessActiveUser.run_id.in_(run_id_batch)))
+                session.execute(delete(TelegramPreprocessTopic).where(TelegramPreprocessTopic.run_id.in_(run_id_batch)))
+                session.execute(delete(TelegramPreprocessRun).where(TelegramPreprocessRun.id.in_(run_id_batch)))
+                session.commit()
 
     def _delete_chat_tree(self, project_ids: list[str]) -> None:
         while True:

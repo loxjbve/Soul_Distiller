@@ -43,6 +43,7 @@
                 <select name="mode">
                     <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
                     <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
+                    <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
                 </select>
             </label>
             <label>
@@ -67,8 +68,14 @@
                         <div class="project-card__copy">
                             <div class="project-card__title-row">
                                 <a class="project-card__title" href="/projects/{{ project.id }}">{{ project.name }}</a>
-                                <span class="status-chip {{ 'tone-processing' if project.mode == 'group' else 'tone-ready' }}">
-                                    {{ ui.mode_group if project.mode == 'group' else ui.mode_single }}
+                                <span class="status-chip {{ 'tone-processing' if project.mode == 'group' else ('tone-warning' if project.mode == 'telegram' else 'tone-ready') }}">
+                                    {% if project.mode == 'group' %}
+                                        {{ ui.mode_group }}
+                                    {% elif project.mode == 'telegram' %}
+                                        {{ ui.mode_telegram }}
+                                    {% else %}
+                                        {{ ui.mode_single }}
+                                    {% endif %}
                                 </span>
                             </div>
                             <p>{{ project.description or ui.project_description_empty }}</p>
@@ -115,6 +122,7 @@
                                     <select name="mode">
                                         <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
                                         <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
+                                        <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
                                     </select>
                                 </label>
                                 <div class="button-row button-row--end">

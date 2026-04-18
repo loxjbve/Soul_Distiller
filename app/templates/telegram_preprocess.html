@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} | Telegram 预处理{% endblock %}
+
+{% block content %}
+<section class="hero-panel">
+    <div class="hero-copy">
+        <p class="eyebrow">Telegram</p>
+        <h1>{{ project.name }} 的预处理任务</h1>
+        <p class="hero-note">上传结构化 JSON 后，系统会先把原始记录导入 SQLite，再执行 SQL 聚合、周话题 Agent 总结和活跃用户别名推断。页面会实时展示每一次 LLM 请求、工具调用和最终结构化结果。</p>
+    </div>
+    <div class="hero-actions">
+        <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
+        <form method="post" action="/projects/{{ project.id }}/preprocess/run">
+            <button type="submit" class="primary-button" {% if not can_start %}disabled{% endif %}>开始预处理</button>
+        </form>
+    </div>
+</section>
+
+<script type="application/json" id="telegram-preprocess-bootstrap">{{ telegram_preprocess_bootstrap | safe }}</script>
+
+<section class="layout-grid layout-grid--analysis">
+    <article class="surface-card">
+        <div class="section-head slim-head">
+            <div>
+                <p class="eyebrow">Current</p>
+                <h2>当前 Run</h2>
+            </div>
+            <span class="status-chip" id="telegram-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
+        </div>
+        <div class="metric-list">
+            <div class="metric-row"><span>阶段</span><strong id="telegram-preprocess-stage">{{ selected_run_data.current_stage if selected_run_data else "等待开始" }}</strong></div>
+            <div class="metric-row"><span>进度</span><strong id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</strong></div>
+            <div class="metric-row"><span>周候选数</span><strong id="telegram-preprocess-weekly-candidate-count">{{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>Top Users 数</span><strong id="telegram-preprocess-top-user-count">{{ selected_run_data.top_user_count if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>最终话题数</span><strong id="telegram-preprocess-topic-count">{{ selected_run_data.topic_count if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>活跃用户数</span><strong id="telegram-preprocess-active-user-count">{{ selected_run_data.active_user_count if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>Total Tokens</span><strong id="telegram-preprocess-total-tokens">{{ selected_run_data.total_tokens if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>Cache Read</span><strong id="telegram-preprocess-cache-read">{{ selected_run_data.cache_read_tokens if selected_run_data else 0 }}</strong></div>
+        </div>
+        <div class="progress-shell top-gap">
+            <div class="progress-bar">
+                <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+            </div>
+        </div>
+        <p class="helper-text top-gap" id="telegram-preprocess-run-meta">
+            {% if selected_run_data %}
+                {{ selected_run_data.created_at or selected_run_data.started_at or selected_run_data.id }}
+            {% else %}
+                暂无预处理 run
+            {% endif %}
+        </p>
+        <p class="section-note" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
+            {{ selected_run_data.error_message if selected_run_data else "" }}
+        </p>
+    </article>
+
+    <article class="surface-card">
+        <div class="section-head slim-head">
+            <div>
+                <p class="eyebrow">History</p>
+                <h2>历史 Run</h2>
+            </div>
+        </div>
+        {% if run_history %}
+            <div class="context-list">
+                {% for run in run_history %}
+                    <a class="context-item" href="/projects/{{ project.id }}/preprocess?run_id={{ run.id }}">
+                        <strong>{{ run.status }}</strong>
+                        <span>{{ run.current_stage or "queued" }}</span>
+                        <small>{{ run.created_at or run.started_at or run.id }}</small>
+                    </a>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="empty-panel">
+                <strong>暂无历史预处理记录。</strong>
+            </div>
+        {% endif %}
+    </article>
+</section>
+
+<section class="layout-grid layout-grid--analysis">
+    <article class="surface-card">
+        <div class="section-head slim-head">
+            <div>
+                <p class="eyebrow">Trace</p>
+                <h2>Subagent 时间线</h2>
+            </div>
+        </div>
+        <div id="telegram-preprocess-trace-list" class="context-list">
+            <div class="empty-panel">
+                <strong>等待任务事件。</strong>
+            </div>
+        </div>
+    </article>
+
+    <article class="surface-card">
+        <div class="section-head slim-head">
+            <div>
+                <p class="eyebrow">Live Output</p>
+                <h2>当前 LLM 输出</h2>
+            </div>
+        </div>
+        <p class="helper-text" id="telegram-preprocess-live-title">等待新的 LLM 请求开始。</p>
+        <pre class="trace-box live-trace-box" id="telegram-preprocess-live-output"></pre>
+    </article>
+</section>
+
+<section class="layout-grid layout-grid--analysis">
+    <article class="surface-card">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">SQL Intermediate</p>
+                <h2>Weekly Candidates</h2>
+            </div>
+        </div>
+        <div id="telegram-preprocess-weekly-candidates" class="document-board">
+            {% if not weekly_candidates %}
+                <div class="empty-panel"><strong>当前 Run 还没有周话题候选结果。</strong></div>
+            {% endif %}
+        </div>
+    </article>
+
+    <article class="surface-card">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">SQL Intermediate</p>
+                <h2>Top Users</h2>
+            </div>
+        </div>
+        <div id="telegram-preprocess-top-users" class="document-board">
+            {% if not top_users %}
+                <div class="empty-panel"><strong>当前 Run 还没有 SQL Top Users 结果。</strong></div>
+            {% endif %}
+        </div>
+    </article>
+</section>
+
+<section class="surface-card">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Final Result</p>
+            <h2>周话题表</h2>
+        </div>
+    </div>
+    <div id="telegram-preprocess-topics" class="document-board">
+        {% if not topics %}
+            <div class="empty-panel"><strong>当前 Run 还没有最终话题结果。</strong></div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="surface-card">
+    <div class="section-head">
+        <div>
+            <p class="eyebrow">Final Result</p>
+            <h2>活跃用户表</h2>
+        </div>
+    </div>
+    <div id="telegram-preprocess-active-users" class="document-board">
+        {% if not active_users %}
+            <div class="empty-panel"><strong>当前 Run 还没有活跃用户结果。</strong></div>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}"></script>
+{% endblock %}

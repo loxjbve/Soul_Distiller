@@ -419,11 +419,32 @@ class OpenAICompatibleClient:
         input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
         output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
         total_tokens = usage.get("total_tokens", 0)
+        cache_creation_tokens = 0
+        cache_read_tokens = 0
+        input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
+        output_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details") or {}
+        if isinstance(input_details, dict):
+            cache_read_tokens = int(
+                input_details.get("cached_tokens")
+                or input_details.get("cache_read_tokens")
+                or usage.get("cache_read_tokens")
+                or 0
+            )
+        if isinstance(output_details, dict):
+            cache_creation_tokens = int(
+                output_details.get("cache_creation_tokens")
+                or output_details.get("cache_write_tokens")
+                or 0
+            )
+        if not cache_creation_tokens:
+            cache_creation_tokens = int(usage.get("cache_creation_tokens") or 0)
         if input_tokens or output_tokens or total_tokens:
             return {
                 "prompt_tokens": int(input_tokens),
                 "completion_tokens": int(output_tokens),
                 "total_tokens": int(total_tokens or (int(input_tokens) + int(output_tokens))),
+                "cache_creation_tokens": cache_creation_tokens,
+                "cache_read_tokens": cache_read_tokens,
             }
         prompt_text = "\n".join(str(message.get("content", "")) for message in messages)
         prompt_tokens = token_count(prompt_text)
@@ -432,6 +453,8 @@ class OpenAICompatibleClient:
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            "cache_creation_tokens": 0,
+            "cache_read_tokens": 0,
         }
 
     @staticmethod

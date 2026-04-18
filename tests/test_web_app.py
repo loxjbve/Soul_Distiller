@@ -1144,6 +1144,7 @@ def test_create_app_recovers_stale_active_runs():
     finally:
         first_app.state.analysis_runner.shutdown()
         first_app.state.preprocess_service.shutdown()
+        first_app.state.telegram_preprocess_manager.shutdown()
         first_app.state.rechunk_manager.shutdown()
         first_app.state.db.close()
 
@@ -1161,6 +1162,7 @@ def test_create_app_recovers_stale_active_runs():
     finally:
         second_app.state.analysis_runner.shutdown()
         second_app.state.preprocess_service.shutdown()
+        second_app.state.telegram_preprocess_manager.shutdown()
         second_app.state.rechunk_manager.shutdown()
         second_app.state.db.close()
         if root_dir.exists():

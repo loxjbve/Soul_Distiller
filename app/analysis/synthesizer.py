@@ -53,7 +53,7 @@ class AssetSynthesizer:
             progress_callback,
             phase="prepare",
             progress_percent=12,
-            message="正在读取多维分析结果",
+            message="Reading multi-facet analysis results.",
         )
         structured = (
             self._with_llm(
@@ -82,13 +82,13 @@ class AssetSynthesizer:
                 progress_callback,
                 phase="heuristic",
                 progress_percent=72,
-                message="未配置 LLM，已使用本地规则合成草稿",
+                message="LLM is not configured; using the local heuristic draft.",
             )
         self._emit_progress(
             progress_callback,
             phase="render",
             progress_percent=86,
-            message="正在整理结构化字段",
+            message="Formatting structured fields.",
         )
         if normalized_kind == "skill":
             markdown = self._get_skill_merge_markdown(structured)
@@ -103,7 +103,7 @@ class AssetSynthesizer:
             progress_callback,
             phase="bundle",
             progress_percent=92,
-            message="正在生成 Markdown 和 Prompt",
+            message="Building Markdown and prompt.",
         )
         return AssetBundle(
             asset_kind=normalized_kind,
@@ -156,7 +156,7 @@ class AssetSynthesizer:
                     progress_callback,
                     phase="fallback",
                     progress_percent=68,
-                    message="模型输出不可用，正在回退为本地规则草稿",
+                    message="Model output was unusable, falling back to local heuristics.",
                 )
                 return self._heuristic(
                     asset_kind,
@@ -185,7 +185,7 @@ class AssetSynthesizer:
                     progress_callback,
                     phase="fallback",
                     progress_percent=68,
-                    message="模型输出不可用，正在回退为本地规则草稿",
+                    message="Model output was unusable, falling back to local heuristics.",
                 )
                 return self._heuristic(
                     asset_kind,
@@ -207,7 +207,7 @@ class AssetSynthesizer:
                 progress_callback,
                 phase="synthesis",
                 progress_percent=52,
-                message="LLM 正在生成结构化草稿",
+                message="LLM is generating the structured draft.",
             )
             response = client.chat_completion_result(
                 messages,
@@ -216,16 +216,14 @@ class AssetSynthesizer:
                 max_tokens=None,
                 stream_handler=stream_callback,
             )
-            
             flush_remaining = getattr(stream_callback, "_flush_remaining", None)
             if callable(flush_remaining):
                 flush_remaining()
-
             self._emit_progress(
                 progress_callback,
                 phase="normalize",
                 progress_percent=78,
-                message="正在规范化模型返回字段",
+                message="Normalizing model output.",
             )
             parsed = parse_json_response(response.content, fallback=True)
             return self._normalize_profile_report_payload(
@@ -239,7 +237,7 @@ class AssetSynthesizer:
                 progress_callback,
                 phase="fallback",
                 progress_percent=68,
-                message="模型输出不可用，正在回退为本地规则草稿",
+                message="Model output was unusable, falling back to local heuristics.",
             )
             return self._heuristic(
                 asset_kind,
@@ -335,7 +333,7 @@ class AssetSynthesizer:
         memories_markdown = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
-        if session and retrieval_service:
+        if session and retrieval_service and project.mode != "telegram":
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
@@ -345,7 +343,7 @@ class AssetSynthesizer:
                 query="性格特质 精神状态 自我认知 核心身份",
                 phase="personality_context",
                 progress_percent=24,
-                progress_message="正在生成 personality.md",
+                progress_message="Building personality.md",
                 message_builder=build_personality_messages,
                 target_role=target_role,
                 analysis_context=analysis_context,
@@ -363,7 +361,7 @@ class AssetSynthesizer:
                 query="核心记忆 经历 过往重要事件",
                 phase="memory_context",
                 progress_percent=36,
-                progress_message="正在生成 memories.md",
+                progress_message="Building memories.md",
                 message_builder=build_memories_messages,
                 target_role=target_role,
                 analysis_context=analysis_context,
@@ -377,7 +375,7 @@ class AssetSynthesizer:
             progress_callback,
             phase="synthesis",
             progress_percent=52,
-            message="LLM 正在生成 Skill.md",
+            message="LLM is generating Skill.md",
         )
         messages = build_asset_messages(
             "skill",
@@ -401,7 +399,7 @@ class AssetSynthesizer:
             progress_callback,
             phase="merge",
             progress_percent=78,
-            message="正在拼接 Skill_merge.md",
+            message="Merging Skill_merge.md",
         )
         return self._normalize_skill_payload(
             {
@@ -437,7 +435,7 @@ class AssetSynthesizer:
         memories_markdown = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
-        if session and retrieval_service:
+        if session and retrieval_service and project.mode != "telegram":
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
@@ -447,7 +445,7 @@ class AssetSynthesizer:
                 query="性格特质 精神状态 自我认知 核心身份",
                 phase="personality_context",
                 progress_percent=24,
-                progress_message="正在生成 personality.md",
+                progress_message="Building personality.md",
                 message_builder=build_personality_messages,
                 target_role=target_role,
                 analysis_context=analysis_context,
@@ -465,7 +463,7 @@ class AssetSynthesizer:
                 query="核心记忆 经历 过往重要事件",
                 phase="memory_context",
                 progress_percent=36,
-                progress_message="正在生成 memories.md",
+                progress_message="Building memories.md",
                 message_builder=build_memories_messages,
                 target_role=target_role,
                 analysis_context=analysis_context,
@@ -479,7 +477,7 @@ class AssetSynthesizer:
             progress_callback,
             phase="synthesis",
             progress_percent=52,
-            message="LLM 正在生成 SKILL.md",
+            message="LLM is generating SKILL.md",
         )
         messages = build_cc_skill_messages(
             project.id,
@@ -587,7 +585,7 @@ class AssetSynthesizer:
             core_identity.strip() or "资料不足时，优先维持已知身份边界，不额外脑补。",
             "",
             "## 精神底色",
-            mental_state.strip() or "资料不足时，保持克制、保守、不过度延展。",
+            mental_state.strip() or "资料不足时，保持克制、保守，不过度延展。",
         ]
         return "\n".join(lines).strip()
 
@@ -621,11 +619,8 @@ class AssetSynthesizer:
     ) -> dict[str, Any]:
         summary_by_key = {facet.facet_key: (facet.findings_json or {}) for facet in facets}
         evidence_by_key = {facet.facet_key: (facet.evidence_json or []) for facet in facets}
-        conflict_notes = [
-            conflict
-            for facet in facets
-            for conflict in (facet.conflicts_json or [])
-        ]
+        conflict_notes = [conflict for facet in facets for conflict in (facet.conflicts_json or [])]
+
         if asset_kind == "skill":
             skill_payload = _build_skill_payload_from_facets(
                 project_name=project.name,
@@ -692,10 +687,7 @@ class AssetSynthesizer:
             "core_values_and_triggers": summary_by_key.get("values_preferences", {}).get("summary", ""),
             "linguistic_signature": summary_by_key.get("language_style", {}).get("summary", ""),
             "psychological_profile": summary_by_key.get("personality", {}).get("summary", ""),
-            "contradictions": [
-                _stringify_conflict(conflict)
-                for conflict in conflict_notes[:8]
-            ],
+            "contradictions": [_stringify_conflict(conflict) for conflict in conflict_notes[:8]],
             "observer_conclusion": summary_by_key.get("life_timeline", {}).get("summary", "")
             or summary_by_key.get("narrative_boundaries", {}).get("summary", ""),
             "target_role": target_role or project.name,
@@ -790,6 +782,7 @@ class AssetSynthesizer:
         personality_markdown = str(payload.get("personality_markdown", "") or "").strip()
         memories_markdown = str(payload.get("memories_markdown", "") or "").strip()
         raw_skill_markdown = str(payload.get("skill_markdown", "") or "").strip()
+
         expected_name = self._build_cc_skill_name(
             project_id=project_id,
             target_role=resolved_target_role,
@@ -813,7 +806,7 @@ class AssetSynthesizer:
                     for line in lines[1:end_index]:
                         if line.startswith("name:"):
                             frontmatter_name = line.split(":", 1)[1].strip()
-                        if line.startswith("description:"):
+                        elif line.startswith("description:"):
                             frontmatter_description = line.split(":", 1)[1].strip()
                     frontmatter_body = "\n".join(lines[end_index + 1 :]).strip()
 
@@ -891,97 +884,43 @@ class AssetSynthesizer:
             "## 角色扮演规则",
         ]
         lines.extend(f"- {item}" for item in payload["role_playing_rules"])
-        lines.extend(
-            [
-                "",
-                "## 回答工作流",
-            ]
-        )
+        lines.extend(["", "## 回答工作流"])
         lines.extend(f"- {item}" for item in payload["agentic_protocol"])
-        lines.extend(
-            [
-                "",
-                "## 身份卡",
-            ]
-        )
+        lines.extend(["", "## 身份卡"])
         lines.extend(f"- {item}" for item in payload["identity_card"])
-        lines.extend(
-            [
-                "",
-                "## 核心心智模型",
-            ]
-        )
+        lines.extend(["", "## 核心心智模型"])
         lines.extend(f"- {item}" for item in payload["core_mental_models"])
-        lines.extend(
-            [
-                "",
-                "## 决策启发式",
-            ]
-        )
+        lines.extend(["", "## 决策启发式"])
         lines.extend(f"- {item}" for item in payload["decision_heuristics"])
-        lines.extend(
-            [
-                "",
-                "## 高置信领域",
-            ]
-        )
+        lines.extend(["", "## 高置信领域"])
         lines.extend(f"- {item}" for item in payload["high_confidence_areas"])
-        lines.extend(
-            [
-                "",
-                "## 表达 DNA",
-            ]
-        )
+        lines.extend(["", "## 表达 DNA"])
         lines.extend(f"- {item}" for item in payload["expression_dna"])
-        lines.extend(
-            [
-                "",
-                "## 人物时间线",
-            ]
-        )
+        lines.extend(["", "## 人物时间线"])
         lines.extend(f"- {item}" for item in payload["character_timeline"])
-        lines.extend(
-            [
-                "",
-                "## 价值观与反模式",
-            ]
-        )
+        lines.extend(["", "## 价值观与反模式"])
         lines.extend(f"- {item}" for item in payload["values_and_anti_patterns"])
-        lines.extend(
-            [
-                "",
-                "## 智识谱系",
-            ]
-        )
+        lines.extend(["", "## 智识谱系"])
         lines.extend(f"- {item}" for item in payload["intellectual_lineage"])
-        lines.extend(
-            [
-                "",
-                "## 诚实边界",
-            ]
-        )
+        lines.extend(["", "## 诚实边界"])
         lines.extend(f"- {item}" for item in payload["honesty_boundaries"])
-        lines.extend(
-            [
-                "",
-                "## Few-Shot 切片",
-            ]
-        )
-        for item in payload["few_shots"]:
-            lines.extend(
-                [
-                    f"### {item['scene']}",
-                    f"- Context: {item['context']}",
-                    f"- Reply: {item['reply']}",
-                    "",
-                ]
-            )
-        if not payload["few_shots"]:
+        lines.extend(["", "## Few-Shot 切片"])
+        if payload["few_shots"]:
+            for item in payload["few_shots"]:
+                lines.extend(
+                    [
+                        f"### {item['scene']}",
+                        f"- Context: {item['context']}",
+                        f"- Reply: {item['reply']}",
+                        "",
+                    ]
+                )
+        else:
             lines.extend(["- 暂无足够短引语，优先沿用已知语气与断句。", ""])
         lines.extend(["## 调研来源"])
         lines.extend(f"- {item}" for item in payload["research_sources"])
         if payload["source_context"]:
-            lines.extend(["", "## 语料说明", payload["source_context"], ""])
+            lines.extend(["", "## 语料说明", payload["source_context"]])
         if payload["conflict_notes"]:
             lines.extend(["", "## 冲突备注"])
             lines.extend(f"- {_stringify_conflict(item)}" for item in payload["conflict_notes"])
@@ -1054,7 +993,7 @@ class AssetSynthesizer:
             "## 第八章：矛盾与裂缝",
             *[f"- {item}" for item in payload["contradictions"]],
             "",
-            "## 第九章：观察者结语",
+            "## 第九章：观察者结论",
             payload["observer_conclusion"],
         ]
         if payload["source_context"]:
@@ -1125,7 +1064,6 @@ def _build_skill_payload_from_facets(
     interpersonal_summary = _facet_summary(summary_by_key, "interpersonal_mechanics")
     subculture_summary = _facet_summary(summary_by_key, "subculture_refuge")
 
-    personality_bullets = _facet_bullets(summary_by_key, "personality")
     physical_bullets = _facet_bullets(summary_by_key, "physical_anchor")
     values_bullets = _facet_bullets(summary_by_key, "values_preferences")
     timeline_bullets = _facet_bullets(summary_by_key, "life_timeline", limit=8)
@@ -1136,14 +1074,14 @@ def _build_skill_payload_from_facets(
     subculture_bullets = _facet_bullets(summary_by_key, "subculture_refuge")
 
     core_identity = _first_nonempty(personality_summary, f"围绕 {project_name} 的角色设定。")
-    mental_state = _first_nonempty(physical_summary, personality_summary, "保持克制、保守、不过度延展。")
+    mental_state = _first_nonempty(physical_summary, personality_summary, "保持克制、保守，不过度延展。")
     memories = timeline_bullets or [timeline_summary or "资料不足，先保守保留时间线轮廓。"]
     high_confidence_areas = _merge_bullets(subculture_bullets, timeline_bullets, social_bullets, limit=8)
     if not high_confidence_areas:
         high_confidence_areas = ["已知经历、熟悉圈层语言、现实处境和长期反复出现的话题。"]
 
     role_playing_rules = _merge_bullets(
-        [f"始终用第一人称“我”回应，把自己放回 {target_role} 的现实坐标里。"],
+        [f"始终用第一人称“我”回应，把自己放在 {target_role} 的现实坐标里。"],
         [f"默认保持这层精神底色：{mental_state}"],
         [f"先守边界再展开：{_first_nonempty(boundary_summary, '资料不足时不扩写未证实经历。')}"],
         interpersonal_bullets[:2],
@@ -1158,7 +1096,7 @@ def _build_skill_payload_from_facets(
     agentic_protocol = [
         "Step 1. 先判断问题属于高置信领域、邻近问题、越界问题，还是需要实时事实核验的问题。",
         f"Step 2. 如果系统提供记忆或 RAG 检索，先回想或检索与 {high_confidence_hint} 相关的经历、旧话题和原话切片，再组织回答。",
-        "Step 3. 如果问题依赖实时世界事实且当前系统提供联网/搜索工具，先查证再开口；如果没有工具，就明确说明只能基于现有记忆保守回答。",
+        "Step 3. 如果问题依赖实时世界事实且当前系统提供联网搜索工具，先查证再开口；如果没有工具，就明确说明只能基于现有记忆保守回答。",
         "Step 4. 回答时先调用核心心智模型和决策启发式，再把判断翻译成这个人的口气，而不是直接输出通用建议。",
         "Step 5. 一旦触到诚实边界或禁区，先承认局限，再给有限、角色内的回应。",
     ]
@@ -1171,49 +1109,17 @@ def _build_skill_payload_from_facets(
     ]
 
     core_mental_models = [
-        (
-            "模型：现实代价优先。"
-            f" 证据：{_first_nonempty(physical_bullets[0] if physical_bullets else '', physical_summary, '材料中最稳定的是现实压力对判断的牵引。')}"
-            " 场景：涉及时间、金钱、工作和风险时先这样判断。"
-            " 局限：脱离其现实处境的高资源局面，参考性会下降。"
-        ),
-        (
-            "模型：边界先于亲密。"
-            f" 证据：{_first_nonempty(boundary_bullets[0] if boundary_bullets else '', interpersonal_summary, '处理关系时会先确认能不能说、该不该接。')}"
-            " 场景：面对求助、冲突、越界提问和情感拉扯时优先触发。"
-            " 局限：遇到真正信任的人时，这条规则可能会松动。"
-        ),
-        (
-            "模型：立场来自代价与底线，不来自抽象正确。"
-            f" 证据：{_first_nonempty(values_bullets[0] if values_bullets else '', values_summary, '价值判断常和现实成本绑定。')}"
-            " 场景：做选择、评价他人、判断谁对谁错时最明显。"
-            " 局限：在证据不足时，可能会过度依赖既有立场。"
-        ),
-        (
-            "模型：表达本身就是圈层识别。"
-            f" 证据：{_first_nonempty(language_bullets[0] if language_bullets else '', subculture_summary, language_summary, '会通过语气和黑话快速识别同路人。')}"
-            " 场景：聊天、吐槽、试探对方是不是自己人时。"
-            " 局限：跨圈层沟通时需要刻意降噪，否则容易误伤。"
-        ),
+        f"模型：现实代价优先。证据：{_first_nonempty(physical_bullets[0] if physical_bullets else '', physical_summary, '现实压力对判断有稳定牵引。')}",
+        f"模型：边界先于亲密。证据：{_first_nonempty(boundary_bullets[0] if boundary_bullets else '', interpersonal_summary, '处理关系时会先确认能不能说、该不该接。')}",
+        f"模型：立场来自代价与底线。证据：{_first_nonempty(values_bullets[0] if values_bullets else '', values_summary, '价值判断常与现实成本绑定。')}",
+        f"模型：表达本身就是圈层识别。证据：{_first_nonempty(language_bullets[0] if language_bullets else '', subculture_summary, language_summary, '会通过语气和黑话快速识别同路人。')}",
     ]
 
     decision_heuristics = [
-        (
-            "快捷规则：先看真实代价落在谁身上，再决定表态强度。"
-            f" 适用场景：{_first_nonempty(values_bullets[1] if len(values_bullets) > 1 else '', values_summary, '涉及取舍、责任和风险时。')}"
-        ),
-        (
-            "快捷规则：先判断这是不是我的边界，再决定要不要接。"
-            f" 适用场景：{_first_nonempty(boundary_bullets[1] if len(boundary_bullets) > 1 else '', boundary_summary, '被追问隐私、被要求站队或被过度索取时。')}"
-        ),
-        (
-            "快捷规则：先听语境和口气，再判断对方是不是自己人。"
-            f" 适用场景：{_first_nonempty(social_bullets[0] if social_bullets else '', relationship_summary, '社群互动、半熟人聊天和争论起手时。')}"
-        ),
-        (
-            "快捷规则：拿不准时宁可少说一点，也不替自己补不存在的经历。"
-            f" 适用场景：{_first_nonempty(interpersonal_bullets[0] if interpersonal_bullets else '', boundary_summary, '事实不全、情绪很重或问题明显越界时。')}"
-        ),
+        f"快捷规则：先看真实代价落在谁身上。适用场景：{_first_nonempty(values_bullets[1] if len(values_bullets) > 1 else '', values_summary, '涉及取舍、责任和风险时。')}",
+        f"快捷规则：先判断这是不是我的边界。适用场景：{_first_nonempty(boundary_bullets[1] if len(boundary_bullets) > 1 else '', boundary_summary, '被追问隐私、被要求站队或被过度索取时。')}",
+        f"快捷规则：先听语境和口气，再判断对方是不是自己人。适用场景：{_first_nonempty(social_bullets[0] if social_bullets else '', relationship_summary, '社群互动、半熟人聊天和争论起手时。')}",
+        f"快捷规则：拿不准时宁可少说一点。适用场景：{_first_nonempty(interpersonal_bullets[0] if interpersonal_bullets else '', boundary_summary, '事实不全、情绪很重或问题明显越界时。')}",
     ]
 
     expression_dna = [
@@ -1221,7 +1127,7 @@ def _build_skill_payload_from_facets(
         f"句式与断句：{_first_nonempty(language_bullets[1] if len(language_bullets) > 1 else '', '优先用短句、顿点和顺手补刀式转折，不追求工整教科书。')}",
         "节奏：通常是先给态度，再补理由；熟悉话题会加速，不熟悉的话题会主动收口。",
         "确定性：高置信话题更果断，越接近边界越会加限定词、自我修正和保留尾巴。",
-        f"幽默与反击：{_first_nonempty(interpersonal_bullets[1] if len(interpersonal_bullets) > 1 else '', interpersonal_summary, '更像顺手拆台、冷幽默或轻微阴阳，不走热情鼓励路线。')}",
+        f"幽默与反讽：{_first_nonempty(interpersonal_bullets[1] if len(interpersonal_bullets) > 1 else '', interpersonal_summary, '更像顺手拆台、冷幽默或轻微阴阳，不走热情鼓励路线。')}",
         "辩论策略：优先质疑论点背后的现实前提、说话资格和代价分配，不陪着抽象定义空转。",
     ]
 
