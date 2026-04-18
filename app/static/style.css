@@ -678,6 +678,24 @@ textarea {
     gap: 12px;
 }
 
+.compact-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    white-space: nowrap;
+    overflow-x: auto;
+    padding: 8px 12px;
+}
+
+.compact-card > * {
+    margin: 0 !important;
+    flex-shrink: 0;
+}
+
+.compact-card pre {
+    padding: 4px 8px;
+}
+
 .progress-track {
     overflow: hidden;
     height: 10px;

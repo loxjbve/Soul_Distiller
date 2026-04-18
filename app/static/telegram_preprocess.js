@@ -26,7 +26,10 @@ if (bootstrap?.project_id) {
         statusChip: document.getElementById("telegram-preprocess-status-chip"),
         stage: document.getElementById("telegram-preprocess-stage"),
         progressLabel: document.getElementById("telegram-preprocess-progress-label"),
+        progressLabel2: document.querySelector(".progress-labels #telegram-preprocess-progress-label"),
         progressFill: document.getElementById("telegram-preprocess-progress-fill"),
+        currentProgressLabel: document.getElementById("telegram-preprocess-current-progress-label"),
+        currentProgressFill: document.getElementById("telegram-preprocess-current-progress-fill"),
         weeklyCandidateCount: document.getElementById("telegram-preprocess-weekly-candidate-count"),
         topUserCount: document.getElementById("telegram-preprocess-top-user-count"),
         topicCount: document.getElementById("telegram-preprocess-topic-count"),
@@ -169,6 +172,8 @@ if (bootstrap?.project_id) {
             setStatusTone(elements.statusChip, "idle", "idle");
             updateText(elements.stage, "等待开始");
             updateText(elements.progressLabel, "0%");
+            if (elements.progressLabel2) updateText(elements.progressLabel2, "0%");
+            if (elements.currentProgressLabel) updateText(elements.currentProgressLabel, "0%");
             updateText(elements.weeklyCandidateCount, "0");
             updateText(elements.topUserCount, "0");
             updateText(elements.topicCount, "0");
@@ -178,6 +183,9 @@ if (bootstrap?.project_id) {
             updateText(elements.runMeta, "暂无预处理 run");
             if (elements.progressFill) {
                 elements.progressFill.style.width = "0%";
+            }
+            if (elements.currentProgressFill) {
+                elements.currentProgressFill.style.width = "0%";
             }
             renderWeeklyCandidates([]);
             renderTopUsers([]);
@@ -190,9 +198,22 @@ if (bootstrap?.project_id) {
         setStatusTone(elements.statusChip, bundle.status, bundle.status);
         updateText(elements.stage, bundle.current_stage || "等待开始");
         updateText(elements.progressLabel, `${percent}%`);
-        updateText(elements.weeklyCandidateCount, bundle.weekly_candidate_count || bundle.window_count || 0);
+        if (elements.progressLabel2) updateText(elements.progressLabel2, `${percent}%`);
+        
+        const candidatesCount = bundle.weekly_candidate_count || bundle.window_count || 0;
+        const topicCount = bundle.topic_count || 0;
+        updateText(elements.weeklyCandidateCount, candidatesCount);
         updateText(elements.topUserCount, bundle.top_user_count || 0);
-        updateText(elements.topicCount, bundle.topic_count || 0);
+        updateText(elements.topicCount, topicCount);
+
+        let currentPercent = 0;
+        if (candidatesCount > 0) {
+            currentPercent = clampPercent(Math.floor((topicCount / candidatesCount) * 100));
+        } else if (topicCount > 0) {
+            currentPercent = 100;
+        }
+        if (elements.currentProgressLabel) updateText(elements.currentProgressLabel, `${currentPercent}%`);
+        if (elements.currentProgressFill) elements.currentProgressFill.style.width = `${currentPercent}%`;
         updateText(elements.activeUserCount, bundle.active_user_count || 0);
         updateText(elements.totalTokens, bundle.total_tokens || 0);
         updateText(elements.cacheRead, bundle.cache_read_tokens || 0);
@@ -222,7 +243,7 @@ if (bootstrap?.project_id) {
         }
         events.forEach((event) => {
             const card = document.createElement("article");
-            card.className = "event-card";
+            card.className = "event-card compact-card";
             const title = summarizeTraceEvent(event);
             const meta = [
                 event.stage || "",
@@ -267,7 +288,7 @@ if (bootstrap?.project_id) {
         }
         candidates.forEach((candidate) => {
             const card = document.createElement("article");
-            card.className = "document-card";
+            card.className = "document-card compact-card";
             const participants = (candidate.top_participants || [])
                 .slice(0, 6)
                 .map((item) => item.display_name || item.username || item.participant_id)
@@ -295,7 +316,7 @@ if (bootstrap?.project_id) {
         }
         users.forEach((user) => {
             const card = document.createElement("article");
-            card.className = "document-card";
+            card.className = "document-card compact-card";
             card.innerHTML = `
                 <div class="document-card__head">
                     <strong>#${escapeHtml(String(user.rank || "--"))} · ${escapeHtml(user.display_name || user.username || user.uid || user.participant_id)}</strong>

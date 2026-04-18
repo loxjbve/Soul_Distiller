@@ -38,8 +38,21 @@
             <div class="metric-row"><span>Cache Read</span><strong id="telegram-preprocess-cache-read">{{ selected_run_data.cache_read_tokens if selected_run_data else 0 }}</strong></div>
         </div>
         <div class="progress-shell top-gap">
-            <div class="progress-bar">
+            <div class="progress-labels">
+                <strong>总体进度</strong>
+                <span id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
+            </div>
+            <div class="progress-track">
                 <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+            </div>
+        </div>
+        <div class="progress-shell top-gap">
+            <div class="progress-labels">
+                <strong>当前进度 (周话题)</strong>
+                <span id="telegram-preprocess-current-progress-label">0%</span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-fill" id="telegram-preprocess-current-progress-fill" style="width: 0%;"></div>
             </div>
         </div>
         <p class="helper-text top-gap" id="telegram-preprocess-run-meta">
