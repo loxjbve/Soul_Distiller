@@ -59,8 +59,10 @@ def test_telegram_persona_studio_scroller_stays_interactive(page, client, app, m
     project_id = _create_ingested_telegram_project(client, app, monkeypatch)
     _seed_preprocess_tables(app, project_id)
 
-    page.set_viewport_size({"width": 1440, "height": 900})
+    page.set_viewport_size({"width": 1600, "height": 1100})
     page.goto(f"{live_server}/projects/{project_id}", wait_until="networkidle")
+
+    assert page.evaluate("document.documentElement.dataset.shellMode") == "fixed"
 
     scrollable = page.locator("[data-telegram-persona-studio] [data-panel-scroll]").first
     scrollable.evaluate(
@@ -79,28 +81,17 @@ def test_telegram_persona_studio_scroller_stays_interactive(page, client, app, m
         """
     )
 
-    shell_mode = page.evaluate("document.documentElement.dataset.shellMode")
-    if shell_mode == "fixed":
-        metrics = scrollable.evaluate(
-            "(node) => ({ client: node.clientHeight, scroll: node.scrollHeight, topBefore: node.scrollTop })"
-        )
-        assert metrics["scroll"] > metrics["client"]
+    metrics = scrollable.evaluate(
+        "(node) => ({ client: node.clientHeight, scroll: node.scrollHeight, topBefore: node.scrollTop })"
+    )
+    assert metrics["client"] > 120
+    assert metrics["scroll"] > metrics["client"]
 
-        top_after = scrollable.evaluate(
-            "(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }"
-        )
-        assert top_after > metrics["topBefore"]
-        scrollable.evaluate("(node) => { node.scrollTop = 0; }")
-    else:
-        page_metrics = page.evaluate(
-            """
-            () => ({
-                client: document.scrollingElement.clientHeight,
-                scroll: document.scrollingElement.scrollHeight
-            })
-            """
-        )
-        assert page_metrics["scroll"] > page_metrics["client"]
+    top_after = scrollable.evaluate(
+        "(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }"
+    )
+    assert top_after > metrics["topBefore"]
+    scrollable.evaluate("(node) => { node.scrollTop = 0; }")
 
     page.locator("[data-top-user-card]").first.click()
     assert page.locator("[data-target-submit]").is_enabled()

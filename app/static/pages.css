@@ -1,6 +1,6 @@
 @layer pages {
     .page-home .page-content {
-        grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.38fr);
+        grid-template-columns: minmax(300px, 0.82fr) minmax(0, 1.18fr);
         grid-template-rows: minmax(0, 1fr);
     }
 
@@ -13,13 +13,13 @@
 
     .home-status-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: var(--space-3);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: var(--space-2);
     }
 
     .page-project .page-content {
-        grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.36fr) minmax(280px, 0.9fr);
-        grid-template-rows: minmax(0, 1fr) minmax(0, 1.04fr);
+        grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr) minmax(250px, 0.82fr);
+        grid-template-rows: minmax(220px, 0.86fr) minmax(280px, 1.14fr);
         grid-template-areas:
             "upload primary rail"
             "documents documents rail";
@@ -42,7 +42,69 @@
         min-height: 0;
         display: grid;
         grid-template-rows: auto minmax(0, 1fr);
-        gap: var(--shell-gap);
+        gap: var(--space-3);
+    }
+
+    .page-project--telegram-parent .page-content {
+        grid-template-columns: minmax(270px, 0.72fr) minmax(0, 1.54fr) minmax(280px, 0.78fr);
+        grid-template-rows: minmax(0, 1.26fr) minmax(180px, 0.74fr);
+        grid-template-areas:
+            "primary primary rail"
+            "upload documents rail";
+    }
+
+    .page-project--telegram-child .page-content {
+        grid-template-columns: minmax(260px, 0.64fr) minmax(0, 1.58fr) minmax(300px, 0.82fr);
+        grid-template-rows: minmax(0, 1.08fr) minmax(0, 0.92fr);
+        grid-template-areas:
+            "upload primary rail"
+            "documents primary rail";
+    }
+
+    .page-project--telegram-parent .project-panel--primary .panel-body,
+    .page-project--telegram-child .project-panel--primary .panel-body {
+        overflow: hidden;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell,
+    .page-project--telegram-child .telegram-bind-needed-form {
+        grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.84fr);
+        grid-auto-rows: minmax(0, auto);
+    }
+
+    .page-project--telegram-parent .persona-studio-shell {
+        grid-template-areas:
+            "target context"
+            "target launch";
+        grid-template-rows: minmax(200px, 1fr) auto;
+    }
+
+    .page-project--telegram-child .telegram-bind-needed-form {
+        grid-template-areas:
+            "target summary"
+            "target context"
+            "target launch";
+    }
+
+    .page-project--telegram-parent .persona-studio-main,
+    .page-project--telegram-parent .persona-studio-shell .persona-stage-stack,
+    .page-project--telegram-parent .persona-studio-rail,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-main,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-stack,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-rail {
+        display: contents;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child {
+        display: none;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :last-child {
+        display: none;
+    }
+
+    .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child {
+        grid-area: summary;
     }
 
     .persona-studio-shell,
@@ -50,51 +112,141 @@
         flex: 1 1 auto;
         min-height: 0;
         display: grid;
-        grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.92fr);
+        grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.86fr);
         grid-template-rows: minmax(0, 1fr);
         gap: var(--shell-gap);
-    }
-
-    .persona-studio-main {
-        flex: 1 1 auto;
-        overflow: hidden;
+        align-items: stretch;
     }
 
     .persona-studio-main,
-    .persona-studio-rail,
-    .persona-stage-stack {
+    .persona-studio-rail {
+        min-height: 0;
+    }
+
+    .persona-studio-main {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .persona-studio-rail {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+        overflow: auto;
+        overscroll-behavior: contain;
+        scrollbar-width: thin;
+        scrollbar-color: var(--scrollbar-thumb) transparent;
+        padding-right: 6px;
+    }
+
+    .persona-studio-shell .persona-stage-stack {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1.38fr) minmax(320px, 0.92fr);
+        grid-template-rows: minmax(0, 1fr) auto;
+        grid-template-areas:
+            "target context"
+            "target launch";
+        gap: var(--space-4);
+        overflow: hidden;
+    }
+
+    .persona-bind-shell .persona-stage-stack {
+        flex: 1 1 auto;
         min-height: 0;
         display: flex;
         flex-direction: column;
         gap: var(--space-4);
-    }
-
-    .persona-stage-stack {
-        flex: 1 1 auto;
-        overflow-y: auto;
+        overflow: auto;
     }
 
     .persona-stage-card {
-        flex-shrink: 0;
+        position: relative;
         min-height: 0;
-        padding: 16px;
-        border-radius: var(--radius-sm);
+        padding: 20px;
+        border-radius: var(--radius-md);
         border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.02);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+            rgba(11, 14, 24, 0.84);
         display: grid;
         align-content: start;
         gap: var(--space-3);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 38px rgba(3, 8, 20, 0.24);
+        overflow: hidden;
+    }
+
+    .persona-stage-card::before,
+    .persona-rail-card::before,
+    .telegram-binding-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            linear-gradient(135deg, rgba(97, 168, 255, 0.08), transparent 38%, rgba(255, 95, 210, 0.08)),
+            radial-gradient(circle at top right, rgba(141, 107, 255, 0.14), transparent 42%);
+        pointer-events: none;
+    }
+
+    .persona-stage-card > *,
+    .persona-rail-card > *,
+    .telegram-binding-card > * {
+        position: relative;
+        z-index: 1;
     }
 
     .persona-stage-card--target {
-        flex: 1 1 50%;
+        grid-area: target;
         grid-template-rows: auto minmax(0, 1fr) auto;
     }
 
-    .persona-stage-card--context,
+    .persona-stage-card--context {
+        grid-area: context;
+    }
+
     .persona-stage-card--launch {
-        flex: 0 0 auto;
-        grid-template-rows: auto auto;
+        grid-area: launch;
+        align-self: stretch;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--context,
+    .page-project--telegram-parent .persona-stage-card--launch,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--launch {
+        padding: 16px 18px;
+        gap: var(--space-2);
+        overflow: auto;
+        overscroll-behavior: contain;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--context .persona-step__head p,
+    .page-project--telegram-parent .persona-stage-card--launch .persona-step__head p,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context .persona-step__head p,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--launch .persona-step__head p,
+    .page-project--telegram-parent .persona-stage-card--launch .section-note,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--launch .section-note {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--launch .section-note,
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child p,
+    .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child p {
+        display: none;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--context .persona-step__head p,
+    .page-project--telegram-parent .persona-stage-card--launch .persona-step__head p {
+        display: none;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--context textarea,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context textarea {
+        min-height: 76px;
     }
 
     .persona-step__head {
@@ -103,44 +255,84 @@
         gap: var(--space-3);
     }
 
+    .persona-step__head > div:last-child {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
+    .persona-step__head p {
+        color: var(--text-secondary);
+        font-size: 0.88rem;
+        line-height: 1.55;
+    }
+
     .persona-step__index {
         display: grid;
         place-items: center;
-        width: 34px;
-        height: 34px;
+        width: 36px;
+        height: 36px;
         border-radius: 12px;
-        border: 1px solid rgba(97, 168, 255, 0.24);
-        background: rgba(97, 168, 255, 0.12);
+        border: 1px solid rgba(97, 168, 255, 0.28);
+        background:
+            linear-gradient(180deg, rgba(97, 168, 255, 0.22), rgba(97, 168, 255, 0.08)),
+            rgba(255, 255, 255, 0.04);
         color: var(--text-strong);
         font: 700 0.8rem/1 var(--font-mono);
+        box-shadow: 0 0 16px rgba(97, 168, 255, 0.12);
     }
 
     .persona-top-user-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: var(--space-3);
         align-content: start;
     }
 
     .persona-top-user-card {
+        position: relative;
         display: flex;
         flex-direction: column;
         gap: var(--space-2);
         align-items: flex-start;
+        justify-content: space-between;
         text-align: left;
         width: 100%;
-        padding: 16px;
+        min-height: 132px;
+        padding: 18px;
         border-radius: var(--radius-sm);
         border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.03);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
+            rgba(14, 18, 30, 0.82);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+
+    .persona-top-user-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(97, 168, 255, 0.22);
+        box-shadow: 0 14px 28px rgba(7, 11, 22, 0.28), 0 0 0 1px rgba(97, 168, 255, 0.08);
+    }
+
+    .persona-top-user-card strong {
+        font-size: 1rem;
+        color: var(--text-strong);
+    }
+
+    .persona-top-user-card small {
+        color: var(--text-secondary);
+        line-height: 1.55;
     }
 
     .persona-top-user-card.is-selected {
-        border-color: rgba(97, 168, 255, 0.3);
+        border-color: rgba(97, 168, 255, 0.34);
         background:
-            linear-gradient(135deg, rgba(97, 168, 255, 0.16), rgba(141, 107, 255, 0.1)),
-            rgba(255, 255, 255, 0.03);
-        box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.14);
+            linear-gradient(135deg, rgba(97, 168, 255, 0.18), rgba(141, 107, 255, 0.12)),
+            rgba(16, 20, 34, 0.88);
+        box-shadow:
+            inset 0 0 0 1px rgba(97, 168, 255, 0.14),
+            0 18px 34px rgba(12, 18, 36, 0.3),
+            0 0 24px rgba(97, 168, 255, 0.18);
     }
 
     .persona-top-user-card__rank {
@@ -152,13 +344,22 @@
 
     .telegram-binding-card,
     .persona-rail-card {
-        padding: 16px;
-        border-radius: var(--radius-sm);
+        position: relative;
+        padding: 18px;
+        border-radius: var(--radius-md);
         border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.03);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+            rgba(11, 14, 24, 0.82);
         display: flex;
         flex-direction: column;
         gap: var(--space-2);
+        overflow: hidden;
+    }
+
+    .persona-rail-card--focus {
+        border-color: rgba(97, 168, 255, 0.18);
+        box-shadow: 0 18px 40px rgba(11, 17, 33, 0.28), 0 0 24px rgba(97, 168, 255, 0.1);
     }
 
     .telegram-binding-card--warning {
@@ -178,8 +379,8 @@
     }
 
     .page-analysis .page-content {
-        grid-template-columns: minmax(0, 1.58fr) minmax(300px, 0.92fr);
-        grid-template-rows: auto minmax(0, 1fr) minmax(0, 0.82fr);
+        grid-template-columns: minmax(0, 1.68fr) minmax(280px, 0.84fr);
+        grid-template-rows: auto minmax(0, 1.1fr) minmax(0, 0.74fr);
         grid-template-areas:
             "pulse pulse"
             "center rail"
@@ -199,7 +400,7 @@
         min-height: 0;
         display: grid;
         grid-template-rows: auto minmax(0, 1fr);
-        gap: var(--shell-gap);
+        gap: var(--space-3);
     }
 
     .analysis-results-panel {
@@ -214,8 +415,8 @@
         flex: 1 1 auto;
         min-height: 0;
         display: grid;
-        grid-template-rows: minmax(0, 0.8fr) minmax(0, 1.2fr);
-        gap: var(--space-4);
+        grid-template-rows: minmax(108px, 0.58fr) minmax(0, 1.42fr);
+        gap: var(--space-3);
     }
 
     .agent-center-feed {
@@ -224,8 +425,8 @@
     }
 
     .page-telegram-preprocess .page-content {
-        grid-template-columns: minmax(0, 1.54fr) minmax(320px, 0.94fr);
-        grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1.64fr) minmax(280px, 0.84fr);
+        grid-template-rows: auto minmax(190px, 0.74fr) minmax(300px, 1.26fr);
         grid-template-areas:
             "pulse status"
             "workers trace"
@@ -257,7 +458,7 @@
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         grid-template-rows: minmax(0, 1fr);
-        gap: var(--shell-gap);
+        gap: var(--space-3);
     }
 
     .telegram-preprocess-data-grid {
@@ -265,11 +466,11 @@
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         grid-template-rows: minmax(0, 1fr);
-        gap: var(--shell-gap);
+        gap: var(--space-3);
     }
 
     .page-assets .page-content {
-        grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.26fr) minmax(300px, 0.92fr);
+        grid-template-columns: minmax(220px, 0.62fr) minmax(0, 1.52fr) minmax(250px, 0.84fr);
         grid-template-rows: minmax(0, 1fr);
     }
 
@@ -277,7 +478,7 @@
         min-height: 0;
         display: grid;
         grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
-        gap: var(--shell-gap);
+        gap: var(--space-3);
     }
 
     .asset-doc-card.is-missing {
@@ -291,7 +492,7 @@
     }
 
     .page-preprocess .page-content {
-        grid-template-columns: minmax(260px, 0.78fr) minmax(0, 1.42fr) minmax(260px, 0.88fr);
+        grid-template-columns: minmax(220px, 0.6fr) minmax(0, 1.58fr) minmax(220px, 0.74fr);
         grid-template-rows: minmax(0, 1fr);
     }
 
@@ -330,8 +531,12 @@
     }
 
     .page-playground .page-content {
-        grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.48fr);
+        grid-template-columns: minmax(220px, 0.56fr) minmax(0, 1.44fr);
         grid-template-rows: minmax(0, 1fr);
+    }
+
+    .page-playground .chat-context-card {
+        align-self: start;
     }
 
     .page-settings .page-content {
@@ -347,6 +552,28 @@
         gap: var(--space-4);
     }
 
+    .telegram-preprocess-start-form {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+    }
+
+    .telegram-preprocess-start-form .inline-number-field {
+        flex-direction: row;
+        align-items: center;
+        gap: var(--space-2);
+        margin: 0;
+    }
+
+    .telegram-preprocess-start-form .inline-number-field > span:first-child {
+        white-space: nowrap;
+    }
+
+    .telegram-preprocess-start-form .inline-number-field input {
+        width: 68px;
+    }
+
     .project-rail .panel-scroll,
     .project-panel--documents .panel-scroll,
     .analysis-side-rail .panel-scroll,
@@ -360,14 +587,26 @@
         min-height: 0;
     }
 
-    @media (max-width: 1500px) {
-        .page-project .page-content {
-            grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+    @media (max-width: 1380px) {
+        .page-project:not(.page-project--telegram-parent):not(.page-project--telegram-child) .page-content {
+            grid-template-columns: minmax(260px, 0.72fr) minmax(0, 1.28fr);
             grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
             grid-template-areas:
                 "upload rail"
                 "primary rail"
                 "documents documents";
+        }
+
+        .page-project--telegram-parent .page-content {
+            grid-template-columns: minmax(240px, 0.62fr) minmax(0, 1.48fr) minmax(260px, 0.74fr);
+            grid-template-rows: minmax(0, 1.22fr) minmax(180px, 0.78fr);
+            grid-template-areas:
+                "primary primary rail"
+                "upload documents rail";
+        }
+
+        .page-project--telegram-child .page-content {
+            grid-template-columns: minmax(240px, 0.64fr) minmax(0, 1.42fr) minmax(280px, 0.82fr);
         }
     }
 
@@ -377,6 +616,10 @@
         .page-assets .page-content,
         .page-settings .page-content {
             grid-template-columns: 1fr;
+        }
+
+        .home-status-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
         }
 
         .page-analysis .page-content {
@@ -401,12 +644,25 @@
 
         .telegram-preprocess-live-grid,
         .telegram-preprocess-data-grid,
-        .persona-studio-shell,
-        .persona-bind-shell,
         .page-preprocess .page-content,
         .page-playground .page-content,
         .page-home .page-content {
             grid-template-columns: 1fr;
+        }
+
+        .persona-studio-shell .persona-stage-stack {
+            grid-template-columns: 1fr;
+            grid-template-rows: minmax(300px, 1fr) auto auto;
+            grid-template-areas:
+                "target"
+                "context"
+                "launch";
+            overflow: auto;
+            padding-right: 6px;
+        }
+
+        .persona-stage-card--launch {
+            align-self: stretch;
         }
     }
 
