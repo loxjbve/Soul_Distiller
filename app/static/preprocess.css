@@ -372,3 +372,44 @@ select {
         max-width: 100%;
     }
 }
+
+/* =========================================================
+   Fixed-shell overrides
+   ========================================================= */
+.preprocess-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.preprocess-sidebar,
+.preprocess-context,
+.preprocess-main {
+    min-height: 0;
+    height: 100%;
+}
+
+.preprocess-main {
+    overflow: hidden;
+}
+
+.preprocess-context .stack {
+    flex: 1 1 0;
+    min-height: 0;
+}
+
+.preprocess-composer {
+    flex-shrink: 0;
+}
+
+.preprocess-chat-scroll,
+.preprocess-session-list,
+.context-list {
+    min-height: 0;
+}
+
+@media (max-width: 900px) {
+    .preprocess-shell {
+        overflow: visible;
+    }
+}

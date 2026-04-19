@@ -15,6 +15,7 @@ if (bootstrap.project?.id) {
     const state = {
         projectId: bootstrap.project.id,
         ui: bootstrap.ui_strings || {},
+        telegram: { ...(bootstrap.telegram || {}) },
         documents: [...(bootstrap.documents || [])],
         pagination: { ...(bootstrap.pagination || { limit: 20, offset: 0, has_more: false }) },
         stats: { ...(bootstrap.stats || {}) },
@@ -45,6 +46,7 @@ if (bootstrap.project?.id) {
         statsPending: document.getElementById("status-pending"),
         statsFailed: document.getElementById("status-failed"),
         analyzeSubmit: document.getElementById("analyze-submit-btn"),
+        targetPickers: [...document.querySelectorAll("[data-telegram-target-picker]")],
     };
 
     bindEvents();
@@ -65,6 +67,7 @@ if (bootstrap.project?.id) {
         elements.processAll?.addEventListener("click", () => runProjectAction("process-all", elements.processAll, state.ui.process_success));
         elements.retryAll?.addEventListener("click", () => runProjectAction("retry-all", elements.retryAll, state.ui.retry_success));
         elements.stopProcessing?.addEventListener("click", () => runProjectAction("stop-processing", elements.stopProcessing, state.ui.stop_success));
+        initTelegramTargetPickers();
 
         if (elements.dropzone && elements.fileInput) {
             ["dragenter", "dragover"].forEach((eventName) => {
@@ -426,6 +429,119 @@ if (bootstrap.project?.id) {
         state.stats.queued_count = totals.queued;
         state.stats.processing_count = totals.processing;
         state.stats.document_count = Math.max(state.stats.document_count || 0, state.documents.length);
+    }
+
+    function initTelegramTargetPickers() {
+        elements.targetPickers.forEach((root) => {
+            const cardButtons = [...root.querySelectorAll("[data-top-user-card]")];
+            const participantInput = root.querySelector("[data-participant-input]");
+            const queryInput = root.querySelector("[data-target-query-input]");
+            const nameInput = root.querySelector("[data-persona-name-input]");
+            const summary = root.querySelector("[data-target-summary]");
+            const submit = root.querySelector("[data-target-submit]");
+            const lockedDisabled = Boolean(submit?.disabled);
+            let autofillValue = nameInput?.value?.trim() || "";
+            let nameDirty = false;
+
+            if (!participantInput || !queryInput) {
+                return;
+            }
+
+            const setSummary = (label, button) => {
+                if (!summary) {
+                    return;
+                }
+                const username = button?.dataset.username || "";
+                const uid = button?.dataset.uid || "";
+                const meta = [username ? `@${username}` : "", uid].filter(Boolean).join(" · ");
+                summary.innerHTML = `
+                    <span class="status-chip tone-${button ? "ready" : "processing"}">${escapeHtml(button ? "已选择目标" : "手动搜索")}</span>
+                    <strong>${escapeHtml(label || "先选择一个 Telegram 用户")}</strong>
+                    <p>${escapeHtml(meta || (button ? "将用这个目标直接创建并绑定子画像。" : "将使用当前搜索词去解析目标用户。"))}</p>
+                `;
+            };
+
+            const setAutoName = (label) => {
+                if (!nameInput) {
+                    return;
+                }
+                const current = nameInput.value.trim();
+                if (nameDirty && current && current !== autofillValue) {
+                    return;
+                }
+                autofillValue = label.trim();
+                nameInput.value = autofillValue;
+                nameInput.dataset.autofillValue = autofillValue;
+            };
+
+            const syncSubmit = () => {
+                if (!submit) {
+                    return;
+                }
+                const hasTarget = Boolean(participantInput.value.trim() || queryInput.value.trim());
+                const hasName = !nameInput || Boolean(nameInput.value.trim());
+                submit.disabled = lockedDisabled || !hasTarget || !hasName;
+            };
+
+            const clearSelection = () => {
+                cardButtons.forEach((button) => button.classList.remove("is-selected"));
+                participantInput.value = "";
+            };
+
+            const selectCard = (button) => {
+                const label = button.dataset.label || "";
+                cardButtons.forEach((item) => item.classList.toggle("is-selected", item === button));
+                participantInput.value = button.dataset.participantId || "";
+                queryInput.value = label;
+                setAutoName(label);
+                setSummary(label, button);
+                syncSubmit();
+            };
+
+            cardButtons.forEach((button) => {
+                button.addEventListener("click", () => selectCard(button));
+            });
+
+            queryInput.addEventListener("input", () => {
+                const value = queryInput.value.trim();
+                const selectedCard = cardButtons.find((button) => button.classList.contains("is-selected")) || null;
+                if (selectedCard && value !== (selectedCard.dataset.label || "")) {
+                    clearSelection();
+                }
+                if (value) {
+                    if (!participantInput.value) {
+                        setAutoName(value);
+                    }
+                    setSummary(value, participantInput.value ? selectedCard : null);
+                } else if (!participantInput.value && summary) {
+                    summary.innerHTML = `
+                        <span class="status-chip tone-processing">待选择</span>
+                        <strong>先选择一个 Telegram 用户</strong>
+                        <p>创建后会直接进入绑定好的分析流程，不再重复选择 Top User。</p>
+                    `;
+                }
+                syncSubmit();
+            });
+
+            nameInput?.addEventListener("input", () => {
+                const value = nameInput.value.trim();
+                nameDirty = Boolean(value && value !== autofillValue);
+                syncSubmit();
+            });
+
+            const initialCard = cardButtons.find(
+                (button) => (button.dataset.participantId || "") === participantInput.value
+            );
+            if (initialCard) {
+                selectCard(initialCard);
+            } else if (queryInput.value.trim()) {
+                setSummary(queryInput.value.trim(), null);
+                setAutoName(queryInput.value.trim());
+                syncSubmit();
+            } else {
+                syncSubmit();
+            }
+        });
     }
 
     function statusToLabel(status) {

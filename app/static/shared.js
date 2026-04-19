@@ -1,6 +1,9 @@
 const OPEN_CLASS = "is-open";
+const FIXED_SHELL_MIN_WIDTH = 1100;
+const FIXED_SHELL_MIN_HEIGHT = 780;
 
 let lastFocusedElement = null;
+let cursorGlowFrame = null;
 
 export function escapeHtml(value) {
     return String(value ?? "")
@@ -27,7 +30,7 @@ export async function fetchJson(url, options = {}) {
     const response = await fetch(url, { ...options, headers });
     const payload = safeParseJson(await response.text(), {});
     if (!response.ok) {
-        throw new Error(payload.detail || payload.message || "请求失败");
+        throw new Error(payload.detail || payload.message || "Request failed");
     }
     return payload;
 }
@@ -124,16 +127,22 @@ export function setButtonBusy(button, busy, busyLabel) {
         button.dataset.defaultLabel = button.textContent || "";
     }
     button.disabled = !!busy;
-    button.textContent = busy ? (busyLabel || "处理中…") : button.dataset.defaultLabel;
+    button.textContent = busy ? (busyLabel || "Working...") : button.dataset.defaultLabel;
 }
 
 export function markdownToHtml(source) {
     const codeBlocks = [];
     let text = String(source || "").replace(/```([\w-]+)?\n([\s\S]*?)```/g, (_, lang, code) => {
         const placeholder = `__CODE_BLOCK_${codeBlocks.length}__`;
-        codeBlocks.push(
-            `<div class="md-code"><button type="button" class="ghost-button" data-copy-code>复制</button><pre><code data-lang="${escapeHtml(lang || "")}">${escapeHtml(code.trimEnd())}</code></pre></div>`
-        );
+        codeBlocks.push(`
+            <div class="code-block code-block--markdown">
+                <div class="code-block__header">
+                    <span>${escapeHtml(lang || "code")}</span>
+                    <button type="button" class="code-block__copy" data-copy-code>Copy</button>
+                </div>
+                <pre><code data-lang="${escapeHtml(lang || "")}">${escapeHtml(code.trimEnd())}</code></pre>
+            </div>
+        `);
         return placeholder;
     });
 
@@ -149,6 +158,14 @@ export function markdownToHtml(source) {
             }
             if (/^#\s+/.test(trimmed)) {
                 return `<h1>${renderInline(trimmed.replace(/^#\s+/, ""))}</h1>`;
+            }
+            if (/^\d+\.\s+/m.test(trimmed)) {
+                const items = trimmed
+                    .split("\n")
+                    .filter((line) => /^\d+\.\s+/.test(line.trim()))
+                    .map((line) => `<li>${renderInline(line.trim().replace(/^\d+\.\s+/, ""))}</li>`)
+                    .join("");
+                return `<ol>${items}</ol>`;
             }
             if (/^[-*]\s+/m.test(trimmed)) {
                 const items = trimmed
@@ -173,11 +190,11 @@ export function renderMarkdownInto(node, source) {
     node.classList.add("markdown-body");
     node.querySelectorAll("[data-copy-code]").forEach((button) => {
         button.addEventListener("click", async () => {
-            const code = button.parentElement.querySelector("code");
+            const code = button.closest(".code-block")?.querySelector("code");
             await navigator.clipboard.writeText(code?.textContent || "");
-            button.textContent = "已复制";
+            button.textContent = "Copied";
             window.setTimeout(() => {
-                button.textContent = "复制";
+                button.textContent = "Copy";
             }, 1200);
         });
     });
@@ -227,6 +244,60 @@ function renderInline(text) {
     return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
+function resolveShellMode() {
+    const body = document.body;
+    if (body?.classList.contains("theme-ambient--project") && window.innerHeight < 940) {
+        return "relaxed";
+    }
+    if (body?.classList.contains("theme-ambient--telegram") && window.innerHeight < 920) {
+        return "relaxed";
+    }
+    return window.innerWidth >= FIXED_SHELL_MIN_WIDTH && window.innerHeight >= FIXED_SHELL_MIN_HEIGHT
+        ? "fixed"
+        : "relaxed";
+}
+
+function applyShellMode(force = false) {
+    const nextMode = resolveShellMode();
+    const currentMode = document.documentElement.dataset.shellMode || "";
+    if (!force && currentMode === nextMode) {
+        return;
+    }
+    document.documentElement.dataset.shellMode = nextMode;
+    if (document.body) {
+        document.body.dataset.shellMode = nextMode;
+    }
+}
+
+function bindShellMode() {
+    applyShellMode(true);
+    window.addEventListener("resize", () => applyShellMode(), { passive: true });
+}
+
+function bindCursorGlow() {
+    const glow = document.getElementById("cursor-glow");
+    if (!(glow instanceof HTMLElement)) {
+        return;
+    }
+
+    const moveGlow = (event) => {
+        if (!document.body.classList.contains("theme-ambient")) {
+            return;
+        }
+        if (cursorGlowFrame) {
+            window.cancelAnimationFrame(cursorGlowFrame);
+        }
+        const { clientX, clientY } = event;
+        cursorGlowFrame = window.requestAnimationFrame(() => {
+            glow.style.transform = `translate3d(${clientX}px, ${clientY}px, 0)`;
+            glow.classList.add("is-visible");
+        });
+    };
+
+    document.addEventListener("pointermove", moveGlow, { passive: true });
+    document.addEventListener("pointerleave", () => glow.classList.remove("is-visible"));
+}
+
 function bindModals(root = document) {
     root.querySelectorAll("[data-modal-open]").forEach((button) => {
         button.addEventListener("click", () => openModal(button.dataset.modalOpen));
@@ -257,7 +328,7 @@ function bindModals(root = document) {
 function bindConfirmations(root = document) {
     root.querySelectorAll("[data-confirm]").forEach((element) => {
         element.addEventListener("click", (event) => {
-            const message = element.dataset.confirm || "确认继续吗？";
+            const message = element.dataset.confirm || "Are you sure?";
             if (!window.confirm(message)) {
                 event.preventDefault();
                 event.stopPropagation();
@@ -267,6 +338,8 @@ function bindConfirmations(root = document) {
 }
 
 function initializeShared() {
+    bindShellMode();
+    bindCursorGlow();
     bindModals();
     bindConfirmations();
 }

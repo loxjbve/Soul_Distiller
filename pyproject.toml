@@ -25,6 +25,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3.3",
+    "playwright>=1.58.0",
+    "pytest-playwright>=0.7.2",
 ]
 
 [tool.setuptools]
@@ -35,3 +37,6 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "frontend: browser-based UI smoke tests",
+]

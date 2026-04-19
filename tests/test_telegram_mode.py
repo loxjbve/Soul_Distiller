@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 
 from app.analysis.facets import FacetDefinition
-from app.analysis.telegram_agent import TelegramAnalysisAgent, TelegramFacetAnalysisResult
+from app.analysis.telegram_agent import TELEGRAM_TOOL_LOOP_MAX_STEPS, TelegramAnalysisAgent, TelegramFacetAnalysisResult
 from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
@@ -765,10 +765,11 @@ def test_telegram_preprocess_run_persists_topics_top_users_and_new_counts(client
 
 def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app, monkeypatch):
     project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    requested_concurrency = 64
 
     def fake_process(self, run, *, progress_callback=None):
         del self
-        assert (run.summary_json or {}).get("weekly_summary_concurrency") == 4
+        assert (run.summary_json or {}).get("weekly_summary_concurrency") == requested_concurrency
         if progress_callback:
             progress_callback("sql_bootstrap", 20, {"window_count": 1})
             progress_callback(
@@ -779,7 +780,7 @@ def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app,
             progress_callback(
                 "weekly_topic_summary",
                 92,
-                {"topic_count": 0, "weekly_summary_concurrency": 4},
+                {"topic_count": 0, "weekly_summary_concurrency": requested_concurrency},
             )
         return {
             "bootstrap": {"message_count": 4},
@@ -801,14 +802,22 @@ def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app,
 
     response = client.post(
         f"/api/projects/{project_id}/preprocess/runs",
-        json={"weekly_summary_concurrency": 4},
+        json={"weekly_summary_concurrency": requested_concurrency},
     )
     assert response.status_code == 200
 
     payload = _wait_for_preprocess(client, project_id, response.json()["id"])
 
     assert payload["status"] == "completed"
-    assert payload["weekly_summary_concurrency"] == 4
+    assert payload["weekly_summary_concurrency"] == requested_concurrency
+
+
+def test_telegram_preprocess_worker_does_not_cap_weekly_summary_concurrency():
+    assert TelegramPreprocessWorker._normalize_weekly_summary_concurrency(64) == 64
+
+
+def test_telegram_analysis_tool_iterations_limit_is_raised():
+    assert TELEGRAM_TOOL_LOOP_MAX_STEPS == 25
 
 
 def test_telegram_analysis_requires_successful_preprocess_run(client, app, monkeypatch):
@@ -1120,7 +1129,10 @@ def test_telegram_profile_children_share_parent_preprocess_and_run_independently
 
     child_page = client.get(f"/projects/{child.id}")
     assert child_page.status_code == 200
-    assert 'name="participant_id"' in child_page.text
+    assert 'telegram-bind-needed-form' in child_page.text
+    assert 'data-telegram-target-picker' in child_page.text
+    assert 'data-top-user-card' in child_page.text
+    assert 'name="concurrency"' in child_page.text
 
     shared_preprocess_run_id = preprocess_run_id
 
@@ -1181,6 +1193,332 @@ def test_telegram_profile_children_share_parent_preprocess_and_run_independently
     assert payload["summary"]["preprocess_run_id"] == shared_preprocess_run_id
     assert payload["summary"]["telegram_message_count"] == 4
 
+    rebound_child_page = client.get(f"/projects/{child.id}")
+    assert rebound_child_page.status_code == 200
+    assert 'type="hidden" name="participant_id"' in rebound_child_page.text
+    assert 'data-telegram-target-picker' not in rebound_child_page.text
+    assert 'data-top-user-card' not in rebound_child_page.text
+    assert 'name="concurrency"' in rebound_child_page.text
+
+
+def test_telegram_parent_persona_studio_auto_analyzes_and_redirects(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    preprocess_run_id = _seed_preprocess_tables(app, project_id)
+    expected_preprocess_run_id = preprocess_run_id
+    requested_concurrency = 3
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    with app.state.db.session() as session:
+        top_user = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)[0]
+
+    parent_page = client.get(f"/projects/{project_id}")
+    assert parent_page.status_code == 200
+    assert "Telegram Persona Studio" in parent_page.text
+    assert 'data-telegram-persona-studio' in parent_page.text
+    assert 'name="auto_analyze" value="1"' in parent_page.text
+    assert 'name="concurrency"' in parent_page.text
+    assert 'add-profile-modal' not in parent_page.text
+
+    def fake_analyze_facet(self, facet, *, target_user_query, participant_id, analysis_context, preprocess_run_id=None):
+        assert self.project.id == project_id
+        assert target_user_query == "Bob"
+        assert participant_id == top_user.participant_id
+        assert analysis_context == "Auto analyze Bob"
+        assert preprocess_run_id == expected_preprocess_run_id
+        return TelegramFacetAnalysisResult(
+            payload={
+                "summary": f"{facet.key} auto run",
+                "bullets": [],
+                "confidence": 0.9,
+                "evidence": [],
+                "conflicts": [],
+                "notes": None,
+                "_meta": {
+                    "llm_called": True,
+                    "llm_success": True,
+                    "llm_attempts": 1,
+                    "provider_kind": "openai-compatible",
+                    "api_mode": "responses",
+                    "llm_model": "demo-model",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "request_url": "https://example.com/v1/responses",
+                    "request_payload": {"facet": facet.key, "mode": "telegram_user_analysis"},
+                    "raw_text": "{}",
+                    "llm_error": None,
+                    "log_path": None,
+                },
+            },
+            retrieval_trace={
+                "mode": "telegram_agent",
+                "tool_calls": [{"tool": "list_related_topics"}],
+                "preprocess_run_id": expected_preprocess_run_id,
+                "target_user": {"participant_id": participant_id, "label": "Bob"},
+                "topic_ids": ["topic-1"],
+                "topic_weeks_used": ["2025-W01"],
+                "queried_message_ids": [],
+                "topic_count_used": 1,
+            },
+            hit_count=0,
+        )
+
+    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+
+    response = client.post(
+        f"/projects/{project_id}/profiles",
+        data={
+            "participant_id": top_user.participant_id,
+            "target_user_query": "Bob",
+            "analysis_context": "Auto analyze Bob",
+            "concurrency": requested_concurrency,
+            "auto_analyze": "1",
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    with app.state.db.session() as session:
+        children = repository.list_child_projects(session, project_id)
+        assert len(children) == 1
+        child = children[0]
+        assert child.mode == "telegram"
+        assert child.name == "Bob"
+        assert child.description == "Auto analyze Bob"
+        child_run = repository.get_latest_analysis_run(session, child.id)
+        assert child_run is not None
+        assert (child_run.summary_json or {}).get("concurrency") == requested_concurrency
+
+    assert response.headers["location"] == f"/projects/{child.id}/analysis?run_id={child_run.id}"
+
+
+def test_telegram_legacy_child_page_uses_parent_preprocess_for_binding(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    _seed_preprocess_tables(app, project_id)
+
+    with app.state.db.session() as session:
+        child = repository.create_project(
+            session,
+            name="Legacy Telegram Persona",
+            description="Needs binding",
+            mode="telegram",
+            parent_id=project_id,
+        )
+        child_id = child.id
+
+    child_page = client.get(f"/projects/{child_id}")
+    assert child_page.status_code == 200
+    assert 'telegram-bind-needed-form' in child_page.text
+    assert 'data-telegram-target-picker' in child_page.text
+    assert 'data-top-user-card' in child_page.text
+    assert 'name="target_user_query"' in child_page.text
+    assert 'name="concurrency"' in child_page.text
+
+
+def test_telegram_analysis_page_renders_agent_center_shell(client, app):
+    project_payload = client.post(
+        "/api/projects",
+        json={"name": "Telegram Analysis UI", "description": "trace shell", "mode": "telegram"},
+    ).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={
+                "progress_percent": 100,
+                "current_stage": "completed",
+                "current_facet": "personality",
+                "concurrency": 1,
+                "active_facets": 0,
+                "completed_facets": 1,
+                "failed_facets": 0,
+                "total_facets": 1,
+                "analysis_context": "Telegram trace shell",
+                "target_user": {"label": "Bob"},
+            },
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={
+                "label": "Personality",
+                "summary": "Calm and direct",
+                "bullets": ["Answers tersely"],
+                "llm_response_text": "Final markdown response",
+                "retrieval_trace": {"tool_calls": [{"tool": "list_related_topics"}]},
+            },
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        run_id = run.id
+
+    response = client.get(f"/projects/{project_id}/analysis", params={"run_id": run_id})
+    assert response.status_code == 200
+    assert "Agentic Analysis Center" in response.text
+    assert 'id="analysis-feed"' in response.text
+    assert 'id="analysis-diagnostics-list"' in response.text
+    assert 'id="facet-status-list"' in response.text
+    assert 'id="analysis-live-pill"' in response.text
+    assert 'id="analysis-completed-count"' in response.text
+    assert 'analysis-live-output' not in response.text
+    assert 'analysis-trace-list' not in response.text
+
+
+def test_telegram_analysis_summary_includes_concurrency_and_agent_tracks(client, app):
+    project_payload = client.post(
+        "/api/projects",
+        json={"name": "Telegram Analysis Summary", "description": "summary", "mode": "telegram"},
+    ).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="running",
+            summary_json={
+                "progress_percent": 20,
+                "current_stage": "running",
+                "current_facet": "personality",
+                "requested_concurrency": 3,
+                "concurrency": 3,
+            },
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="running",
+            confidence=0.8,
+            findings_json={
+                "label": "Personality",
+                "phase": "llm",
+                "summary": "Streaming",
+                "started_at": "2025-01-01T00:00:00",
+                "retrieval_trace": {
+                    "tool_calls": [
+                        {"tool": "list_related_topics", "request_key": "personality-1"},
+                        {"tool": "query_telegram_messages", "request_key": "personality-1"},
+                    ]
+                },
+            },
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "language_style",
+            status="queued",
+            confidence=0.0,
+            findings_json={"label": "Language Style"},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+        run_id = run.id
+        session.commit()
+
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+
+    assert payload["summary"]["requested_concurrency"] == 3
+    assert payload["summary"]["effective_concurrency"] == 3
+    assert payload["summary"]["effective_active_agents"] == 1
+    assert payload["summary"]["agent_tracks"][0]["facet_key"] == "personality"
+    assert payload["summary"]["agent_tracks"][0]["tool_call_count"] == 2
+    assert payload["summary"]["agent_tracks"][0]["request_keys"] == ["personality-1"]
+
+
+def test_telegram_analysis_runs_facets_concurrently(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    preprocess_run_id = _seed_preprocess_tables(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    with app.state.db.session() as session:
+        top_user = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)[0]
+
+    counter = {"active": 0, "peak": 0}
+    lock = threading.Lock()
+
+    def fake_analyze_facet(self, facet, *, target_user_query, participant_id, analysis_context, preprocess_run_id=None):
+        del self, facet, target_user_query, analysis_context
+        assert participant_id == top_user.participant_id
+        assert preprocess_run_id
+        with lock:
+            counter["active"] += 1
+            counter["peak"] = max(counter["peak"], counter["active"])
+        time.sleep(0.08)
+        with lock:
+            counter["active"] -= 1
+        return TelegramFacetAnalysisResult(
+            payload={
+                "summary": "facet completed",
+                "bullets": [],
+                "confidence": 0.8,
+                "evidence": [],
+                "conflicts": [],
+                "notes": None,
+                "_meta": {
+                    "llm_called": True,
+                    "llm_success": True,
+                    "llm_attempts": 1,
+                    "provider_kind": "openai-compatible",
+                    "api_mode": "responses",
+                    "llm_model": "demo-model",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "request_url": "https://example.com/v1/responses",
+                    "request_payload": {"mode": "telegram_user_analysis"},
+                    "raw_text": "{}",
+                    "llm_error": None,
+                    "log_path": None,
+                },
+            },
+            retrieval_trace={
+                "mode": "telegram_agent",
+                "tool_calls": [{"tool": "list_related_topics", "request_key": "shared"}],
+                "preprocess_run_id": preprocess_run_id,
+                "target_user": {"participant_id": participant_id, "label": "Bob"},
+                "topic_ids": ["topic-1"],
+                "queried_message_ids": [],
+                "topic_count_used": 1,
+            },
+            hit_count=0,
+        )
+
+    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+
+    response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={
+            "participant_id": top_user.participant_id,
+            "target_user_query": "Bob",
+            "analysis_context": "concurrency check",
+            "concurrency": 3,
+        },
+    )
+    assert response.status_code == 200
+
+    payload = _wait_for_analysis(client, project_id, response.json()["id"])
+
+    assert payload["status"] == "completed"
+    assert payload["summary"]["requested_concurrency"] == 3
+    assert payload["summary"]["effective_concurrency"] == 3
+    assert counter["peak"] >= 2
+
 
 def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch):
     project_payload = client.post(
@@ -1226,6 +1564,8 @@ def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch
 
     assert payload["asset_kind"] == "skill"
     assert documents["skill"]["markdown"].startswith("# System Role:")
+    assert documents["personality"]["markdown"].strip()
+    assert documents["memories"]["markdown"].strip()
     assert "TG Persona" in payload["markdown_text"]
     assert documents["merge"]["markdown"] == payload["markdown_text"]
     assert payload["prompt_text"] == payload["markdown_text"]
@@ -1240,10 +1580,13 @@ def test_telegram_preprocess_page_renders_intermediate_and_final_tables(client, 
     assert response.status_code == 200
     assert "Weekly Candidates" in response.text
     assert "Top Users" in response.text
+    assert "Active Users" in response.text
     assert "Subagent" in response.text
     assert "Telegram mode discussion" in response.text
     assert "Alice" in response.text or "Bob" in response.text
     assert "telegram_preprocess.js" in response.text
+    assert 'id="telegram-preprocess-live-pill"' in response.text
+    assert 'id="telegram-preprocess-active-users"' in response.text
 
 
 def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(client, app, monkeypatch):
@@ -1257,11 +1600,17 @@ def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(c
     assert payload["weekly_candidate_count"] == 1
     assert payload["weekly_candidates"][0]["week_key"] == "2025-W01"
     assert payload["top_users"][0]["display_name"] == "Bob"
+    assert payload["active_user_count"] == 0
+    assert payload["active_users"] == []
     assert payload["topics"][0]["title"] == "Telegram mode discussion"
     assert payload["topics"][0]["participant_viewpoints"][0]["stance_summary"] == "提出要先补齐 Telegram mode。"
     assert payload["topics"][0]["subtopics"] == ["Telegram mode", "SQL evidence"]
     assert payload["trace_events"][0]["kind"] == "llm_request_started"
     assert payload["trace_events"][0]["stage"] == "weekly_topic_summary"
+    assert "snapshot_version" in payload
+    assert "requested_weekly_concurrency" in payload
+    assert "completed_week_count" in payload
+    assert "remaining_week_count" in payload
 
 
 def test_telegram_preprocess_top_users_excludes_bot_accounts(client, app, monkeypatch):

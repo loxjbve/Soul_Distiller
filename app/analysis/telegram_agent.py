@@ -15,7 +15,7 @@ from app.models import Project, TelegramMessage, TelegramParticipant
 from app.schemas import ServiceConfig
 from app.storage import repository
 
-TELEGRAM_TOOL_LOOP_MAX_STEPS = 7
+TELEGRAM_TOOL_LOOP_MAX_STEPS = 25
 TELEGRAM_TOOL_MAX_MESSAGES = 18
 
 

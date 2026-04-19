@@ -1175,3 +1175,1615 @@ button:hover, .primary-button:hover {
 @keyframes spin {
     to { transform: rotate(360deg); }
 }
+
+/* =========================================================
+   Telegram Persona Studio + Agentic Analysis Center
+   ========================================================= */
+.page-project--telegram-parent,
+.page-project--telegram-child,
+.page-analysis-center {
+    --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --bg: #0a0a0a;
+    --bg-soft: #101119;
+    --panel: rgba(16, 18, 27, 0.82);
+    --panel-strong: rgba(14, 16, 24, 0.92);
+    --panel-hover: rgba(21, 24, 35, 0.96);
+    --text: #eef2ff;
+    --text-soft: #b4bfd8;
+    --text-dim: #7d86a6;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.16);
+    --accent: #67a5ff;
+    --accent-strong: #8b5cf6;
+    --accent-soft: rgba(103, 165, 255, 0.18);
+    --chat-user-bg: rgba(103, 165, 255, 0.14);
+    --chat-user-border: rgba(103, 165, 255, 0.28);
+    --chat-tool-border: rgba(255, 255, 255, 0.1);
+    --chat-pill-bg: rgba(255, 255, 255, 0.06);
+    --chat-code-bg: #0d1018;
+    --chat-code-border: rgba(255, 255, 255, 0.08);
+    --shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+    color: var(--text);
+}
+
+.page-project--telegram-parent .hero-panel,
+.page-project--telegram-parent .surface-card,
+.page-project--telegram-child .hero-panel,
+.page-project--telegram-child .surface-card,
+.page-analysis-center .hero-panel,
+.page-analysis-center .surface-card,
+.page-project--telegram-parent button,
+.page-project--telegram-parent .primary-button,
+.page-project--telegram-parent .secondary-button,
+.page-project--telegram-parent .ghost-button,
+.page-project--telegram-parent .danger-button,
+.page-project--telegram-parent input,
+.page-project--telegram-parent select,
+.page-project--telegram-parent textarea,
+.page-project--telegram-child button,
+.page-project--telegram-child .primary-button,
+.page-project--telegram-child .secondary-button,
+.page-project--telegram-child .ghost-button,
+.page-project--telegram-child .danger-button,
+.page-project--telegram-child input,
+.page-project--telegram-child select,
+.page-project--telegram-child textarea,
+.page-analysis-center button,
+.page-analysis-center .primary-button,
+.page-analysis-center .secondary-button,
+.page-analysis-center .ghost-button,
+.page-analysis-center .danger-button,
+.page-analysis-center input,
+.page-analysis-center select,
+.page-analysis-center textarea {
+    clip-path: none !important;
+    border-radius: 18px !important;
+}
+
+.page-project--telegram-parent .hero-panel,
+.page-project--telegram-parent .surface-card,
+.page-project--telegram-child .hero-panel,
+.page-project--telegram-child .surface-card,
+.page-analysis-center .hero-panel,
+.page-analysis-center .surface-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(19, 22, 32, 0.92), rgba(12, 14, 22, 0.84)),
+        radial-gradient(circle at top right, rgba(103, 165, 255, 0.12), transparent 38%);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(18px);
+}
+
+.page-project--telegram-parent .hero-panel::before,
+.page-project--telegram-parent .surface-card::before,
+.page-project--telegram-child .hero-panel::before,
+.page-project--telegram-child .surface-card::before,
+.page-analysis-center .hero-panel::before,
+.page-analysis-center .surface-card::before {
+    background: linear-gradient(135deg, rgba(103, 165, 255, 0.08), transparent 42%, rgba(139, 92, 246, 0.08));
+}
+
+.page-project--telegram-parent button:hover,
+.page-project--telegram-parent .primary-button:hover,
+.page-project--telegram-child button:hover,
+.page-project--telegram-child .primary-button:hover,
+.page-analysis-center button:hover,
+.page-analysis-center .primary-button:hover {
+    animation: none !important;
+    text-shadow: none !important;
+    transform: translateY(-1px);
+}
+
+.page-project--telegram-parent .workspace-panel::before,
+.page-project--telegram-parent .workspace-panel::after,
+.page-project--telegram-child .workspace-panel::before,
+.page-project--telegram-child .workspace-panel::after,
+.page-analysis-center .workspace-panel::before,
+.page-analysis-center .workspace-panel::after {
+    display: none !important;
+}
+
+.page-project--telegram-parent .helper-text,
+.page-project--telegram-child .helper-text,
+.page-analysis-center .helper-text,
+.page-project--telegram-parent .section-note,
+.page-project--telegram-child .section-note,
+.page-analysis-center .section-note {
+    color: var(--text-soft);
+}
+
+.telegram-persona-form,
+.telegram-bind-needed-form {
+    gap: 18px;
+}
+
+.persona-step {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.persona-step__head {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.persona-step__head strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.persona-step__head p {
+    color: var(--text-soft);
+}
+
+.persona-step__index {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    background: rgba(103, 165, 255, 0.16);
+    border: 1px solid rgba(103, 165, 255, 0.22);
+    font: 600 0.78rem/1 var(--font-mono);
+    color: var(--text);
+}
+
+.persona-top-user-grid,
+.persona-profile-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.persona-top-user-card {
+    width: 100%;
+    padding: 14px 16px;
+    text-align: left;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.persona-top-user-card:hover,
+.persona-top-user-card.is-selected {
+    border-color: rgba(103, 165, 255, 0.34);
+    background: rgba(103, 165, 255, 0.12);
+    box-shadow: 0 10px 28px rgba(103, 165, 255, 0.12);
+}
+
+.persona-top-user-card strong,
+.persona-top-user-card small {
+    display: block;
+}
+
+.persona-top-user-card small {
+    margin-top: 6px;
+    color: var(--text-soft);
+}
+
+.persona-top-user-card__rank {
+    display: inline-flex;
+    margin-bottom: 10px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-dim);
+    font: 500 0.72rem/1 var(--font-mono);
+}
+
+.telegram-binding-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px 18px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.035);
+}
+
+.telegram-binding-card--summary {
+    min-height: 116px;
+    justify-content: center;
+}
+
+.telegram-binding-card--warning {
+    border-color: rgba(255, 186, 87, 0.28);
+    background: rgba(255, 186, 87, 0.08);
+}
+
+.persona-profile-section {
+    margin-top: 20px;
+}
+
+.persona-profile-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 18px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.persona-profile-card__head,
+.persona-profile-card > .button-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.persona-profile-card .button-row {
+    flex-wrap: wrap;
+}
+
+.analysis-center-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.9fr);
+    gap: 18px;
+}
+
+.analysis-side-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+}
+
+.agent-center-card {
+    min-height: 64vh;
+}
+
+.agent-center-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-height: 420px;
+    max-height: 72vh;
+    overflow-y: auto;
+    padding-right: 6px;
+}
+
+.bubble,
+.code-block,
+.analysis-diagnostics .event-stream,
+.bubble__tool-body {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.agent-center-feed::-webkit-scrollbar,
+.analysis-diagnostics .event-stream::-webkit-scrollbar,
+.code-block pre::-webkit-scrollbar,
+.bubble__tool-body::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.agent-center-feed::-webkit-scrollbar-track,
+.analysis-diagnostics .event-stream::-webkit-scrollbar-track,
+.code-block pre::-webkit-scrollbar-track,
+.bubble__tool-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.agent-center-feed::-webkit-scrollbar-thumb,
+.analysis-diagnostics .event-stream::-webkit-scrollbar-thumb,
+.code-block pre::-webkit-scrollbar-thumb,
+.bubble__tool-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+}
+
+.bubble {
+    width: 100%;
+    border-radius: 20px;
+    color: var(--text);
+}
+
+.bubble--task,
+.bubble--user {
+    padding: 18px 20px;
+    border: 1px solid rgba(103, 165, 255, 0.2);
+    background: rgba(103, 165, 255, 0.08);
+}
+
+.bubble--assistant {
+    padding: 4px 0;
+    background: transparent;
+    border: 0;
+}
+
+.bubble--tool {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.bubble--context {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-dim);
+    font: 500 0.75rem/1.3 var(--font-mono);
+}
+
+.bubble-context-row {
+    display: flex;
+    justify-content: center;
+}
+
+.bubble__head,
+.bubble__meta-row,
+.bubble__tool-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    justify-content: space-between;
+}
+
+.bubble__head {
+    margin-bottom: 10px;
+}
+
+.bubble__head--assistant {
+    justify-content: flex-start;
+}
+
+.bubble__badge,
+.bubble__meta-row span {
+    display: inline-flex;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-dim);
+    font: 500 0.72rem/1 var(--font-mono);
+}
+
+.bubble__meta {
+    color: var(--text-dim);
+    font: 500 0.75rem/1.3 var(--font-mono);
+}
+
+.bubble__meta-row {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.bubble__content {
+    color: var(--text);
+}
+
+.bubble__tool-summary {
+    padding: 12px 14px;
+    cursor: pointer;
+    list-style: none;
+    color: var(--text-soft);
+    font: 500 0.78rem/1.4 var(--font-mono);
+}
+
+.bubble__tool-summary::-webkit-details-marker {
+    display: none;
+}
+
+.bubble__tool-label {
+    color: var(--text);
+}
+
+.bubble__tool-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 14px 14px;
+}
+
+.bubble__spinner,
+.bubble__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    flex: 0 0 auto;
+}
+
+.bubble__spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid rgba(255, 255, 255, 0.2);
+    border-top-color: var(--text);
+    animation: spin 1s linear infinite;
+}
+
+.bubble__dot {
+    background: rgba(103, 165, 255, 0.9);
+    box-shadow: 0 0 10px rgba(103, 165, 255, 0.6);
+}
+
+.bubble--context small {
+    color: var(--text-dim);
+}
+
+.code-block {
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: #0d1018;
+    overflow: hidden;
+}
+
+.code-block--error {
+    border-color: rgba(255, 122, 122, 0.3);
+}
+
+.code-block__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--text-dim);
+    font: 500 0.74rem/1 var(--font-mono);
+}
+
+.code-block__copy {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: var(--text-soft);
+    font: inherit;
+}
+
+.code-block pre {
+    margin: 0;
+    padding: 14px;
+    overflow: auto;
+    color: #d7def6;
+    font: 400 0.82rem/1.6 var(--font-mono);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.analysis-diagnostics > summary,
+.facet-trace-section > summary,
+.facet-result-card > summary {
+    cursor: pointer;
+    list-style: none;
+}
+
+.analysis-diagnostics > summary::-webkit-details-marker,
+.facet-trace-section > summary::-webkit-details-marker,
+.facet-result-card > summary::-webkit-details-marker {
+    display: none;
+}
+
+.analysis-diagnostics > summary {
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: var(--text-soft);
+    font: 500 0.82rem/1.4 var(--font-mono);
+}
+
+.facet-result-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.facet-result-card__summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px;
+}
+
+.facet-result-card__summary h3 {
+    margin: 4px 0 8px;
+}
+
+.facet-result-card__body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 0 18px 18px;
+}
+
+.facet-result-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.facet-bullets {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.facet-trace-section {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.facet-trace-section > summary {
+    padding: 12px 14px;
+    color: var(--text-soft);
+    font: 500 0.78rem/1.3 var(--font-mono);
+}
+
+.facet-trace-section__body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 0 14px 14px;
+}
+
+.analysis-progress-card {
+    margin-bottom: 18px;
+}
+
+.analysis-progress-spotlight,
+.telegram-preprocess-spotlight {
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 18px;
+    border: 1px solid rgba(103, 165, 255, 0.14);
+    background:
+        radial-gradient(circle at top right, rgba(103, 165, 255, 0.16), transparent 32%),
+        radial-gradient(circle at left center, rgba(122, 92, 255, 0.12), transparent 28%),
+        rgba(255, 255, 255, 0.028);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.26);
+}
+
+.analysis-progress-spotlight__header,
+.telegram-preprocess-spotlight__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.analysis-progress-spotlight__header h2,
+.telegram-preprocess-spotlight__header h2 {
+    margin: 4px 0 8px;
+}
+
+.analysis-live-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 104px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-soft);
+    font: 600 0.74rem/1 var(--font-mono);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.analysis-live-pill.is-connecting,
+.analysis-live-pill.is-polling {
+    color: #f2d28c;
+    border-color: rgba(242, 210, 140, 0.28);
+    background: rgba(242, 210, 140, 0.08);
+}
+
+.analysis-live-pill.is-live {
+    color: #8fe4ff;
+    border-color: rgba(143, 228, 255, 0.28);
+    background: rgba(31, 112, 176, 0.14);
+    box-shadow: 0 0 0 1px rgba(143, 228, 255, 0.05), 0 0 24px rgba(31, 112, 176, 0.16);
+}
+
+.analysis-live-pill.is-idle {
+    color: var(--text-dim);
+}
+
+.analysis-signal-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.analysis-signal-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 8px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-soft);
+    font: 500 0.76rem/1.2 var(--font-mono);
+}
+
+.page-analysis-center .metric-card,
+.page-telegram-preprocess .metric-card,
+.page-telegram-preprocess .surface-card {
+    box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+}
+
+.page-analysis-center .metric-card {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02)),
+        rgba(12, 16, 28, 0.74);
+}
+
+.page-analysis-center .analysis-progress-card .progress-track,
+.page-telegram-preprocess .progress-track {
+    height: 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+    overflow: hidden;
+}
+
+.page-analysis-center .analysis-progress-card .progress-fill,
+.page-telegram-preprocess .progress-fill {
+    background: linear-gradient(90deg, #4f9bff 0%, #6d7cff 50%, #8a5dff 100%);
+    box-shadow: 0 0 28px rgba(79, 155, 255, 0.25);
+}
+
+.page-telegram-preprocess .hero-panel,
+.page-analysis-center .hero-panel {
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background:
+        radial-gradient(circle at top left, rgba(103, 165, 255, 0.12), transparent 30%),
+        radial-gradient(circle at bottom right, rgba(122, 92, 255, 0.08), transparent 32%),
+        rgba(10, 10, 10, 0.82);
+    backdrop-filter: blur(20px);
+}
+
+.page-telegram-preprocess .layout-grid--analysis {
+    align-items: start;
+}
+
+.page-telegram-preprocess .scroll-y-panel,
+.page-telegram-preprocess .document-board,
+.page-telegram-preprocess .trace-box {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+
+.page-telegram-preprocess .scroll-y-panel::-webkit-scrollbar,
+.page-telegram-preprocess .document-board::-webkit-scrollbar,
+.page-telegram-preprocess .trace-box::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.page-telegram-preprocess .scroll-y-panel::-webkit-scrollbar-track,
+.page-telegram-preprocess .document-board::-webkit-scrollbar-track,
+.page-telegram-preprocess .trace-box::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.page-telegram-preprocess .scroll-y-panel::-webkit-scrollbar-thumb,
+.page-telegram-preprocess .document-board::-webkit-scrollbar-thumb,
+.page-telegram-preprocess .trace-box::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
+}
+
+.page-telegram-preprocess #telegram-preprocess-trace-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.preprocess-trace-bubble {
+    margin-bottom: 0;
+}
+
+.page-telegram-preprocess .trace-box.live-trace-box {
+    min-height: 220px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(8, 10, 18, 0.86);
+    color: #d8e1ff;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.bubble--context-processing {
+    border-color: rgba(103, 165, 255, 0.12);
+}
+
+.bubble--context-ready {
+    border-color: rgba(100, 210, 160, 0.18);
+}
+
+.bubble--context-failed {
+    border-color: rgba(255, 122, 122, 0.22);
+}
+
+.inline-number-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.035);
+}
+
+.inline-number-field span {
+    color: var(--text-dim);
+    font: 500 0.72rem/1 var(--font-mono);
+    white-space: nowrap;
+}
+
+.inline-number-field input {
+    width: 92px;
+    padding: 8px 10px;
+    border-radius: 10px;
+}
+
+@media (max-width: 1024px) {
+    .analysis-center-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .persona-top-user-grid,
+    .persona-profile-list {
+        grid-template-columns: 1fr;
+    }
+
+    .persona-profile-card__head {
+        flex-direction: column;
+    }
+
+    .bubble__meta-row {
+        gap: 8px;
+    }
+
+    .analysis-progress-spotlight__header,
+    .telegram-preprocess-spotlight__header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .inline-number-field {
+        width: 100%;
+        justify-content: space-between;
+    }
+}
+
+/* =========================================================
+   2026 Desktop Shell + Agentic Workspace Refresh
+   ========================================================= */
+:root {
+    --bg: #0a0a0a;
+    --bg-soft: #12131a;
+    --panel: rgba(18, 20, 30, 0.84);
+    --panel-strong: rgba(14, 16, 24, 0.94);
+    --panel-hover: rgba(25, 28, 39, 0.96);
+    --text: #eef2ff;
+    --text-soft: #b6c0d8;
+    --text-dim: #7781a6;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.18);
+    --accent: #61a8ff;
+    --accent-strong: #8d6bff;
+    --accent-soft: rgba(97, 168, 255, 0.16);
+    --warning: #ffc56b;
+    --success: #5fe0ad;
+    --danger: #ff8b9a;
+    --queued: #8a95b5;
+    --shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+    --radius-xl: 30px;
+    --radius-lg: 24px;
+    --radius-md: 18px;
+    --radius-sm: 14px;
+    --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --scrollbar-thumb: rgba(255, 255, 255, 0.16);
+    --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+    --shell-gap: 18px;
+}
+
+.app-body {
+    color: var(--text);
+    font-family: var(--font-sans);
+    background:
+        radial-gradient(circle at top left, rgba(97, 168, 255, 0.12), transparent 26%),
+        radial-gradient(circle at 82% 12%, rgba(141, 107, 255, 0.12), transparent 20%),
+        radial-gradient(circle at 50% 110%, rgba(95, 224, 173, 0.06), transparent 22%),
+        linear-gradient(180deg, #050607 0%, #090a0f 100%);
+}
+
+.app-body .cursor-glow {
+    display: none !important;
+}
+
+.app-body .site-shell,
+.app-body .hero-panel,
+.app-body .surface-card,
+.app-body .metric-card,
+.app-body .status-chip,
+.app-body .filter-chip,
+.app-body button,
+.app-body .primary-button,
+.app-body .secondary-button,
+.app-body .ghost-button,
+.app-body .danger-button,
+.app-body input,
+.app-body select,
+.app-body textarea,
+.app-body .trace-box,
+.app-body .event-item,
+.app-body .status-pill {
+    clip-path: none !important;
+}
+
+.app-body button:hover,
+.app-body .primary-button:hover,
+.app-body .ghost-button:hover {
+    animation: none !important;
+    text-shadow: none !important;
+}
+
+.app-body .screen-grid {
+    opacity: 0.4;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.32), transparent 78%);
+}
+
+.app-body .screen-noise {
+    opacity: 0.012;
+}
+
+.app-body .site-header {
+    position: relative;
+    top: auto;
+    flex: 0 0 auto;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(10, 11, 16, 0.72);
+    backdrop-filter: blur(22px);
+}
+
+.app-body .hero-panel,
+.app-body .surface-card,
+.app-body .metric-card {
+    border-radius: var(--radius-lg) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(21, 23, 35, 0.9), rgba(12, 13, 20, 0.88)),
+        radial-gradient(circle at top right, rgba(97, 168, 255, 0.12), transparent 34%);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(20px);
+}
+
+.app-body .hero-panel::before,
+.app-body .surface-card::before {
+    background: linear-gradient(135deg, rgba(97, 168, 255, 0.08), transparent 42%, rgba(141, 107, 255, 0.08));
+}
+
+.app-body button,
+.app-body .primary-button,
+.app-body .secondary-button,
+.app-body .ghost-button,
+.app-body .danger-button,
+.app-body input,
+.app-body select,
+.app-body textarea {
+    border-radius: var(--radius-sm) !important;
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.app-body .primary-button {
+    color: #f4f7ff;
+    background: linear-gradient(135deg, rgba(97, 168, 255, 0.86), rgba(141, 107, 255, 0.86));
+    box-shadow: 0 12px 28px rgba(97, 168, 255, 0.2);
+}
+
+.app-body .ghost-button,
+.app-body .secondary-button {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text);
+}
+
+.app-body .status-chip,
+.app-body .filter-chip {
+    border-radius: 999px !important;
+}
+
+.app-body .page-shell {
+    display: flex;
+    flex-direction: column;
+    gap: var(--shell-gap);
+}
+
+.app-body .page-shell > * {
+    min-height: 0;
+}
+
+.app-body .surface-card,
+.app-body .hero-panel,
+.app-body .metric-card {
+    animation: panel-rise 420ms cubic-bezier(.2, .9, .2, 1) both;
+}
+
+.app-body .surface-card:nth-of-type(2) {
+    animation-delay: 40ms;
+}
+
+.app-body .surface-card:nth-of-type(3) {
+    animation-delay: 80ms;
+}
+
+.app-body .surface-card,
+.app-body .hero-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.app-body .section-head,
+.app-body .button-row,
+.app-body .progress-shell,
+.app-body .analysis-signal-chip-row,
+.app-body .metric-grid,
+.app-body .chip-row,
+.app-body .hero-actions {
+    flex-shrink: 0;
+}
+
+.app-body .panel-scroll,
+.app-body .document-board,
+.app-body .project-card-list,
+.app-body .version-list,
+.app-body .profile-list,
+.app-body .persona-profile-list,
+.app-body .facet-status-grid,
+.app-body .facet-stack,
+.app-body .event-stream,
+.app-body .agent-center-feed,
+.app-body .context-list,
+.app-body .trace-box,
+.app-body .generation-output,
+.app-body .chat-history,
+.app-body .preprocess-session-list,
+.app-body .preprocess-chat-scroll,
+.app-body .mention-suggestions,
+.app-body .metric-list,
+.app-body .stream-output,
+.app-body .surface-card > .form-stack {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 100%;
+    overflow: auto;
+    padding-right: 6px;
+}
+
+.app-body .panel-scroll,
+.app-body .document-board,
+.app-body .project-card-list,
+.app-body .version-list,
+.app-body .profile-list,
+.app-body .persona-profile-list,
+.app-body .facet-status-grid,
+.app-body .facet-stack,
+.app-body .event-stream,
+.app-body .agent-center-feed,
+.app-body .context-list,
+.app-body .trace-box,
+.app-body .generation-output,
+.app-body .chat-history,
+.app-body .preprocess-session-list,
+.app-body .preprocess-chat-scroll,
+.app-body .mention-suggestions,
+.app-body .metric-list,
+.app-body .stream-output,
+.app-body .surface-card > .form-stack,
+.app-body .code-block pre,
+.app-body .bubble__tool-body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.app-body .panel-scroll::-webkit-scrollbar,
+.app-body .document-board::-webkit-scrollbar,
+.app-body .project-card-list::-webkit-scrollbar,
+.app-body .version-list::-webkit-scrollbar,
+.app-body .profile-list::-webkit-scrollbar,
+.app-body .persona-profile-list::-webkit-scrollbar,
+.app-body .facet-status-grid::-webkit-scrollbar,
+.app-body .facet-stack::-webkit-scrollbar,
+.app-body .event-stream::-webkit-scrollbar,
+.app-body .agent-center-feed::-webkit-scrollbar,
+.app-body .context-list::-webkit-scrollbar,
+.app-body .trace-box::-webkit-scrollbar,
+.app-body .generation-output::-webkit-scrollbar,
+.app-body .chat-history::-webkit-scrollbar,
+.app-body .preprocess-session-list::-webkit-scrollbar,
+.app-body .preprocess-chat-scroll::-webkit-scrollbar,
+.app-body .mention-suggestions::-webkit-scrollbar,
+.app-body .metric-list::-webkit-scrollbar,
+.app-body .stream-output::-webkit-scrollbar,
+.app-body .surface-card > .form-stack::-webkit-scrollbar,
+.app-body .code-block pre::-webkit-scrollbar,
+.app-body .bubble__tool-body::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+.app-body .panel-scroll::-webkit-scrollbar-track,
+.app-body .document-board::-webkit-scrollbar-track,
+.app-body .project-card-list::-webkit-scrollbar-track,
+.app-body .version-list::-webkit-scrollbar-track,
+.app-body .profile-list::-webkit-scrollbar-track,
+.app-body .persona-profile-list::-webkit-scrollbar-track,
+.app-body .facet-status-grid::-webkit-scrollbar-track,
+.app-body .facet-stack::-webkit-scrollbar-track,
+.app-body .event-stream::-webkit-scrollbar-track,
+.app-body .agent-center-feed::-webkit-scrollbar-track,
+.app-body .context-list::-webkit-scrollbar-track,
+.app-body .trace-box::-webkit-scrollbar-track,
+.app-body .generation-output::-webkit-scrollbar-track,
+.app-body .chat-history::-webkit-scrollbar-track,
+.app-body .preprocess-session-list::-webkit-scrollbar-track,
+.app-body .preprocess-chat-scroll::-webkit-scrollbar-track,
+.app-body .mention-suggestions::-webkit-scrollbar-track,
+.app-body .metric-list::-webkit-scrollbar-track,
+.app-body .stream-output::-webkit-scrollbar-track,
+.app-body .surface-card > .form-stack::-webkit-scrollbar-track,
+.app-body .code-block pre::-webkit-scrollbar-track,
+.app-body .bubble__tool-body::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.app-body .panel-scroll::-webkit-scrollbar-thumb,
+.app-body .document-board::-webkit-scrollbar-thumb,
+.app-body .project-card-list::-webkit-scrollbar-thumb,
+.app-body .version-list::-webkit-scrollbar-thumb,
+.app-body .profile-list::-webkit-scrollbar-thumb,
+.app-body .persona-profile-list::-webkit-scrollbar-thumb,
+.app-body .facet-status-grid::-webkit-scrollbar-thumb,
+.app-body .facet-stack::-webkit-scrollbar-thumb,
+.app-body .event-stream::-webkit-scrollbar-thumb,
+.app-body .agent-center-feed::-webkit-scrollbar-thumb,
+.app-body .context-list::-webkit-scrollbar-thumb,
+.app-body .trace-box::-webkit-scrollbar-thumb,
+.app-body .generation-output::-webkit-scrollbar-thumb,
+.app-body .chat-history::-webkit-scrollbar-thumb,
+.app-body .preprocess-session-list::-webkit-scrollbar-thumb,
+.app-body .preprocess-chat-scroll::-webkit-scrollbar-thumb,
+.app-body .mention-suggestions::-webkit-scrollbar-thumb,
+.app-body .metric-list::-webkit-scrollbar-thumb,
+.app-body .stream-output::-webkit-scrollbar-thumb,
+.app-body .surface-card > .form-stack::-webkit-scrollbar-thumb,
+.app-body .code-block pre::-webkit-scrollbar-thumb,
+.app-body .bubble__tool-body::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 999px;
+}
+
+.app-body .panel-scroll::-webkit-scrollbar-thumb:hover,
+.app-body .document-board::-webkit-scrollbar-thumb:hover,
+.app-body .project-card-list::-webkit-scrollbar-thumb:hover,
+.app-body .version-list::-webkit-scrollbar-thumb:hover,
+.app-body .profile-list::-webkit-scrollbar-thumb:hover,
+.app-body .persona-profile-list::-webkit-scrollbar-thumb:hover,
+.app-body .facet-status-grid::-webkit-scrollbar-thumb:hover,
+.app-body .facet-stack::-webkit-scrollbar-thumb:hover,
+.app-body .event-stream::-webkit-scrollbar-thumb:hover,
+.app-body .agent-center-feed::-webkit-scrollbar-thumb:hover,
+.app-body .context-list::-webkit-scrollbar-thumb:hover,
+.app-body .trace-box::-webkit-scrollbar-thumb:hover,
+.app-body .generation-output::-webkit-scrollbar-thumb:hover,
+.app-body .chat-history::-webkit-scrollbar-thumb:hover,
+.app-body .preprocess-session-list::-webkit-scrollbar-thumb:hover,
+.app-body .preprocess-chat-scroll::-webkit-scrollbar-thumb:hover,
+.app-body .mention-suggestions::-webkit-scrollbar-thumb:hover,
+.app-body .metric-list::-webkit-scrollbar-thumb:hover,
+.app-body .stream-output::-webkit-scrollbar-thumb:hover,
+.app-body .surface-card > .form-stack::-webkit-scrollbar-thumb:hover,
+.app-body .code-block pre::-webkit-scrollbar-thumb:hover,
+.app-body .bubble__tool-body::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+}
+
+.layout-grid--home,
+.layout-grid--settings,
+.layout-grid--assets,
+.analysis-dashboard,
+.preprocess-shell,
+.immersive-chat,
+.project-workbench,
+.telegram-preprocess-workbench,
+.assets-workbench {
+    min-height: 0;
+}
+
+.project-workbench {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--shell-gap);
+    overflow: hidden;
+}
+
+.project-detail-grid {
+    flex: 0 0 auto;
+}
+
+.project-personas-panel {
+    flex: 0 0 min(34vh, 380px);
+}
+
+.project-documents-panel {
+    flex: 1 1 auto;
+}
+
+.project-documents-panel .document-board {
+    flex: 1 1 auto;
+}
+
+.page-project--telegram-parent .project-workbench,
+.page-project--telegram-child .project-workbench {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.page-project--telegram-parent .project-detail-grid,
+.page-project--telegram-child .project-detail-grid {
+    flex: 1 1 min(44vh, 560px);
+    min-height: 0;
+    overflow: hidden;
+}
+
+.page-project--telegram-parent .project-detail-grid > .surface-card,
+.page-project--telegram-child .project-detail-grid > .surface-card {
+    min-height: 0;
+    overflow: hidden;
+}
+
+.page-project--telegram-parent .telegram-persona-form,
+.page-project--telegram-child .telegram-bind-needed-form,
+.page-project--telegram-child #analyze-form {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: 100%;
+    overflow: auto;
+    padding-right: 6px;
+}
+
+.analysis-dashboard {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.96fr);
+    grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 0.88fr);
+    grid-template-areas:
+        "metrics metrics"
+        "spotlight progress"
+        "center center"
+        "results diagnostics";
+    gap: var(--shell-gap);
+    overflow: hidden;
+}
+
+.analysis-metric-grid {
+    grid-area: metrics;
+}
+
+.analysis-card--spotlight {
+    grid-area: spotlight;
+}
+
+.analysis-card--progress {
+    grid-area: progress;
+}
+
+.analysis-card--center {
+    grid-area: center;
+    min-height: 0;
+}
+
+.analysis-card--results {
+    grid-area: results;
+}
+
+.analysis-card--diagnostics {
+    grid-area: diagnostics;
+}
+
+.analysis-center-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.92fr);
+    gap: var(--shell-gap);
+    min-height: 0;
+}
+
+.analysis-side-rail,
+.analysis-side-rail > .surface-card,
+.analysis-card--results,
+.analysis-card--diagnostics,
+.analysis-diagnostics,
+.project-detail-grid > .surface-card,
+.telegram-preprocess-card--status,
+.telegram-preprocess-card--agents,
+.telegram-preprocess-card--trace > .surface-card,
+.telegram-preprocess-data-grid > .surface-card,
+.assets-card--generate,
+.assets-card--draft,
+.assets-card--documents,
+.assets-card--versions,
+.chat-shell,
+.chat-context-card,
+.layout-grid--home > .surface-card,
+.layout-grid--settings > .surface-card,
+.project-documents-panel,
+.project-personas-panel {
+    min-height: 0;
+}
+
+.analysis-diagnostics {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.analysis-diagnostics .event-stream {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.agent-center-card__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.agent-lane-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.agent-lane-card {
+    position: relative;
+    min-height: 120px;
+    padding: 16px;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.02)),
+        rgba(12, 14, 22, 0.74);
+    overflow: hidden;
+}
+
+.agent-lane-card::after {
+    content: "";
+    position: absolute;
+    inset: auto 14px 0;
+    height: 2px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, transparent, rgba(97, 168, 255, 0.92), rgba(141, 107, 255, 0.92), transparent);
+    animation: beam-pulse 2.2s ease-in-out infinite;
+}
+
+.agent-lane-card--empty::after {
+    display: none;
+}
+
+.agent-lane-card__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.agent-lane-card__head strong,
+.agent-lane-card__head span,
+.agent-lane-card__meta span,
+.agent-lane-card__requests {
+    display: block;
+}
+
+.agent-lane-card__head span,
+.agent-lane-card__meta,
+.agent-lane-card__requests {
+    color: var(--text-soft);
+    font-size: 0.78rem;
+}
+
+.agent-lane-card__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-family: var(--font-mono);
+}
+
+.agent-lane-card__requests {
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    line-height: 1.55;
+}
+
+.agent-lane-card.status-running {
+    border-color: rgba(97, 168, 255, 0.2);
+}
+
+.agent-lane-card.status-completed {
+    border-color: rgba(95, 224, 173, 0.2);
+}
+
+.agent-lane-card.status-failed {
+    border-color: rgba(255, 139, 154, 0.24);
+}
+
+.telegram-preprocess-workbench {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.95fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+        "spotlight status"
+        "agents trace"
+        "data data";
+    gap: var(--shell-gap);
+    overflow: hidden;
+}
+
+.telegram-preprocess-card--spotlight {
+    grid-area: spotlight;
+}
+
+.telegram-preprocess-card--status {
+    grid-area: status;
+}
+
+.telegram-preprocess-card--agents {
+    grid-area: agents;
+}
+
+.telegram-preprocess-card--trace {
+    grid-area: trace;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--shell-gap);
+}
+
+.telegram-preprocess-card--trace > .surface-card {
+    min-height: 0;
+}
+
+.telegram-preprocess-data-grid {
+    grid-area: data;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--shell-gap);
+}
+
+.telegram-preprocess-data-grid > .surface-card,
+.assets-side-column > .surface-card {
+    min-height: 0;
+}
+
+.assets-filter-bar {
+    flex: 0 0 auto;
+}
+
+.assets-workbench {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(300px, 0.92fr) minmax(0, 1.32fr) minmax(280px, 0.92fr);
+    gap: var(--shell-gap);
+    overflow: hidden;
+}
+
+.assets-side-column {
+    display: flex;
+    flex-direction: column;
+    gap: var(--shell-gap);
+    min-height: 0;
+}
+
+.asset-doc-card.is-missing {
+    border-color: rgba(255, 197, 107, 0.18);
+    background: rgba(255, 197, 107, 0.05);
+}
+
+.asset-doc-card.is-ready {
+    border-color: rgba(95, 224, 173, 0.16);
+}
+
+.immersive-chat {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.4fr);
+    gap: var(--shell-gap);
+    overflow: hidden;
+}
+
+.chat-shell {
+    min-height: 0;
+}
+
+.chat-history {
+    flex: 1 1 auto;
+}
+
+.layout-grid--settings {
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
+.layout-grid--settings > .surface-card {
+    min-height: 0;
+}
+
+.layout-grid--home > .surface-card {
+    min-height: 0;
+}
+
+.preprocess-main,
+.preprocess-sidebar,
+.preprocess-context {
+    min-height: 0;
+}
+
+.page-analysis-center .analysis-live-pill.is-live,
+.page-telegram-preprocess .analysis-live-pill.is-live {
+    box-shadow: 0 0 0 1px rgba(97, 168, 255, 0.08), 0 0 24px rgba(97, 168, 255, 0.18);
+}
+
+.page-analysis-center .progress-fill,
+.page-telegram-preprocess .progress-fill,
+.assets-workbench .progress-fill {
+    background: linear-gradient(90deg, #4c95ff 0%, #7b70ff 52%, #9b5dff 100%);
+    box-shadow: 0 0 28px rgba(97, 168, 255, 0.28);
+}
+
+.page-analysis-center .progress-track,
+.page-telegram-preprocess .progress-track,
+.assets-workbench .progress-track {
+    height: 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+}
+
+@media (min-width: 901px) {
+    html,
+    body,
+    .app-body {
+        height: 100%;
+    }
+
+    .app-body {
+        min-height: 100dvh;
+        height: 100dvh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .app-body .page-shell {
+        flex: 1 1 auto;
+        min-height: 0;
+        padding: 18px 0 18px;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+}
+
+@media (max-width: 1280px) {
+    .assets-workbench,
+    .analysis-dashboard,
+    .telegram-preprocess-workbench {
+        grid-template-columns: 1fr;
+    }
+
+    .analysis-dashboard {
+        grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 0.9fr);
+        grid-template-areas:
+            "metrics"
+            "spotlight"
+            "progress"
+            "center"
+            "results"
+            "diagnostics";
+    }
+
+    .telegram-preprocess-workbench {
+        grid-template-rows: auto auto auto minmax(0, 1fr);
+        grid-template-areas:
+            "spotlight"
+            "status"
+            "agents"
+            "trace"
+            "data";
+    }
+
+    .telegram-preprocess-card--trace {
+        grid-template-columns: 1fr;
+    }
+
+    .assets-workbench {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .assets-side-column {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+@media (max-width: 900px) {
+    .app-body {
+        min-height: 100vh;
+        overflow-x: hidden;
+        overflow-y: auto;
+    }
+
+    .app-body .page-shell {
+        min-height: auto;
+        overflow: visible;
+    }
+
+    .analysis-center-layout,
+    .telegram-preprocess-data-grid,
+    .assets-workbench,
+    .assets-side-column,
+    .immersive-chat {
+        grid-template-columns: 1fr;
+    }
+
+    .project-workbench {
+        overflow: visible;
+    }
+
+    .project-personas-panel {
+        flex-basis: auto;
+    }
+}
+
+@keyframes panel-rise {
+    0% {
+        opacity: 0;
+        transform: translateY(10px) scale(0.992);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+@keyframes beam-pulse {
+    0%,
+    100% {
+        opacity: 0.35;
+        transform: translateX(-10%);
+    }
+    50% {
+        opacity: 0.95;
+        transform: translateX(10%);
+    }
+}

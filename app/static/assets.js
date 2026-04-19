@@ -1,13 +1,15 @@
 import {
     clampPercent,
+    escapeHtml,
     fetchJson,
     parseSseBlock,
+    safeParseJson,
     setButtonBusy,
     showNotice,
     updateText,
 } from "./shared.js";
 
-const bootstrap = JSON.parse(document.getElementById("assets-page-bootstrap")?.textContent || "{}");
+const bootstrap = safeParseJson(document.getElementById("assets-page-bootstrap")?.textContent, {});
 
 if (bootstrap?.project_id) {
     const ui = bootstrap.ui_strings || {};
@@ -27,16 +29,25 @@ if (bootstrap?.project_id) {
         output: document.getElementById("generation-output"),
         chunkCount: document.getElementById("asset-chunk-count"),
         charCount: document.getElementById("asset-char-count"),
+        docStatus: document.getElementById("asset-document-status"),
+        jsonPayload: document.getElementById("asset-json-payload"),
     };
 
     let chunkCount = 0;
     let charCount = 0;
 
+    renderDocumentStatus();
+    elements.jsonPayload?.addEventListener("input", () => renderDocumentStatus());
+
     elements.form?.addEventListener("submit", async (event) => {
         event.preventDefault();
-        setButtonBusy(elements.button, true, ui.status_running || "生成中");
-        elements.shell.hidden = false;
-        elements.output.textContent = "";
+        setButtonBusy(elements.button, true, ui.status_running || "Generating...");
+        if (elements.shell) {
+            elements.shell.hidden = false;
+        }
+        if (elements.output) {
+            elements.output.textContent = "";
+        }
         chunkCount = 0;
         charCount = 0;
         updateCounts();
@@ -56,7 +67,7 @@ if (bootstrap?.project_id) {
             body: JSON.stringify({ asset_kind: assetKind }),
         });
         if (!response.ok || !response.body) {
-            throw new Error("流式生成不可用");
+            throw new Error("Streaming asset generation is not available.");
         }
 
         const reader = response.body.getReader();
@@ -93,30 +104,32 @@ if (bootstrap?.project_id) {
         }
         if (eventType === "delta") {
             const chunk = data.chunk || "";
-            elements.output.textContent += chunk;
+            if (elements.output) {
+                elements.output.textContent += chunk;
+            }
             chunkCount += 1;
             charCount += chunk.length;
             updateCounts();
             return;
         }
         if (eventType === "done") {
-            renderStatus({ status: "completed", progress_percent: 100, message: data.message || ui.status_completed });
+            renderStatus({ status: "completed", progress_percent: 100, message: data.message || ui.status_completed || "Completed" });
             window.setTimeout(() => {
                 window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}`;
             }, 700);
             return;
         }
         if (eventType === "error") {
-            throw new Error(data.message || ui.status_failed || "生成失败");
+            throw new Error(data.message || ui.status_failed || "Asset generation failed.");
         }
     }
 
     function renderStatus(payload) {
         const percent = clampPercent(payload.progress_percent || 0);
-        updateText(elements.stageChip, payload.status || ui.status_running || "生成中");
-        updateText(elements.stage, payload.phase || payload.status || ui.status_running || "生成中");
+        updateText(elements.stageChip, payload.status || ui.status_running || "Generating");
+        updateText(elements.stage, payload.phase || payload.status || ui.status_running || "Generating");
         updateText(elements.percent, `${percent}%`);
-        updateText(elements.state, payload.status || ui.status_running || "生成中");
+        updateText(elements.state, payload.status || ui.status_running || "Generating");
         updateText(elements.message, payload.message || "");
         if (elements.fill) {
             elements.fill.style.width = `${percent}%`;
@@ -132,13 +145,56 @@ if (bootstrap?.project_id) {
         renderStatus({
             status: "failed",
             progress_percent: 0,
-            message: `${error.message}，正在切换到普通生成接口…`,
+            message: `${error.message} Switching to non-streaming generation.`,
         });
         const payload = await fetchJson(`/api/projects/${projectId}/assets/generate`, {
             method: "POST",
             body: JSON.stringify({ asset_kind: assetKind }),
         });
-        showNotice(elements.message, payload.message || "草稿已生成。", "success");
+        showNotice(elements.message, payload.message || "Draft generated.", "success");
         window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}&draft=${encodeURIComponent(payload.id || "")}`;
+    }
+
+    function renderDocumentStatus() {
+        if (!elements.docStatus) {
+            return;
+        }
+        const payload = safeParseJson(elements.jsonPayload?.value || "{}", {});
+        const documents = payload?.documents && typeof payload.documents === "object" ? payload.documents : {};
+
+        elements.docStatus.innerHTML = "";
+        const keys = assetKind === "skill"
+            ? ["skill", "personality", "memories", "merge"]
+            : assetKind === "cc_skill"
+                ? ["skill", "personality", "memories"]
+                : ["skill"];
+
+        if (!keys.length) {
+            elements.docStatus.innerHTML = `<div class="empty-panel"><strong>No split documents for this asset kind.</strong></div>`;
+            return;
+        }
+
+        keys.forEach((key) => {
+            const documentPayload = documents?.[key] && typeof documents[key] === "object" ? documents[key] : {};
+            const markdown = String(documentPayload.markdown || "").trim();
+            const title = String(documentPayload.title || key);
+            const exists = Boolean(markdown);
+            const card = document.createElement("article");
+            card.className = `document-card compact-card asset-doc-card ${exists ? "is-ready" : "is-missing"}`;
+            card.innerHTML = `
+                <div class="document-card__head">
+                    <strong>${escapeHtml(title)}</strong>
+                    <span class="status-chip ${exists ? "tone-ready" : "tone-warning"}">${exists ? "ready" : "missing"}</span>
+                </div>
+                <p class="helper-text">${escapeHtml(`${markdown.length} chars`)}</p>
+                <p class="helper-text">${escapeHtml(markdown ? markdown.slice(0, 120) : "This document is empty in the current draft payload.")}</p>
+                ${bootstrap.draft_id && exists ? `
+                    <div class="button-row top-gap">
+                        <a class="ghost-button" href="/api/projects/${projectId}/assets/${bootstrap.draft_id}/exports/${encodeURIComponent(key)}">Export</a>
+                    </div>
+                ` : ""}
+            `;
+            elements.docStatus.appendChild(card);
+        });
     }
 }

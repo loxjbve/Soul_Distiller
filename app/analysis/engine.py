@@ -87,7 +87,7 @@ def _normalize_concurrency(value: Any) -> int:
         candidate = int(value)
     except (TypeError, ValueError):
         candidate = DEFAULT_ANALYSIS_CONCURRENCY
-    return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+    return max(MIN_ANALYSIS_CONCURRENCY, candidate)
 
 
 def _collapse_whitespace(value: Any) -> str:
@@ -312,6 +312,7 @@ class AnalysisEngine:
             analysis_context=analysis_context,
         )
         summary["concurrency"] = _normalize_concurrency(concurrency)
+        summary["requested_concurrency"] = summary["concurrency"]
         run = repository.create_analysis_run(
             session,
             project_id,
@@ -682,77 +683,89 @@ class AnalysisEngine:
         self._persist_progress(session, run.id)
 
         llm_payload = asdict(chat_config) if chat_config else None
-        placeholder_trace = {
-            "mode": "telegram_agent",
-            "evidence_kind": "telegram_messages",
-            "tool_calls": [],
-            "preprocess_run_id": summary.get("preprocess_run_id"),
-            "target_user": target_user,
-            "topic_ids": [],
-            "queried_message_ids": [],
-        }
-        for facet_def in FACETS:
-            self._ensure_run_active(run.id, run.project_id)
-            self._mark_facet_preparing(session, run, facet_def)
-            self._mark_facet_running(
-                session,
-                run,
-                facet_def,
-                "telegram_agent",
-                placeholder_trace,
-                0,
-                llm_payload=llm_payload,
-            )
-            try:
-                analysis = agent.analyze_facet(
-                    facet_def,
-                    target_user_query=(run.summary_json or {}).get("target_user_query"),
-                    participant_id=(run.summary_json or {}).get("participant_id"),
-                    analysis_context=(run.summary_json or {}).get("analysis_context"),
-                    preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
-                )
+        placeholder_trace = self._build_telegram_placeholder_trace(
+            preprocess_run_id=summary.get("preprocess_run_id"),
+            target_user=target_user,
+        )
+        run_concurrency = self._resolve_run_concurrency(run)
+        executor = ThreadPoolExecutor(
+            max_workers=min(len(FACETS), run_concurrency),
+            thread_name_prefix="telegram-facet",
+        )
+        future_map: dict[Future[dict[str, Any]], FacetDefinition] = {}
+        pending_facets = list(FACETS)
+        try:
+            while pending_facets or future_map:
                 self._ensure_run_active(run.id, run.project_id)
-                retrieval_trace = dict(analysis.retrieval_trace or {})
-                retrieval_mode = str(retrieval_trace.get("mode") or "telegram_agent")
-                summary = dict(run.summary_json or {})
-                summary["topic_count_used"] = max(
-                    int(summary.get("topic_count_used", 0) or 0),
-                    int(retrieval_trace.get("topic_count_used", 0) or 0),
-                )
-                run.summary_json = summary
-                result = self._facet_result_from_payload(facet_def, analysis.payload)
-                self._apply_facet_result(
-                    session,
-                    run,
-                    facet_def,
-                    retrieval_mode,
-                    retrieval_trace,
-                    int(analysis.hit_count or 0),
-                    result,
-                )
-            except Exception as exc:
-                retrieval_mode = "telegram_agent_failed"
-                retrieval_trace = {
-                    "mode": retrieval_mode,
-                    "evidence_kind": "telegram_messages",
-                    "preprocess_run_id": summary.get("preprocess_run_id"),
-                    "error": self._format_exception(exc),
-                    "traceback": traceback.format_exc(),
-                }
-                result = self._build_failed_facet_result(
-                    facet_def,
-                    exc,
-                    llm_called=bool(chat_config),
-                )
-                self._apply_facet_result(
-                    session,
-                    run,
-                    facet_def,
-                    retrieval_mode,
-                    retrieval_trace,
-                    0,
-                    result,
-                )
+                while pending_facets and len(future_map) < run_concurrency:
+                    facet_def = pending_facets.pop(0)
+                    self._mark_facet_preparing(session, run, facet_def)
+                    self._mark_facet_running(
+                        session,
+                        run,
+                        facet_def,
+                        "telegram_agent",
+                        placeholder_trace,
+                        0,
+                        llm_payload=llm_payload,
+                    )
+                    future = self._submit_telegram_facet_work(
+                        executor,
+                        run.id,
+                        run.project_id,
+                        facet_def,
+                        llm_payload=llm_payload,
+                    )
+                    future_map[future] = facet_def
+
+                if not future_map:
+                    continue
+
+                completed_futures, _ = wait(list(future_map.keys()), timeout=0.25, return_when=FIRST_COMPLETED)
+                self._ensure_run_active(run.id, run.project_id)
+                for future in completed_futures:
+                    facet_def = future_map.pop(future)
+                    self._ensure_run_active(run.id, run.project_id)
+                    try:
+                        payload = future.result()
+                        retrieval_trace = dict(payload.get("retrieval_trace") or {})
+                        retrieval_mode = str(retrieval_trace.get("mode") or "telegram_agent")
+                        summary = dict(run.summary_json or {})
+                        summary["topic_count_used"] = max(
+                            int(summary.get("topic_count_used", 0) or 0),
+                            int(retrieval_trace.get("topic_count_used", 0) or 0),
+                        )
+                        run.summary_json = summary
+                        result = self._facet_result_from_payload(facet_def, dict(payload.get("analysis_payload") or {}))
+                        hit_count = int(payload.get("hit_count") or 0)
+                    except Exception as exc:
+                        retrieval_mode = "telegram_agent_failed"
+                        retrieval_trace = {
+                            "mode": retrieval_mode,
+                            "evidence_kind": "telegram_messages",
+                            "preprocess_run_id": summary.get("preprocess_run_id"),
+                            "error": self._format_exception(exc),
+                            "traceback": traceback.format_exc(),
+                        }
+                        result = self._build_failed_facet_result(
+                            facet_def,
+                            exc,
+                            llm_called=bool(chat_config),
+                        )
+                        hit_count = 0
+                    self._apply_facet_result(
+                        session,
+                        run,
+                        facet_def,
+                        retrieval_mode,
+                        retrieval_trace,
+                        hit_count,
+                        result,
+                    )
+        finally:
+            for future in future_map:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
 
     def _rerun_telegram_facet(
         self,
@@ -784,15 +797,10 @@ class AnalysisEngine:
             run,
             facet_def,
             "telegram_agent",
-            {
-                "mode": "telegram_agent",
-                "evidence_kind": "telegram_messages",
-                "tool_calls": [],
-                "preprocess_run_id": (run.summary_json or {}).get("preprocess_run_id"),
-                "target_user": target_user,
-                "topic_ids": [],
-                "queried_message_ids": [],
-            },
+            self._build_telegram_placeholder_trace(
+                preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+                target_user=target_user,
+            ),
             0,
             llm_payload=llm_payload,
         )
@@ -864,6 +872,73 @@ class AnalysisEngine:
         )
         self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
+
+    @staticmethod
+    def _build_telegram_placeholder_trace(
+        *,
+        preprocess_run_id: str | None,
+        target_user: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "mode": "telegram_agent",
+            "evidence_kind": "telegram_messages",
+            "tool_calls": [],
+            "preprocess_run_id": preprocess_run_id,
+            "target_user": dict(target_user or {}),
+            "topic_ids": [],
+            "queried_message_ids": [],
+        }
+
+    def _submit_telegram_facet_work(
+        self,
+        executor: Any,
+        run_id: str,
+        project_id: str,
+        facet_def: FacetDefinition,
+        *,
+        llm_payload: dict[str, Any] | None,
+    ) -> Future[dict[str, Any]]:
+        return executor.submit(
+            self._run_telegram_facet_worker,
+            run_id,
+            project_id,
+            facet_def.key,
+            llm_payload,
+        )
+
+    def _run_telegram_facet_worker(
+        self,
+        run_id: str,
+        project_id: str,
+        facet_key: str,
+        llm_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not self.db:
+            raise RuntimeError("Telegram facet concurrency requires a configured database session factory.")
+        facet_def = next((item for item in FACETS if item.key == facet_key), None)
+        if not facet_def:
+            raise ValueError(f"Unknown facet: {facet_key}")
+        with self.db.session() as session:
+            run = repository.get_analysis_run(session, run_id)
+            project = repository.get_project(session, project_id)
+            if not run or not project:
+                raise ValueError("Telegram analysis run context is unavailable.")
+            self._ensure_run_active(run.id, run.project_id)
+            chat_config = ServiceConfig(**llm_payload) if llm_payload else None
+            agent = self._build_telegram_agent(session, project, chat_config)
+            agent.trace_callback = lambda event: self._publish_trace(run.id, event)
+            analysis = agent.analyze_facet(
+                facet_def,
+                target_user_query=(run.summary_json or {}).get("target_user_query"),
+                participant_id=(run.summary_json or {}).get("participant_id"),
+                analysis_context=(run.summary_json or {}).get("analysis_context"),
+                preprocess_run_id=(run.summary_json or {}).get("preprocess_run_id"),
+            )
+            return {
+                "analysis_payload": dict(analysis.payload or {}),
+                "retrieval_trace": dict(analysis.retrieval_trace or {}),
+                "hit_count": int(analysis.hit_count or 0),
+            }
 
     def _run_parallel_processes(
         self,
@@ -1650,6 +1725,8 @@ class AnalysisEngine:
         summary["active_facets"] = active
         summary["queued_facets"] = queued
         summary["concurrency"] = _normalize_concurrency(summary.get("concurrency") or self.facet_max_workers)
+        summary["requested_concurrency"] = summary["concurrency"]
+        summary["effective_concurrency"] = min(int(summary["concurrency"] or 0), len(FACETS))
         summary["llm_calls"] = llm_calls
         summary["llm_successes"] = llm_successes
         summary["llm_failures"] = llm_failures
@@ -1658,6 +1735,31 @@ class AnalysisEngine:
         summary["total_tokens"] = total_tokens
         progress_done = completed + failed
         summary["progress_percent"] = int((progress_done / len(FACETS)) * 100)
+        summary["agent_tracks"] = [
+            {
+                "facet_key": facet.facet_key,
+                "label": dict(facet.findings_json or {}).get("label") or facet.facet_key,
+                "status": facet.status,
+                "phase": dict(facet.findings_json or {}).get("phase"),
+                "request_keys": [],
+                "tool_call_count": len(
+                    list(
+                        (
+                            dict(dict(facet.findings_json or {}).get("retrieval_trace") or {}).get("tool_calls")
+                            or []
+                        )
+                    )
+                ),
+                "updated_at": (
+                    dict(facet.findings_json or {}).get("finished_at")
+                    or dict(facet.findings_json or {}).get("started_at")
+                ),
+                "started_at": dict(facet.findings_json or {}).get("started_at"),
+            }
+            for facet in facets
+            if facet.status in {"preparing", "running"}
+        ]
+        summary["active_agents"] = len(summary["agent_tracks"])
 
         if active_facet is not None:
             active_findings = dict(active_facet.findings_json or {})

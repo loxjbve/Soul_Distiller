@@ -42,7 +42,6 @@ TELEGRAM_PREPROCESS_TRACE_LIMIT = 160
 TELEGRAM_PREPROCESS_TEXT_PREVIEW_LIMIT = 3200
 TELEGRAM_PREPROCESS_PAYLOAD_PREVIEW_LIMIT = 1200
 TELEGRAM_PREPROCESS_MIN_CONCURRENCY = 1
-TELEGRAM_PREPROCESS_MAX_CONCURRENCY = 8
 
 
 def _safe_iso(value: datetime | None) -> str | None:
@@ -271,10 +270,7 @@ class TelegramPreprocessWorker:
             candidate = int(value)
         except (TypeError, ValueError):
             candidate = TELEGRAM_PREPROCESS_MIN_CONCURRENCY
-        return max(
-            TELEGRAM_PREPROCESS_MIN_CONCURRENCY,
-            min(TELEGRAM_PREPROCESS_MAX_CONCURRENCY, candidate),
-        )
+        return max(TELEGRAM_PREPROCESS_MIN_CONCURRENCY, candidate)
 
     def _resolve_weekly_summary_concurrency(self, run: TelegramPreprocessRun) -> int:
         summary = dict(run.summary_json or {})
@@ -761,7 +757,10 @@ class TelegramPreprocessWorker:
             remaining_week_count=len(remaining_candidates),
         )
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=None, thread_name_prefix="telegram-weekly-summary") as executor:
+        with ThreadPoolExecutor(
+            max_workers=self.weekly_summary_concurrency,
+            thread_name_prefix="telegram-weekly-summary",
+        ) as executor:
             future_map = {
                 executor.submit(
                     self._run_parallel_weekly_topic_task,
@@ -771,6 +770,20 @@ class TelegramPreprocessWorker:
                 ): candidate
                 for candidate in remaining_candidates
             }
+            self._progress(
+                progress_callback,
+                "weekly_topic_summary",
+                40,
+                {
+                    "topic_count": len(topics),
+                    "completed_week_count": len(topics),
+                    "remaining_week_count": max(len(candidates) - len(topics), 0),
+                    "weekly_candidate_count": len(candidates),
+                    "weekly_summary_concurrency": self.weekly_summary_concurrency,
+                    "active_agents": min(len(remaining_candidates), self.weekly_summary_concurrency),
+                    "usage": dict(self.usage_totals),
+                },
+            )
             for future in as_completed(future_map):
                 self._ensure_active()
                 candidate = future_map[future]
@@ -804,6 +817,10 @@ class TelegramPreprocessWorker:
                         "remaining_week_count": max(len(candidates) - len(topics), 0),
                         "weekly_candidate_count": len(candidates),
                         "weekly_summary_concurrency": self.weekly_summary_concurrency,
+                        "active_agents": min(
+                            max(len(candidates) - len(topics), 0),
+                            self.weekly_summary_concurrency,
+                        ),
                         "usage": dict(self.usage_totals),
                     },
                 )
@@ -821,16 +838,25 @@ class TelegramPreprocessWorker:
         candidate: TelegramPreprocessWeeklyTopicCandidate,
         topic_index: int,
     ) -> dict[str, Any]:
-        worker = TelegramPreprocessWorker(
-            self.session,
-            self.project,
-            llm_config=self.llm_config,
-            log_path=self.log_path,
-            cancel_checker=self.cancel_checker,
-            trace_callback=self._relay_non_persistent_trace,
-        )
-        topic = worker._summarize_weekly_candidate_with_retries(run_id, candidate, topic_index)
-        return {"topic": topic, "usage": dict(worker.usage_totals)}
+        thread_session = Session(bind=self.session.get_bind())
+        try:
+            thread_project = repository.get_project(thread_session, self.project.id)
+            thread_candidate = repository.get_telegram_preprocess_weekly_topic_candidate(thread_session, candidate.id)
+            if not thread_project or not thread_candidate:
+                raise ValueError("Weekly topic summary context could not be reloaded for the worker thread.")
+            worker = TelegramPreprocessWorker(
+                thread_session,
+                thread_project,
+                llm_config=self.llm_config,
+                log_path=self.log_path,
+                cancel_checker=self.cancel_checker,
+                trace_callback=self._relay_non_persistent_trace,
+            )
+            topic = worker._summarize_weekly_candidate_with_retries(run_id, thread_candidate, topic_index)
+            thread_session.commit()
+            return {"topic": topic, "usage": dict(worker.usage_totals)}
+        finally:
+            thread_session.close()
 
     def _relay_non_persistent_trace(self, event: dict[str, Any], _persist: bool = True) -> None:
         if self.trace_callback:
@@ -2833,6 +2859,13 @@ class TelegramPreprocessManager:
         self._trace_sequences: dict[str, int] = {}
         self._lock = Lock()
 
+    @staticmethod
+    def _touch_summary(summary: dict[str, Any] | None) -> dict[str, Any]:
+        updated = dict(summary or {})
+        updated["snapshot_version"] = int(updated.get("snapshot_version") or 0) + 1
+        updated["updated_at"] = utcnow().isoformat()
+        return updated
+
     def resume_interrupted_runs(self) -> None:
         with self.db.session() as session:
             for run in session.scalars(select(TelegramPreprocessRun)):
@@ -2845,7 +2878,7 @@ class TelegramPreprocessManager:
                 summary = dict(run.summary_json or {})
                 summary["current_stage"] = "interrupted"
                 summary["resume_available"] = True
-                run.summary_json = summary
+                run.summary_json = self._touch_summary(summary)
                 self._trace_sequences[run.id] = int(summary.get("trace_event_count") or 0)
             session.commit()
 
@@ -2878,7 +2911,7 @@ class TelegramPreprocessManager:
                 resumable_run.error_message = None
                 resumable_run.current_stage = str(summary.get("current_stage") or resumable_run.current_stage or "queued")
                 resumable_run.progress_percent = int(summary.get("progress_percent") or 0)
-                resumable_run.summary_json = summary
+                resumable_run.summary_json = self._touch_summary(summary)
                 session.commit()
                 run_id = resumable_run.id
                 self._trace_sequences[run_id] = int(summary.get("trace_event_count") or 0)
@@ -2911,11 +2944,16 @@ class TelegramPreprocessManager:
                         "weekly_candidate_count": 0,
                         "topic_count": 0,
                         "weekly_summary_concurrency": normalized_concurrency,
+                        "active_agents": 0,
+                        "completed_week_count": 0,
+                        "remaining_week_count": 0,
                         "trace_events": [],
                         "trace_event_count": 0,
                         "resume_count": 0,
+                        "snapshot_version": 0,
                     },
                 )
+                run.summary_json = self._touch_summary(run.summary_json or {})
                 session.commit()
                 run_id = run.id
                 self._trace_sequences[run_id] = 0
@@ -2991,7 +3029,7 @@ class TelegramPreprocessManager:
                     summary["current_stage"] = "running"
                     summary["progress_percent"] = run.progress_percent
                     summary["resume_available"] = False
-                    run.summary_json = summary
+                    run.summary_json = self._touch_summary(summary)
                     session.commit()
                     if is_resume:
                         self._record_trace(
@@ -3044,7 +3082,7 @@ class TelegramPreprocessManager:
                             summary.get("weekly_candidate_count") or summary.get("window_count") or live_run.window_count or 0
                         )
                         live_run.topic_count = int(summary.get("topic_count") or live_run.topic_count or 0)
-                        live_run.summary_json = summary
+                        live_run.summary_json = self._touch_summary(summary)
                         session.commit()
                         self._publish_snapshot(run_id)
 
@@ -3086,6 +3124,7 @@ class TelegramPreprocessManager:
                         "usage": usage,
                         "resume_available": False,
                     }
+                    live_run.summary_json = self._touch_summary(live_run.summary_json or {})
                     session.commit()
                     self._record_trace(
                         session,
@@ -3132,7 +3171,7 @@ class TelegramPreprocessManager:
         summary["current_stage"] = "failed"
         summary["progress_percent"] = int(run.progress_percent or 0)
         summary["resume_available"] = True
-        run.summary_json = summary
+        run.summary_json = self._touch_summary(summary)
 
     def _next_trace_seq(self, run_id: str) -> int:
         with self._lock:
@@ -3167,7 +3206,7 @@ class TelegramPreprocessManager:
                 trace_events.append(normalized)
                 summary["trace_event_count"] = normalized["seq"]
                 summary["trace_events"] = trace_events[-TELEGRAM_PREPROCESS_TRACE_LIMIT:]
-                live_run.summary_json = summary
+                live_run.summary_json = self._touch_summary(summary)
                 session.commit()
         else:
             normalized.setdefault("seq", None)

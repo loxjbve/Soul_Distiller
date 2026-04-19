@@ -1,128 +1,190 @@
 {% extends "base.html" %}
-{% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
+{% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
+{% block body_class %}theme-ambient--analysis{% endblock %}
+{% block page_class %}page-analysis page-analysis-center{% endblock %}
 {% block content %}
 {% set summary = run.summary_json or {} if run else {} %}
-<section class="hero-panel">
-    <div class="hero-copy">
-        <p class="eyebrow">{{ ui.eyebrow }}</p>
-        <h1>{{ project.name }} · {{ ui.title }}</h1>
-        <p class="hero-note">{{ ui.hero_note }}</p>
-    </div>
-    <div class="hero-actions">
-        <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
-        <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.open_assets }}</a>
-        {% if run and run.status in ["completed", "partial_failed"] %}
-            <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">{{ ui.export_zip }}</a>
-        {% endif %}
-    </div>
-</section>
-
-{% if run %}
-    <script type="application/json" id="analysis-page-bootstrap">
-        {{ {
-            "project_id": project.id,
-            "run_id": run.id,
-            "initial_run": serialized_run | safe,
-            "ui_strings": ui
-        } | tojson | safe }}
-    </script>
-
-    <section class="analysis-dashboard">
-        <div class="metric-grid metric-grid--analysis">
-            <article class="metric-card">
-                <span>{{ ui.progress }}</span>
-                <strong id="analysis-percent">{{ summary.get("progress_percent", 0) }}%</strong>
-                <p id="analysis-stage">{{ summary.get("current_stage", ui.waiting) }}</p>
-            </article>
-            <article class="metric-card">
-                <span>{{ ui.concurrency }}</span>
-                <strong id="analysis-concurrency">{{ summary.get("concurrency", 0) }}</strong>
-                <p>{{ ui.slot_usage }}</p>
-            </article>
-            <article class="metric-card">
-                <span>{{ ui.slot_usage }}</span>
-                <strong id="analysis-slot-usage">{{ summary.get("active_facets", 0) }} / {{ summary.get("concurrency", 0) }}</strong>
-                <p id="analysis-running-note">{{ ui.current_facet }}</p>
-            </article>
-            <article class="metric-card">
-                <span>{{ ui.current_facet }}</span>
-                <strong id="analysis-current-facet">{{ summary.get("current_facet") or ui.waiting }}</strong>
-                <p id="analysis-last-updated">{{ ui.last_updated }} · --</p>
-            </article>
+<div class="page-frame">
+    <section class="page-banner">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+            <div class="page-banner__title-row">
+                <h1>{{ project.name }} | {{ ui.title }}</h1>
+                <span class="page-banner__label">Agentic Analysis Center</span>
+            </div>
+            <p>{{ ui.hero_note }}</p>
+            <div class="page-banner__actions">
+                <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.open_assets }}</a>
+                {% if run and run.status in ["completed", "partial_failed"] %}
+                    <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">{{ ui.export_zip }}</a>
+                {% endif %}
+            </div>
         </div>
-
-        <section class="surface-card">
-            <div class="section-head">
-                <div>
-                    <p class="eyebrow">Progress</p>
-                    <h2>{{ ui.progress }}</h2>
-                </div>
-                <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
+        <div class="page-banner__meta">
+            <div class="page-banner__portrait"></div>
+            <div class="page-banner__signal-row">
+                <span class="page-banner__label">Multi-agent lanes</span>
+                <span class="page-banner__label">Facet diagnostics</span>
             </div>
-            <div class="progress-shell">
-                <div class="progress-labels">
-                    <strong id="analysis-progress-label">{{ summary.get("current_stage", ui.waiting) }}</strong>
-                    <span id="analysis-progress-caption">{{ summary.get("completed_facets", 0) }} / {{ summary.get("total_facets", 0) }}</span>
-                </div>
-                <div class="progress-track">
-                    <div id="analysis-progress-fill" class="progress-fill" style="width: {{ summary.get('progress_percent', 0) }}%"></div>
-                </div>
-            </div>
-        </section>
+        </div>
+    </section>
 
-        <section class="layout-grid layout-grid--analysis">
-            <article class="surface-card">
-                <div class="section-head slim-head">
+    {% if run %}
+        <script type="application/json" id="analysis-page-bootstrap">
+            {{ {
+                "project_id": project.id,
+                "run_id": run.id,
+                "initial_run": serialized_run | safe,
+                "ui_strings": ui
+            } | tojson | safe }}
+        </script>
+
+        <section class="page-content">
+            <section class="analysis-pulse-grid">
+                <div class="metric-grid">
+                    <article class="metric-card">
+                        <span>{{ ui.progress }}</span>
+                        <strong id="analysis-percent">{{ summary.get("progress_percent", 0) }}%</strong>
+                        <p id="analysis-stage">{{ summary.get("current_stage", ui.waiting) }}</p>
+                    </article>
+                    <article class="metric-card">
+                        <span>{{ ui.concurrency }}</span>
+                        <strong id="analysis-requested-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
+                        <p id="analysis-effective-note">Effective {{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</p>
+                    </article>
+                    <article class="metric-card">
+                        <span>Active Agents</span>
+                        <strong id="analysis-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
+                        <p id="analysis-slot-usage">{{ summary.get("active_facets", 0) }} / {{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</p>
+                    </article>
+                    <article class="metric-card">
+                        <span>{{ ui.current_facet }}</span>
+                        <strong id="analysis-current-facet">{{ summary.get("current_facet") or ui.waiting }}</strong>
+                        <p id="analysis-last-updated">{{ ui.last_updated }} | --</p>
+                    </article>
+                </div>
+            </section>
+
+            <article class="panel-shell analysis-center-panel">
+                <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Queue</p>
-                        <h2>{{ ui.facet_queue }}</h2>
+                        <p class="eyebrow">Agent Center</p>
+                        <h2>Agentic Analysis Center</h2>
+                    </div>
+                    <span class="analysis-live-pill" id="analysis-live-pill">Connecting</span>
+                </div>
+                <div class="panel-body">
+                    <div class="analysis-progress-spotlight__header">
+                        <div>
+                            <p class="eyebrow">Run Pulse</p>
+                            <h3 id="analysis-hero-stage">{{ summary.get("current_stage", ui.waiting) }}</h3>
+                            <p class="section-note" id="analysis-hero-note">{{ summary.get("current_facet") or ui.waiting }}</p>
+                        </div>
+                        <div class="analysis-signal-chip-row">
+                            <span class="analysis-signal-chip" id="analysis-completed-count">Completed {{ summary.get("completed_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-running-count">Running {{ summary.get("active_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-queued-count">Queued {{ summary.get("queued_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-failed-count">Failed {{ summary.get("failed_facets", 0) }}</span>
+                        </div>
+                    </div>
+                    <div class="progress-shell">
+                        <div class="progress-labels">
+                            <strong id="analysis-progress-label">{{ summary.get("current_stage", ui.waiting) }}</strong>
+                            <span id="analysis-progress-caption">{{ summary.get("completed_facets", 0) }} / {{ summary.get("total_facets", 0) }}</span>
+                        </div>
+                        <div class="progress-track">
+                            <div id="analysis-progress-fill" class="progress-fill" style="width: {{ summary.get('progress_percent', 0) }}%"></div>
+                        </div>
+                    </div>
+                    <div class="agent-center-stage">
+                        <div class="agent-lane-strip panel-scroll" id="analysis-agent-lanes" data-lane-strip data-panel-scroll>
+                            <div class="empty-panel">
+                                <strong>No active agents yet.</strong>
+                            </div>
+                        </div>
+                        <div id="analysis-feed" class="agent-center-feed panel-scroll" data-live-feed data-panel-scroll></div>
                     </div>
                 </div>
-                <div id="facet-status-list" class="facet-status-grid"></div>
             </article>
 
-            <article class="surface-card">
-                <div class="section-head slim-head">
+            <aside class="analysis-side-rail">
+                <article class="panel-shell">
+                    <div class="panel-header panel-header--slim">
+                        <div>
+                            <p class="eyebrow">Run State</p>
+                            <h2>{{ ui.progress }}</h2>
+                        </div>
+                        <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="metric-list">
+                            <div class="metric-row">
+                                <span>Requested</span>
+                                <strong id="analysis-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
+                            </div>
+                            <div class="metric-row">
+                                <span>Effective</span>
+                                <strong id="analysis-effective-concurrency">{{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</strong>
+                            </div>
+                            <div class="metric-row">
+                                <span>Live Agents</span>
+                                <strong id="analysis-effective-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+
+                <article class="panel-shell">
+                    <div class="panel-header panel-header--slim">
+                        <div>
+                            <p class="eyebrow">Queue</p>
+                            <h2>{{ ui.facet_queue }}</h2>
+                        </div>
+                    </div>
+                    <div class="panel-body panel-body--tight">
+                        <div id="facet-status-list" class="facet-status-grid panel-scroll" data-panel-scroll></div>
+                    </div>
+                </article>
+            </aside>
+
+            <article class="panel-shell analysis-results-panel">
+                <div class="panel-header panel-header--slim">
                     <div>
-                        <p class="eyebrow">Events</p>
+                        <p class="eyebrow">Results</p>
+                        <h2>{{ ui.result_title }}</h2>
+                    </div>
+                </div>
+                <div class="panel-body panel-body--tight">
+                    <div id="analysis-result-list" class="facet-stack panel-scroll" data-panel-scroll></div>
+                </div>
+            </article>
+
+            <article class="panel-shell analysis-diagnostics-panel">
+                <div class="panel-header panel-header--slim">
+                    <div>
+                        <p class="eyebrow">Diagnostics</p>
                         <h2>{{ ui.event_stream }}</h2>
                     </div>
                 </div>
-                <div id="analysis-events" class="event-stream"></div>
+                <div class="panel-body panel-body--tight">
+                    <details class="analysis-diagnostics" open>
+                        <summary>Inspect raw event stream and live diagnostics</summary>
+                        <div id="analysis-diagnostics-list" class="event-stream panel-scroll" data-panel-scroll></div>
+                    </details>
+                </div>
             </article>
         </section>
-
-        <section class="surface-card">
-            <div class="section-head slim-head">
-                <div>
-                    <p class="eyebrow">Agent Trace</p>
-                    <h2>Live Agent Trace</h2>
+    {% else %}
+        <section class="panel-shell">
+            <div class="panel-body">
+                <div class="empty-panel">
+                    <strong>{{ ui.empty }}</strong>
                 </div>
             </div>
-            <div class="stream-panel">
-                <p id="analysis-live-title" class="helper-text">等待新的 Agent 请求</p>
-                <pre id="analysis-live-output" class="trace-box top-gap"></pre>
-            </div>
-            <div id="analysis-trace-list" class="event-stream top-gap"></div>
         </section>
-
-        <section class="surface-card">
-            <div class="section-head slim-head">
-                <div>
-                    <p class="eyebrow">Results</p>
-                    <h2>{{ ui.result_title }}</h2>
-                </div>
-            </div>
-            <div id="analysis-result-list" class="facet-stack"></div>
-        </section>
-    </section>
-{% else %}
-    <section class="surface-card">
-        <div class="empty-panel">
-            <strong>{{ ui.empty }}</strong>
-        </div>
-    </section>
-{% endif %}
+    {% endif %}
+</div>
 {% endblock %}
 
 {% block extra_scripts %}

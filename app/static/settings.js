@@ -1,6 +1,6 @@
-import { fetchJson } from "./shared.js";
+import { fetchJson, safeParseJson } from "./shared.js";
 
-const bootstrap = JSON.parse(document.getElementById("settings-bootstrap")?.textContent || "{}");
+const bootstrap = safeParseJson(document.getElementById("settings-bootstrap")?.textContent, {});
 const ui = bootstrap.ui_strings || {};
 
 const PROVIDER_PRESETS = {
@@ -36,11 +36,14 @@ document.querySelectorAll("[data-provider-form]").forEach((form) => {
 
     providerSelect?.addEventListener("change", () => applyPreset(providerSelect, baseUrlInput, baseHint));
     discoverButton?.addEventListener("click", async () => {
-        output.textContent = ui.discover_loading || "正在拉取模型列表…";
+        if (!output) {
+            return;
+        }
+        output.textContent = ui.discover_loading || "Loading model list...";
         try {
-            const payload = await fetchJson(`/api/settings/models?service=${encodeURIComponent(service)}`);
+            const payload = await fetchJson(`/api/settings/models?service=${encodeURIComponent(service || "")}`);
             if (!payload.models?.length) {
-                output.textContent = ui.discover_empty || "当前服务没有返回可用模型。";
+                output.textContent = ui.discover_empty || "No models were returned for this service.";
                 return;
             }
             output.textContent = JSON.stringify(payload.models, null, 2);
@@ -49,7 +52,7 @@ document.querySelectorAll("[data-provider-form]").forEach((form) => {
                 modelInput.value = payload.models[0];
             }
         } catch (error) {
-            output.textContent = `${ui.discover_failed || "模型发现失败"}：${error.message}`;
+            output.textContent = `${ui.discover_failed || "Model discovery failed"}: ${error.message}`;
         }
     });
 

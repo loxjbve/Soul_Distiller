@@ -4,10 +4,19 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}{{ ui.common.app_name }}{% endblock %}</title>
-    <link rel="stylesheet" href="{{ request.url_for('static', path='style.css') }}">
+    <script>
+        (function () {
+            const mode = window.innerWidth >= 1100 && window.innerHeight >= 780 ? "fixed" : "relaxed";
+            document.documentElement.dataset.shellMode = mode;
+        }());
+    </script>
+    <link rel="stylesheet" href="{{ request.url_for('static', path='tokens.css') }}">
+    <link rel="stylesheet" href="{{ request.url_for('static', path='shell.css') }}">
+    <link rel="stylesheet" href="{{ request.url_for('static', path='components.css') }}">
+    <link rel="stylesheet" href="{{ request.url_for('static', path='pages.css') }}">
     {% block extra_head %}{% endblock %}
 </head>
-<body data-locale="{{ locale or 'zh-CN' }}">
+<body class="app-body theme-ambient {% block body_class %}{% endblock %}" data-locale="{{ locale or 'zh-CN' }}">
     <div class="screen-noise" aria-hidden="true"></div>
     <div class="screen-grid" aria-hidden="true"></div>
     <div class="screen-aura screen-aura-left" aria-hidden="true"></div>
@@ -15,25 +24,27 @@
     <div class="cursor-glow" id="cursor-glow" aria-hidden="true"></div>
 
     {% set path = request.url.path %}
-    <header class="site-header">
-        <div class="site-shell header-shell">
-            <a class="brand-lockup" href="/" aria-label="{{ ui.common.app_name }}">
-                <span class="brand-mark">PD</span>
-                <span class="brand-copy">
-                    <strong>{{ ui.common.brand_name }}</strong>
-                    <small>{{ ui.common.brand_tagline }}</small>
-                </span>
-            </a>
-            <nav class="nav-links" aria-label="主导航">
-                <a href="/" class="{% if path == '/' or path.startswith('/projects') %}is-active{% endif %}">{{ ui.common.nav_projects }}</a>
-                <a href="/settings" class="{% if path.startswith('/settings') %}is-active{% endif %}">{{ ui.common.nav_settings }}</a>
-            </nav>
-        </div>
-    </header>
+    <div class="app-shell">
+        <header class="site-header">
+            <div class="site-shell header-shell">
+                <a class="brand-lockup" href="/" aria-label="{{ ui.common.app_name }}">
+                    <span class="brand-mark">PD</span>
+                    <span class="brand-copy">
+                        <strong>{{ ui.common.brand_name }}</strong>
+                        <small>{{ ui.common.brand_tagline }}</small>
+                    </span>
+                </a>
+                <nav class="nav-links" aria-label="Primary">
+                    <a href="/" class="{% if path == '/' or path.startswith('/projects') %}is-active{% endif %}">{{ ui.common.nav_projects }}</a>
+                    <a href="/settings" class="{% if path.startswith('/settings') %}is-active{% endif %}">{{ ui.common.nav_settings }}</a>
+                </nav>
+            </div>
+        </header>
 
-    <main class="site-shell page-shell {% block page_class %}{% endblock %}">
-        {% block content %}{% endblock %}
-    </main>
+        <main class="site-shell page-shell {% block page_class %}{% endblock %}">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
 
     <script type="module" src="{{ request.url_for('static', path='shared.js') }}"></script>
     {% block extra_scripts %}{% endblock %}

@@ -37,7 +37,6 @@ from app.pipeline.project_deletion import ACTIVE_TASK_STATUSES
 from app.schemas import (
     ASSET_KINDS,
     DEFAULT_ANALYSIS_CONCURRENCY,
-    MAX_ANALYSIS_CONCURRENCY,
     MIN_ANALYSIS_CONCURRENCY,
     ServiceConfig,
 )
@@ -112,7 +111,7 @@ class AnalysisRequestPayload(BaseModel):
     target_user_query: str | None = None
     participant_id: str | None = None
     analysis_context: str | None = None
-    concurrency: int | None = Field(default=None, ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)
+    concurrency: int | None = Field(default=None, ge=MIN_ANALYSIS_CONCURRENCY)
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -134,7 +133,7 @@ class PreprocessMessagePayload(BaseModel):
 
 
 class TelegramPreprocessRunCreatePayload(BaseModel):
-    weekly_summary_concurrency: int | None = Field(default=None, ge=1, le=8)
+    weekly_summary_concurrency: int | None = Field(default=None, ge=1)
 
 
 class AssetGeneratePayload(BaseModel):
@@ -211,14 +210,54 @@ def create_profile_form(
     request: Request,
     project_id: str,
     session: SessionDep,
-    name: Annotated[str, Form(...)],
+    name: Annotated[str | None, Form()] = None,
     description: Annotated[str | None, Form()] = None,
+    participant_id: Annotated[str | None, Form()] = None,
+    target_user_query: Annotated[str | None, Form()] = None,
+    analysis_context: Annotated[str | None, Form()] = None,
+    concurrency: Annotated[int | None, Form(ge=MIN_ANALYSIS_CONCURRENCY)] = None,
+    auto_analyze: Annotated[str | None, Form()] = None,
 ):
     parent = _ensure_project(session, project_id)
     if parent.mode not in {"group", "telegram"}:
         raise HTTPException(status_code=400, detail="Only group or Telegram projects can create child profiles.")
     child_mode = "telegram" if parent.mode == "telegram" else "single"
-    child = repository.create_project(session, name=name, description=description, mode=child_mode, parent_id=project_id)
+    participant_id = (participant_id or "").strip() or None
+    target_user_query = (target_user_query or "").strip() or None
+    analysis_context = (analysis_context or "").strip() or None
+    base_name = (name or "").strip()
+    if parent.mode == "telegram" and not base_name:
+        inferred_name = target_user_query or ""
+        if participant_id and not inferred_name:
+            top_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+            if top_run:
+                for item in repository.list_telegram_preprocess_top_users(session, project_id, run_id=top_run.id):
+                    if item.participant_id == participant_id:
+                        inferred_name = item.display_name or item.username or item.uid or ""
+                        break
+        base_name = inferred_name or "Telegram Persona"
+    if not base_name:
+        raise HTTPException(status_code=400, detail="Profile name is required.")
+    child_description = analysis_context or description
+    child = repository.create_project(
+        session,
+        name=base_name,
+        description=child_description,
+        mode=child_mode,
+        parent_id=project_id,
+    )
+    if parent.mode == "telegram" and str(auto_analyze or "").strip() in {"1", "true", "yes", "on"}:
+        run = _enqueue_analysis(
+            request,
+            session,
+            child.id,
+            target_role=None,
+            target_user_query=target_user_query or base_name,
+            participant_id=participant_id,
+            analysis_context=analysis_context or child.description,
+            concurrency=concurrency,
+        )
+        return RedirectResponse(url=f"/projects/{child.id}/analysis?run_id={run.id}", status_code=303)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
 
@@ -302,7 +341,7 @@ def analyze_project_form(
     target_user_query: Annotated[str | None, Form()] = None,
     participant_id: Annotated[str | None, Form()] = None,
     analysis_context: Annotated[str | None, Form()] = None,
-    concurrency: Annotated[int | None, Form(ge=MIN_ANALYSIS_CONCURRENCY, le=MAX_ANALYSIS_CONCURRENCY)] = None,
+    concurrency: Annotated[int | None, Form(ge=MIN_ANALYSIS_CONCURRENCY)] = None,
 ):
     run = _enqueue_analysis(
         request,
@@ -719,7 +758,7 @@ def start_telegram_preprocess_form(
     request: Request,
     project_id: str,
     session: SessionDep,
-    weekly_summary_concurrency: Annotated[int | None, Form(ge=1, le=8)] = None,
+    weekly_summary_concurrency: Annotated[int | None, Form(ge=1)] = None,
 ):
     project = _ensure_project(session, project_id)
     if project.mode != "telegram":
@@ -1144,9 +1183,10 @@ def list_telegram_preprocess_top_users_api(project_id: str, run_id: str, session
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}/active-users")
 def list_telegram_preprocess_active_users_api(project_id: str, run_id: str, session: SessionDep):
     _resolve_telegram_preprocess_run(session, project_id, run_id)
+    active_users = repository.list_telegram_preprocess_active_users(session, project_id, run_id=run_id)
     return _ok_response(
-        "Telegram active-user snapshots have been removed from the preprocess flow. Use top-users instead.",
-        active_users=[],
+        "已返回 Telegram 活跃用户快照。",
+        active_users=[_serialize_telegram_preprocess_active_user(item) for item in active_users],
     )
 
 
@@ -1610,9 +1650,82 @@ def list_models_api(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _extract_telegram_binding(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    source = dict(summary or {})
+    target_user = source.get("target_user") if isinstance(source.get("target_user"), dict) else {}
+    participant_id = str(
+        target_user.get("participant_id")
+        or source.get("participant_id")
+        or ""
+    ).strip()
+    target_user_query = str(source.get("target_user_query") or "").strip()
+    label = str(
+        target_user.get("label")
+        or target_user.get("primary_alias")
+        or target_user.get("display_name")
+        or target_user_query
+        or participant_id
+        or ""
+    ).strip()
+    if not any((participant_id, target_user_query, label)):
+        return None
+    return {
+        "participant_id": participant_id or None,
+        "target_user_query": target_user_query or label or None,
+        "label": label or None,
+        "display_name": str(target_user.get("display_name") or "").strip() or None,
+        "username": str(target_user.get("username") or "").strip() or None,
+        "uid": str(target_user.get("uid") or "").strip() or None,
+        "primary_alias": str(target_user.get("primary_alias") or "").strip() or None,
+        "analysis_context": str(source.get("analysis_context") or "").strip() or None,
+        "preprocess_run_id": str(
+            source.get("preprocess_run_id")
+            or target_user.get("preprocess_run_id")
+            or ""
+        ).strip() or None,
+        "source": str(target_user.get("source") or "").strip() or None,
+        "resolved": bool(target_user or participant_id),
+    }
+
+
+def _enrich_telegram_binding(
+    binding: dict[str, Any] | None,
+    *,
+    top_user_lookup: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    if not binding:
+        return None
+    merged = dict(binding)
+    participant_id = str(merged.get("participant_id") or "").strip()
+    top_user = (top_user_lookup or {}).get(participant_id) if participant_id else None
+    label = (
+        merged.get("label")
+        or (top_user or {}).get("label")
+        or (top_user or {}).get("display_name")
+        or (top_user or {}).get("username")
+        or (top_user or {}).get("uid")
+        or participant_id
+    )
+    merged["label"] = label
+    merged["target_user_query"] = merged.get("target_user_query") or label
+    merged["display_name"] = merged.get("display_name") or (top_user or {}).get("display_name")
+    merged["username"] = merged.get("username") or (top_user or {}).get("username")
+    merged["uid"] = merged.get("uid") or (top_user or {}).get("uid")
+    merged["primary_alias"] = (
+        merged.get("primary_alias")
+        or (top_user or {}).get("primary_alias")
+        or (top_user or {}).get("display_name")
+        or (top_user or {}).get("username")
+        or (top_user or {}).get("uid")
+    )
+    merged["resolved"] = bool(merged.get("resolved") or top_user)
+    return merged
+
+
 def _project_context(session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
     source_project_id = repository.get_target_project_id(session, project_id)
+    telegram_data_project_id = source_project_id if project.mode == "telegram" else project.id
     documents = repository.list_project_documents(session, project_id, limit=document_limit, offset=document_offset)
     doc_counts = repository.count_project_documents(session, project_id)
     source_doc_counts = doc_counts if source_project_id == project_id else repository.count_project_documents(session, source_project_id)
@@ -1621,38 +1734,89 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
     latest_version = repository.get_latest_skill_version(session, project_id)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
-    latest_preprocess_run = repository.get_latest_telegram_preprocess_run(session, project_id) if project.mode == "telegram" else None
+    latest_preprocess_run = (
+        repository.get_latest_telegram_preprocess_run(session, telegram_data_project_id)
+        if project.mode == "telegram"
+        else None
+    )
     latest_successful_preprocess_run = (
-        repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+        repository.get_latest_successful_telegram_preprocess_run(session, telegram_data_project_id)
         if project.mode == "telegram"
         else None
     )
     telegram_top_users = (
-        repository.list_telegram_preprocess_top_users(session, project_id, run_id=latest_successful_preprocess_run.id)
+        repository.list_telegram_preprocess_top_users(session, telegram_data_project_id, run_id=latest_successful_preprocess_run.id)
         if latest_successful_preprocess_run
         else []
     )
+    serialized_top_users = [_serialize_telegram_preprocess_top_user(item) for item in telegram_top_users]
+    top_user_lookup = {
+        item["participant_id"]: item
+        for item in serialized_top_users
+        if item.get("participant_id")
+    }
     ready_count_for_analysis = source_doc_counts["ready"] if project.mode == "telegram" else doc_counts["ready"]
     can_analyze = ready_count_for_analysis > 0 and (
         project.mode != "telegram" or latest_successful_preprocess_run is not None
     )
+    current_binding = _enrich_telegram_binding(_extract_telegram_binding(latest_summary), top_user_lookup=top_user_lookup)
+    parent_project = repository.get_project(session, project.parent_id) if project.parent_id else None
+    telegram_is_parent_workspace = project.mode == "telegram" and project.parent_id is None
+    telegram_is_child_persona = project.mode == "telegram" and project.parent_id is not None
 
     profiles = []
     supports_profiles = project.parent_id is None and project.mode in {"group", "telegram"}
     if supports_profiles:
         for p in repository.list_child_projects(session, project_id):
-            p.latest_run = repository.get_latest_analysis_run(session, p.id)
-            p.latest_skill = repository.get_latest_skill_version(session, p.id)
-            profiles.append(p)
+            child_latest_run = repository.get_latest_analysis_run(session, p.id)
+            child_latest_summary = child_latest_run.summary_json or {} if child_latest_run else {}
+            child_binding = _enrich_telegram_binding(
+                _extract_telegram_binding(child_latest_summary),
+                top_user_lookup=top_user_lookup,
+            )
+            profiles.append(
+                {
+                    "id": p.id,
+                    "name": p.name,
+                    "description": p.description,
+                    "mode": p.mode,
+                    "latest_run": child_latest_run,
+                    "latest_skill": repository.get_latest_skill_version(session, p.id),
+                    "binding": child_binding,
+                    "is_bound": child_binding is not None,
+                    "analysis_context": (
+                        (child_binding or {}).get("analysis_context")
+                        or p.description
+                        or ""
+                    ),
+                }
+            )
 
     return {
         "project": project,
+        "parent_project": parent_project,
         "profiles": profiles,
         "supports_profiles": supports_profiles,
         "documents": documents,
         "project_bootstrap": json.dumps(
             {
                 "project": {"id": project.id, "name": project.name, "mode": project.mode},
+                "telegram": {
+                    "is_parent_workspace": telegram_is_parent_workspace,
+                    "is_child_persona": telegram_is_child_persona,
+                    "can_create_persona": bool(latest_successful_preprocess_run),
+                    "top_users": serialized_top_users,
+                    "current_binding": current_binding,
+                    "profiles": [
+                        {
+                            "id": item["id"],
+                            "name": item["name"],
+                            "is_bound": item["is_bound"],
+                            "binding": item["binding"],
+                        }
+                        for item in profiles
+                    ],
+                },
                 "documents": [_serialize_document(item) for item in documents],
                 "pagination": {
                     "limit": document_limit,
@@ -1675,8 +1839,11 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "latest_run": latest_run,
         "latest_preprocess_run": latest_preprocess_run,
         "latest_successful_preprocess_run": latest_successful_preprocess_run,
-        "telegram_top_users": telegram_top_users,
-        "telegram_active_users": telegram_top_users,
+        "telegram_top_users": serialized_top_users,
+        "telegram_active_users": serialized_top_users,
+        "telegram_binding": current_binding,
+        "telegram_is_parent_workspace": telegram_is_parent_workspace,
+        "telegram_is_child_persona": telegram_is_child_persona,
         "preprocess_project_id": source_project_id if project.mode == "telegram" else project.id,
         "can_analyze": can_analyze,
         "latest_draft": latest_draft,
@@ -1698,13 +1865,13 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "analysis_defaults": {
             "target_role": latest_summary.get("target_role") or project.name,
             "target_user_query": (
-                (latest_summary.get("target_user") or {}).get("label")
+                (current_binding or {}).get("target_user_query")
                 or latest_summary.get("target_user_query")
                 or (project.name if project.mode == "telegram" else "")
                 or ""
             ),
-            "participant_id": latest_summary.get("participant_id") or "",
-            "analysis_context": latest_summary.get("analysis_context") or project.description or "",
+            "participant_id": (current_binding or {}).get("participant_id") or latest_summary.get("participant_id") or "",
+            "analysis_context": (current_binding or {}).get("analysis_context") or latest_summary.get("analysis_context") or project.description or "",
             "concurrency": latest_summary.get("concurrency") or DEFAULT_ANALYSIS_CONCURRENCY,
         },
         "analysis_concurrency_default": DEFAULT_ANALYSIS_CONCURRENCY,
@@ -2171,17 +2338,24 @@ def _normalize_saved_asset_content(
         return json_payload, prompt_text
 
     payload = dict(json_payload or {})
-    documents = dict(payload.get("documents") or {})
+    export_docs = _skill_documents_for_export(asset_kind, payload, markdown_text)
+    documents = {
+        key: {
+            "filename": str(document.get("filename") or ""),
+            "markdown": str(document.get("markdown") or ""),
+        }
+        for key, document in export_docs.items()
+    }
     if asset_kind == "skill":
-        merge_document = dict(documents.get("merge") or {})
-        merge_document["filename"] = str(merge_document.get("filename") or SKILL_DOCUMENT_FILENAMES["merge"])
-        merge_document["markdown"] = markdown_text
-        documents["merge"] = merge_document
+        documents["merge"] = {
+            "filename": str(documents.get("merge", {}).get("filename") or SKILL_DOCUMENT_FILENAMES["merge"]),
+            "markdown": markdown_text,
+        }
     else:
-        skill_document = dict(documents.get("skill") or {})
-        skill_document["filename"] = str(skill_document.get("filename") or CC_SKILL_DOCUMENT_FILENAMES["skill"])
-        skill_document["markdown"] = markdown_text
-        documents["skill"] = skill_document
+        documents["skill"] = {
+            "filename": str(documents.get("skill", {}).get("filename") or CC_SKILL_DOCUMENT_FILENAMES["skill"]),
+            "markdown": markdown_text,
+        }
     payload["documents"] = documents
     return payload, markdown_text
 
@@ -2301,7 +2475,7 @@ def _normalize_analysis_concurrency(value: Any) -> int:
         candidate = int(value)
     except (TypeError, ValueError):
         candidate = DEFAULT_ANALYSIS_CONCURRENCY
-    return max(MIN_ANALYSIS_CONCURRENCY, min(MAX_ANALYSIS_CONCURRENCY, candidate))
+    return max(MIN_ANALYSIS_CONCURRENCY, candidate)
 
 
 def _project_write_block_detail(project) -> dict[str, Any]:
@@ -2470,13 +2644,19 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     ordered_events = sorted(run.events, key=lambda item: item.created_at, reverse=True)[:ANALYSIS_EVENT_LIMIT]
     serialized_facets = [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)]
     summary = dict(run.summary_json or {})
+    requested_concurrency = _normalize_analysis_concurrency(
+        summary.get("requested_concurrency") or summary.get("concurrency")
+    )
     summary["total_facets"] = int(summary.get("total_facets") or len(FACETS))
-    summary["concurrency"] = _normalize_analysis_concurrency(summary.get("concurrency"))
+    summary["concurrency"] = requested_concurrency
+    summary["requested_concurrency"] = requested_concurrency
 
     completed = sum(1 for facet in serialized_facets if facet["status"] == "completed")
     failed = sum(1 for facet in serialized_facets if facet["status"] == "failed")
     active = [facet for facet in serialized_facets if facet["status"] in {"preparing", "running"}]
     queued = [facet for facet in serialized_facets if facet["status"] == "queued"]
+    effective_concurrency = min(requested_concurrency, len(FACETS))
+    agent_tracks = []
 
     queue_position = 1
     for facet in serialized_facets:
@@ -2490,8 +2670,37 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     summary["failed_facets"] = failed
     summary["active_facets"] = len(active)
     summary["queued_facets"] = len(queued)
+    summary["effective_concurrency"] = effective_concurrency
+    summary["active_agents"] = len(active)
+    summary["effective_active_agents"] = len(active)
     progress_total = max(1, int(summary.get("total_facets") or len(FACETS) or 1))
     summary["progress_percent"] = int(((completed + failed) / progress_total) * 100)
+
+    for facet in active:
+        findings = dict(facet.get("findings") or {})
+        retrieval_trace = findings.get("retrieval_trace") if isinstance(findings.get("retrieval_trace"), dict) else {}
+        tool_calls = retrieval_trace.get("tool_calls") if isinstance(retrieval_trace, dict) else []
+        request_keys: list[str] = []
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                request_key = str(call.get("request_key") or "").strip()
+                if request_key and request_key not in request_keys:
+                    request_keys.append(request_key)
+        agent_tracks.append(
+            {
+                "facet_key": facet["facet_key"],
+                "label": findings.get("label") or facet["facet_key"],
+                "status": facet["status"],
+                "phase": findings.get("phase"),
+                "tool_call_count": len(tool_calls) if isinstance(tool_calls, list) else 0,
+                "request_keys": request_keys,
+                "updated_at": findings.get("finished_at") or findings.get("started_at"),
+                "started_at": findings.get("started_at"),
+            }
+        )
+    summary["agent_tracks"] = agent_tracks
 
     if active:
         current = active[0]
@@ -2594,6 +2803,10 @@ def _serialize_preprocess_session_detail(chat_session) -> dict[str, Any]:
 
 def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, Any]:
     summary = dict(run.summary_json or {})
+    weekly_concurrency = int(summary.get("weekly_summary_concurrency") or 1)
+    completed_week_count = int(summary.get("completed_week_count") or summary.get("topic_count") or run.topic_count or 0)
+    total_week_count = int(summary.get("weekly_candidate_count") or summary.get("window_count") or run.window_count or 0)
+    remaining_week_count = max(int(summary.get("remaining_week_count") or (total_week_count - completed_week_count)), 0)
     return {
         "id": run.id,
         "status": run.status,
@@ -2610,13 +2823,19 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
         "top_user_count": int(summary.get("top_user_count") or 0),
         "weekly_candidate_count": int(summary.get("weekly_candidate_count") or summary.get("window_count") or 0),
         "topic_count": int(run.topic_count or summary.get("topic_count") or 0),
-        "weekly_summary_concurrency": int(summary.get("weekly_summary_concurrency") or 1),
+        "weekly_summary_concurrency": weekly_concurrency,
+        "requested_weekly_concurrency": weekly_concurrency,
+        "active_agents": int(summary.get("active_agents") or 0),
+        "completed_week_count": completed_week_count,
+        "remaining_week_count": remaining_week_count,
         "resume_available": bool(summary.get("resume_available")),
         "resume_count": int(summary.get("resume_count") or 0),
         "error_message": run.error_message,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "created_at": run.created_at.isoformat() if run.created_at else None,
+        "updated_at": summary.get("updated_at") or (run.finished_at.isoformat() if run.finished_at else None),
+        "snapshot_version": int(summary.get("snapshot_version") or 0),
         "trace_event_count": int(summary.get("trace_event_count") or 0),
         "trace_events": [dict(item) for item in (summary.get("trace_events") or []) if isinstance(item, dict)],
         "summary": summary,
@@ -2624,6 +2843,7 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
 
 
 def _serialize_telegram_preprocess_top_user(user: TelegramPreprocessTopUser) -> dict[str, Any]:
+    label = user.display_name or user.username or user.uid or user.participant_id
     return {
         "id": user.id,
         "run_id": user.run_id,
@@ -2632,6 +2852,8 @@ def _serialize_telegram_preprocess_top_user(user: TelegramPreprocessTopUser) -> 
         "uid": user.uid,
         "username": user.username,
         "display_name": user.display_name,
+        "primary_alias": label,
+        "label": label,
         "message_count": user.message_count,
         "first_seen_at": user.first_seen_at.isoformat() if user.first_seen_at else None,
         "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
@@ -2721,6 +2943,7 @@ def _serialize_telegram_preprocess_detail(
     run: TelegramPreprocessRun,
 ) -> dict[str, Any]:
     payload = _serialize_telegram_preprocess_run(run)
+    active_users = repository.list_telegram_preprocess_active_users(session, project_id, run_id=run.id)
     payload["top_users"] = [
         _serialize_telegram_preprocess_top_user(item)
         for item in repository.list_telegram_preprocess_top_users(session, project_id, run_id=run.id)
@@ -2733,6 +2956,8 @@ def _serialize_telegram_preprocess_detail(
         _serialize_telegram_preprocess_topic(item)
         for item in repository.list_telegram_preprocess_topics(session, project_id, run_id=run.id)
     ]
+    payload["active_users"] = [_serialize_telegram_preprocess_active_user(item) for item in active_users]
+    payload["active_user_count"] = len(active_users)
     return payload
 
 

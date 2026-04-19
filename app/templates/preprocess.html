@@ -1,78 +1,96 @@
 {% extends "base.html" %}
+{% block body_class %}theme-ambient--preprocess{% endblock %}
+{% block page_class %}page-preprocess{% endblock %}
 {% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
 
-{% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='preprocess.css') }}">
-{% endblock %}
-
 {% block content %}
-<section class="hero-panel">
-    <div class="hero-copy">
-        <p class="eyebrow">{{ ui.eyebrow }}</p>
-        <h1>{{ project.name }} · {{ ui.title }}</h1>
-        <p class="hero-note">{{ ui.hero_note }}</p>
-    </div>
-    <div class="hero-actions">
-        <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
-    </div>
-</section>
-
-<section class="preprocess-shell" data-preprocess-shell data-project-id="{{ project.id }}">
-    <script type="application/json" id="preprocess-bootstrap">{{ bootstrap | safe }}</script>
-
-    <aside class="preprocess-sidebar surface-card slim-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">Sessions</p>
-                <h2>{{ ui.sessions }}</h2>
+<div class="page-frame">
+    <section class="page-banner">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+            <div class="page-banner__title-row">
+                <h1>{{ project.name }} · {{ ui.title }}</h1>
+                <span class="page-banner__label">Pre-analysis IDE</span>
             </div>
-            <button type="button" class="ghost-button" data-new-session>{{ ui.new_session }}</button>
-        </div>
-        <div class="preprocess-session-list" data-session-list></div>
-    </aside>
-
-    <main class="preprocess-main surface-card">
-        <div class="preprocess-toolbar">
-            <div>
-                <p class="eyebrow">Workspace</p>
-                <h2 data-session-title>{{ ui.untitled_session }}</h2>
-            </div>
-            <div class="button-row">
-                <button type="button" class="ghost-button" data-rename-session>{{ ui.rename_session }}</button>
-                <button type="button" class="ghost-button danger-button" data-delete-session>{{ ui.delete_session }}</button>
+            <p>{{ ui.hero_note }}</p>
+            <div class="page-banner__actions">
+                <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
             </div>
         </div>
-
-        <div class="turn-pill-row" data-context-pills></div>
-        <div class="preprocess-chat-scroll" data-chat-list></div>
-
-        <div class="preprocess-composer">
-            <div class="mention-suggestions" data-mention-suggestions hidden></div>
-            <textarea data-composer rows="4" placeholder="{{ ui.composer_placeholder }}"></textarea>
-            <div class="preprocess-composer-actions">
-                <span class="muted" data-composer-hint>{{ ui.composer_hint }}</span>
-                <button type="button" class="primary-button" data-send-message>{{ ui.send }}</button>
+        <div class="page-banner__meta">
+            <div class="page-banner__portrait"></div>
+            <div class="page-banner__signal-row">
+                <span class="page-banner__label">{{ ui.sessions }}</span>
+                <span class="page-banner__label">{{ ui.documents }}</span>
             </div>
         </div>
-    </main>
+    </section>
 
-    <aside class="preprocess-context surface-card slim-panel">
-        <div class="stack">
-            <div>
-                <p class="eyebrow">Documents</p>
-                <h2>{{ ui.documents }}</h2>
+    <section class="page-content" data-preprocess-shell data-project-id="{{ project.id }}">
+        <script type="application/json" id="preprocess-bootstrap">{{ bootstrap | safe }}</script>
+
+        <aside class="panel-shell preprocess-sidebar slim-panel">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">Sessions</p>
+                    <h2>{{ ui.sessions }}</h2>
+                </div>
+                <button type="button" class="ghost-button" data-new-session>{{ ui.new_session }}</button>
             </div>
-            <div class="context-list" data-document-list></div>
-        </div>
-        <div class="stack top-gap">
-            <div>
-                <p class="eyebrow">Artifacts</p>
-                <h2>{{ ui.artifacts }}</h2>
+            <div class="panel-body panel-body--tight">
+                <div class="preprocess-session-list panel-scroll" data-session-list data-panel-scroll></div>
             </div>
-            <div class="context-list" data-artifact-list></div>
-        </div>
-    </aside>
-</section>
+        </aside>
+
+        <main class="panel-shell preprocess-main">
+            <div class="panel-header preprocess-toolbar">
+                <div>
+                    <p class="eyebrow">Workspace</p>
+                    <h2 data-session-title>{{ ui.untitled_session }}</h2>
+                </div>
+                <div class="button-row">
+                    <button type="button" class="ghost-button" data-rename-session>{{ ui.rename_session }}</button>
+                    <button type="button" class="danger-button" data-delete-session>{{ ui.delete_session }}</button>
+                </div>
+            </div>
+
+            <div class="panel-body">
+                <div class="turn-pill-row" data-context-pills></div>
+                <div class="panel-scroll" data-live-feed data-panel-scroll>
+                    <div class="preprocess-chat-scroll" data-chat-list></div>
+                </div>
+
+                <div class="preprocess-composer">
+                    <div class="mention-suggestions panel-scroll" data-mention-suggestions data-panel-scroll hidden></div>
+                    <textarea data-composer rows="4" placeholder="{{ ui.composer_placeholder }}"></textarea>
+                    <div class="preprocess-composer-actions">
+                        <span class="muted" data-composer-hint>{{ ui.composer_hint }}</span>
+                        <button type="button" class="primary-button" data-send-message>{{ ui.send }}</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <aside class="panel-shell preprocess-context slim-panel">
+            <div class="panel-body">
+                <div class="stack">
+                    <div>
+                        <p class="eyebrow">Documents</p>
+                        <h2>{{ ui.documents }}</h2>
+                    </div>
+                    <div class="context-list panel-scroll" data-document-list data-documents-board data-panel-scroll></div>
+                </div>
+                <div class="stack">
+                    <div>
+                        <p class="eyebrow">Artifacts</p>
+                        <h2>{{ ui.artifacts }}</h2>
+                    </div>
+                    <div class="context-list panel-scroll" data-artifact-list data-panel-scroll></div>
+                </div>
+            </div>
+        </aside>
+    </section>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}

@@ -1,143 +1,195 @@
 {% extends "base.html" %}
 {% block title %}{{ ui.title }}{% endblock %}
+{% block body_class %}theme-ambient--home{% endblock %}
+{% block page_class %}page-home{% endblock %}
 {% block content %}
-<section class="hero-panel">
-    <div class="hero-copy">
-        <p class="eyebrow">{{ ui.eyebrow }}</p>
-        <h1>{{ ui.hero_title }}</h1>
-        <p class="hero-note">{{ ui.hero_note }}</p>
-        <div class="chip-row">
-            <span class="status-chip {{ 'tone-ready' if chat_configured else 'tone-failed' }}">
-                {{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}
-            </span>
-            <span class="status-chip {{ 'tone-ready' if embedding_configured else 'tone-warning' }}">
-                {{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}
-            </span>
-            <span class="status-chip tone-processing">FastAPI + Jinja + 原生 JS</span>
-        </div>
-    </div>
-    <div class="hero-metric-grid">
-        <article class="metric-card">
-            <span>{{ ui.metric_projects }}</span>
-            <strong>{{ projects|length }}</strong>
-            <p>{{ ui.metric_note }}</p>
-        </article>
-    </div>
-</section>
-
-<section class="layout-grid layout-grid--home">
-    <article class="surface-card">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">Create</p>
-                <h2>{{ ui.panel_create }}</h2>
+<div class="page-frame">
+    <section class="page-banner">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+            <div class="page-banner__title-row">
+                <h1>{{ ui.hero_title }}</h1>
+                <span class="page-banner__label">Launch Deck</span>
+            </div>
+            <p>{{ ui.hero_note }}</p>
+            <div class="page-banner__chip-row">
+                <span class="status-chip {{ 'tone-ready' if chat_configured else 'tone-failed' }}">
+                    {{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}
+                </span>
+                <span class="status-chip {{ 'tone-ready' if embedding_configured else 'tone-warning' }}">
+                    {{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}
+                </span>
+                <span class="status-chip tone-processing">FastAPI + Jinja + Native JS</span>
             </div>
         </div>
-        <form method="post" action="/projects" class="form-stack">
-            <label>
-                <span>{{ ui.create_name }}</span>
-                <input type="text" name="name" placeholder="{{ ui.create_name_placeholder }}" required>
-            </label>
-            <label>
-                <span>{{ ui.create_mode }}</span>
-                <select name="mode">
-                    <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
-                    <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
-                    <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
-                </select>
-            </label>
-            <label>
-                <span>{{ ui.create_description }}</span>
-                <textarea name="description" rows="5" placeholder="{{ ui.create_description_placeholder }}"></textarea>
-            </label>
-            <button type="submit" class="primary-button">{{ ui.create_submit }}</button>
-        </form>
-    </article>
-
-    <section class="surface-card">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">Workspace</p>
-                <h2>{{ ui.panel_existing }}</h2>
+        <div class="page-banner__meta">
+            <div class="page-banner__portrait"></div>
+            <div class="page-banner__signal-row">
+                <span class="page-banner__label">{{ ui.panel_existing }}</span>
+                <span class="page-banner__label">{{ projects|length }} workspaces</span>
             </div>
         </div>
-        {% if projects %}
-            <div class="project-card-list">
-                {% for project in projects %}
-                    <article class="project-card">
-                        <div class="project-card__copy">
-                            <div class="project-card__title-row">
-                                <a class="project-card__title" href="/projects/{{ project.id }}">{{ project.name }}</a>
-                                <span class="status-chip {{ 'tone-processing' if project.mode == 'group' else ('tone-warning' if project.mode == 'telegram' else 'tone-ready') }}">
-                                    {% if project.mode == 'group' %}
-                                        {{ ui.mode_group }}
-                                    {% elif project.mode == 'telegram' %}
-                                        {{ ui.mode_telegram }}
-                                    {% else %}
-                                        {{ ui.mode_single }}
-                                    {% endif %}
-                                </span>
-                            </div>
-                            <p>{{ project.description or ui.project_description_empty }}</p>
-                            <small>
-                                {{ ui.project_updated }} ·
-                                {{ project.updated_at.strftime('%Y-%m-%d %H:%M') if project.updated_at else '--' }}
-                            </small>
-                        </div>
-                        <div class="button-row">
-                            <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.project_card_open }}</a>
-                            <button type="button" class="ghost-button" data-modal-open="edit-project-modal-{{ project.id }}">{{ ui.project_card_edit }}</button>
-                            <form method="post" action="/projects/{{ project.id }}/delete">
-                                <button
-                                    type="submit"
-                                    class="ghost-button danger-button"
-                                    data-confirm="{{ ui.common.confirm_delete_project }}"
-                                >
-                                    {{ ui.project_card_delete }}
-                                </button>
-                            </form>
-                        </div>
-                    </article>
-
-                    <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
-                        <div class="modal-dialog">
-                            <div class="modal-head">
-                                <div>
-                                    <p class="eyebrow">Edit</p>
-                                    <h3>{{ ui.modal_edit_title }}</h3>
-                                </div>
-                                <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
-                            </div>
-                            <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
-                                <label>
-                                    <span>{{ ui.modal_name }}</span>
-                                    <input type="text" name="name" value="{{ project.name }}" required>
-                                </label>
-                                <label>
-                                    <span>{{ ui.modal_description }}</span>
-                                    <textarea name="description" rows="4">{{ project.description or '' }}</textarea>
-                                </label>
-                                <label>
-                                    <span>{{ ui.modal_mode }}</span>
-                                    <select name="mode">
-                                        <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
-                                        <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
-                                        <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
-                                    </select>
-                                </label>
-                                <div class="button-row button-row--end">
-                                    <button type="submit" class="primary-button">{{ ui.modal_submit }}</button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="empty-panel">
-                <strong>{{ ui.empty_projects }}</strong>
-            </div>
-        {% endif %}
     </section>
-</section>
+
+    <section class="page-content">
+        <article class="panel-shell">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">Create</p>
+                    <h2>{{ ui.panel_create }}</h2>
+                </div>
+                <span class="status-chip tone-processing">New workspace</span>
+            </div>
+            <div class="panel-body">
+                <form method="post" action="/projects">
+                    <label>
+                        <span>{{ ui.create_name }}</span>
+                        <input type="text" name="name" placeholder="{{ ui.create_name_placeholder }}" required>
+                    </label>
+                    <label>
+                        <span>{{ ui.create_mode }}</span>
+                        <select name="mode">
+                            <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
+                            <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
+                            <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>{{ ui.create_description }}</span>
+                        <textarea name="description" rows="6" placeholder="{{ ui.create_description_placeholder }}"></textarea>
+                    </label>
+                    <div class="button-row button-row--end">
+                        <button type="submit" class="primary-button">{{ ui.create_submit }}</button>
+                    </div>
+                </form>
+            </div>
+        </article>
+
+        <div class="workspace-column home-rail-grid">
+            <article class="panel-shell">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Systems</p>
+                        <h2>{{ ui.title }}</h2>
+                    </div>
+                    <span class="status-chip tone-ready">Workbench</span>
+                </div>
+                <div class="panel-body">
+                    <div class="home-status-grid">
+                        <article class="metric-card">
+                            <span>{{ ui.metric_projects }}</span>
+                            <strong>{{ projects|length }}</strong>
+                            <p>{{ ui.metric_note }}</p>
+                        </article>
+                        <article class="metric-card">
+                            <span>Chat</span>
+                            <strong>{{ "READY" if chat_configured else "CHECK" }}</strong>
+                            <p>{{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}</p>
+                        </article>
+                        <article class="metric-card">
+                            <span>Embedding</span>
+                            <strong>{{ "READY" if embedding_configured else "CHECK" }}</strong>
+                            <p>{{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}</p>
+                        </article>
+                        <article class="metric-card">
+                            <span>Interface</span>
+                            <strong>AGENT</strong>
+                            <p>Cyber-aesthetic workstation shell</p>
+                        </article>
+                    </div>
+                </div>
+            </article>
+
+            <article class="panel-shell">
+                <div class="panel-header">
+                    <div>
+                        <p class="eyebrow">Workspace</p>
+                        <h2>{{ ui.panel_existing }}</h2>
+                    </div>
+                    <span class="status-chip tone-processing">{{ projects|length }}</span>
+                </div>
+                <div class="panel-body">
+                    {% if projects %}
+                        <div class="project-card-list panel-scroll" data-panel-scroll>
+                            {% for project in projects %}
+                                <article class="project-card">
+                                    <div class="project-card__copy">
+                                        <div class="project-card__title-row">
+                                            <a class="project-card__title" href="/projects/{{ project.id }}">{{ project.name }}</a>
+                                            <span class="status-chip {{ 'tone-processing' if project.mode == 'group' else ('tone-warning' if project.mode == 'telegram' else 'tone-ready') }}">
+                                                {% if project.mode == 'group' %}
+                                                    {{ ui.mode_group }}
+                                                {% elif project.mode == 'telegram' %}
+                                                    {{ ui.mode_telegram }}
+                                                {% else %}
+                                                    {{ ui.mode_single }}
+                                                {% endif %}
+                                            </span>
+                                        </div>
+                                        <p>{{ project.description or ui.project_description_empty }}</p>
+                                        <small>
+                                            {{ ui.project_updated }} ·
+                                            {{ project.updated_at.strftime('%Y-%m-%d %H:%M') if project.updated_at else '--' }}
+                                        </small>
+                                    </div>
+                                    <div class="button-row">
+                                        <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.project_card_open }}</a>
+                                        <button type="button" class="ghost-button" data-modal-open="edit-project-modal-{{ project.id }}">{{ ui.project_card_edit }}</button>
+                                        <form method="post" action="/projects/{{ project.id }}/delete">
+                                            <button
+                                                type="submit"
+                                                class="danger-button"
+                                                data-confirm="{{ ui.common.confirm_delete_project }}"
+                                            >
+                                                {{ ui.project_card_delete }}
+                                            </button>
+                                        </form>
+                                    </div>
+                                </article>
+
+                                <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
+                                    <div class="modal-dialog">
+                                        <div class="modal-head">
+                                            <div>
+                                                <p class="eyebrow">Edit</p>
+                                                <h3>{{ ui.modal_edit_title }}</h3>
+                                            </div>
+                                            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+                                        </div>
+                                        <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
+                                            <label>
+                                                <span>{{ ui.modal_name }}</span>
+                                                <input type="text" name="name" value="{{ project.name }}" required>
+                                            </label>
+                                            <label>
+                                                <span>{{ ui.modal_description }}</span>
+                                                <textarea name="description" rows="4">{{ project.description or '' }}</textarea>
+                                            </label>
+                                            <label>
+                                                <span>{{ ui.modal_mode }}</span>
+                                                <select name="mode">
+                                                    <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
+                                                    <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
+                                                    <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
+                                                </select>
+                                            </label>
+                                            <div class="button-row button-row--end">
+                                                <button type="submit" class="primary-button">{{ ui.modal_submit }}</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="empty-panel" data-empty-state>
+                            <strong>{{ ui.empty_projects }}</strong>
+                            <p>Create the first workspace to open the launch deck.</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </article>
+        </div>
+    </section>
+</div>
 {% endblock %}

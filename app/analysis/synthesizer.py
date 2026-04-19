@@ -333,7 +333,42 @@ class AssetSynthesizer:
         memories_markdown = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
-        if session and retrieval_service and project.mode != "telegram":
+        if session and retrieval_service and project.mode == "telegram":
+            telegram_context = self._build_telegram_skill_context(
+                session=session,
+                project=project,
+                target_role=target_role,
+                analysis_context=analysis_context,
+            )
+            personality_markdown = self._build_contextual_skill_document(
+                client,
+                config,
+                project_name=project.name,
+                facet_dump=facet_dump,
+                context=telegram_context,
+                phase="personality_context",
+                progress_percent=24,
+                progress_message="Building personality.md",
+                message_builder=build_personality_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+            )
+            memories_markdown = self._build_contextual_skill_document(
+                client,
+                config,
+                project_name=project.name,
+                facet_dump=facet_dump,
+                context=telegram_context,
+                phase="memory_context",
+                progress_percent=36,
+                progress_message="Building memories.md",
+                message_builder=build_memories_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+            )
+        elif session and retrieval_service and project.mode != "telegram":
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
@@ -435,7 +470,42 @@ class AssetSynthesizer:
         memories_markdown = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
-        if session and retrieval_service and project.mode != "telegram":
+        if session and retrieval_service and project.mode == "telegram":
+            telegram_context = self._build_telegram_skill_context(
+                session=session,
+                project=project,
+                target_role=target_role,
+                analysis_context=analysis_context,
+            )
+            personality_markdown = self._build_contextual_skill_document(
+                client,
+                config,
+                project_name=project.name,
+                facet_dump=facet_dump,
+                context=telegram_context,
+                phase="personality_context",
+                progress_percent=24,
+                progress_message="Building personality.md",
+                message_builder=build_personality_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+            )
+            memories_markdown = self._build_contextual_skill_document(
+                client,
+                config,
+                project_name=project.name,
+                facet_dump=facet_dump,
+                context=telegram_context,
+                phase="memory_context",
+                progress_percent=36,
+                progress_message="Building memories.md",
+                message_builder=build_memories_messages,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                progress_callback=progress_callback,
+            )
+        elif session and retrieval_service and project.mode != "telegram":
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
@@ -556,6 +626,128 @@ class AssetSynthesizer:
         )
         response = client.chat_completion_result(messages, model=config.model, temperature=0.2, max_tokens=None)
         return str(response.content or "").strip()
+
+    def _build_contextual_skill_document(
+        self,
+        client: OpenAICompatibleClient,
+        config: ServiceConfig,
+        *,
+        project_name: str,
+        facet_dump: str,
+        context: str,
+        phase: str,
+        progress_percent: int,
+        progress_message: str,
+        message_builder: Any,
+        target_role: str | None,
+        analysis_context: str | None,
+        progress_callback: Any | None,
+    ) -> str:
+        self._emit_progress(
+            progress_callback,
+            phase=phase,
+            progress_percent=progress_percent,
+            message=progress_message,
+        )
+        messages = message_builder(
+            project_name,
+            facet_dump,
+            context,
+            target_role=target_role,
+            analysis_context=analysis_context,
+        )
+        response = client.chat_completion_result(messages, model=config.model, temperature=0.2, max_tokens=None)
+        return str(response.content or "").strip()
+
+    def _build_telegram_skill_context(
+        self,
+        *,
+        session: Any,
+        project: Project,
+        target_role: str | None,
+        analysis_context: str | None,
+    ) -> str:
+        from app.storage import repository
+
+        latest_run = repository.get_latest_analysis_run(session, project.id)
+        summary = dict(latest_run.summary_json or {}) if latest_run else {}
+        target_user = summary.get("target_user") if isinstance(summary.get("target_user"), dict) else {}
+        participant_id = str(target_user.get("participant_id") or summary.get("participant_id") or "").strip()
+        source_project_id = repository.get_target_project_id(session, project.id)
+        preprocess_run_id = str(summary.get("preprocess_run_id") or "").strip()
+        if preprocess_run_id:
+            preprocess_run = repository.get_telegram_preprocess_run(session, preprocess_run_id)
+        else:
+            preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, source_project_id)
+            preprocess_run_id = preprocess_run.id if preprocess_run else ""
+
+        topics = (
+            repository.list_telegram_preprocess_topics(session, source_project_id, run_id=preprocess_run_id)
+            if preprocess_run_id
+            else []
+        )
+        relevant_topics = []
+        for topic in topics:
+            participants = list(getattr(topic, "participants", None) or [])
+            if participant_id and any(link.participant_id == participant_id for link in participants):
+                relevant_topics.append(topic)
+        if not relevant_topics:
+            relevant_topics = list(topics)[:6]
+
+        label = (
+            target_user.get("label")
+            or target_user.get("primary_alias")
+            or target_user.get("display_name")
+            or target_role
+            or project.name
+        )
+        lines = [
+            "Telegram agent context:",
+            f"- target_label: {label}",
+            f"- participant_id: {participant_id or 'unknown'}",
+            f"- preprocess_run_id: {preprocess_run_id or 'unknown'}",
+            f"- source_project_id: {source_project_id}",
+            f"- analysis_context: {analysis_context or ''}",
+            "",
+            "Relevant weekly topics:",
+        ]
+        if not relevant_topics:
+            lines.append("- No weekly topics were available; rely on the facet dump and analysis context.")
+        for index, topic in enumerate(relevant_topics[:6], start=1):
+            metadata = dict(getattr(topic, "metadata_json", None) or {})
+            keywords = ", ".join(
+                str(item).strip()
+                for item in (getattr(topic, "keywords_json", None) or [])
+                if str(item).strip()
+            )
+            lines.extend(
+                [
+                    f"{index}. {getattr(topic, 'title', '') or 'Untitled topic'}",
+                    f"   summary: {str(getattr(topic, 'summary', '') or '').strip()}",
+                    f"   keywords: {keywords or 'n/a'}",
+                ]
+            )
+            participant_viewpoints = [
+                dict(item)
+                for item in (metadata.get("participant_viewpoints") or [])
+                if isinstance(item, dict)
+            ]
+            matched_viewpoints = [
+                item
+                for item in participant_viewpoints
+                if not participant_id or str(item.get("participant_id") or "").strip() == participant_id
+            ] or participant_viewpoints[:2]
+            for viewpoint in matched_viewpoints[:2]:
+                stance = str(viewpoint.get("stance_summary") or "").strip()
+                if stance:
+                    lines.append(f"   viewpoint: {stance}")
+            for evidence in list(getattr(topic, "evidence_json", None) or [])[:2]:
+                if not isinstance(evidence, dict):
+                    continue
+                quote = str(evidence.get("quote") or "").strip()
+                if quote:
+                    lines.append(f"   evidence: {quote}")
+        return "\n".join(lines).strip()
 
     def _get_skill_merge_markdown(self, payload: dict[str, Any]) -> str:
         documents = payload.get("documents") if isinstance(payload, dict) else {}

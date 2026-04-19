@@ -20,13 +20,15 @@ if (bootstrap?.project_id) {
         activeRequestKey: null,
         stream: null,
         pollTimer: null,
+        snapshotVersion: Number(bootstrap.bundle?.snapshot_version || 0),
+        updatedAt: bootstrap.bundle?.updated_at || "",
     };
 
     const elements = {
         statusChip: document.getElementById("telegram-preprocess-status-chip"),
         stage: document.getElementById("telegram-preprocess-stage"),
         progressLabel: document.getElementById("telegram-preprocess-progress-label"),
-        progressLabel2: document.querySelector(".progress-labels #telegram-preprocess-progress-label"),
+        progressLabelDuplicate: document.getElementById("telegram-preprocess-progress-label-duplicate"),
         progressFill: document.getElementById("telegram-preprocess-progress-fill"),
         currentProgressLabel: document.getElementById("telegram-preprocess-current-progress-label"),
         currentProgressFill: document.getElementById("telegram-preprocess-current-progress-fill"),
@@ -34,6 +36,10 @@ if (bootstrap?.project_id) {
         topUserCount: document.getElementById("telegram-preprocess-top-user-count"),
         topicCount: document.getElementById("telegram-preprocess-topic-count"),
         activeUserCount: document.getElementById("telegram-preprocess-active-user-count"),
+        weeklyConcurrency: document.getElementById("telegram-preprocess-weekly-concurrency"),
+        activeAgents: document.getElementById("telegram-preprocess-active-agents"),
+        completedWeeks: document.getElementById("telegram-preprocess-completed-weeks"),
+        remainingWeeks: document.getElementById("telegram-preprocess-remaining-weeks"),
         totalTokens: document.getElementById("telegram-preprocess-total-tokens"),
         cacheRead: document.getElementById("telegram-preprocess-cache-read"),
         runMeta: document.getElementById("telegram-preprocess-run-meta"),
@@ -45,31 +51,49 @@ if (bootstrap?.project_id) {
         topUsers: document.getElementById("telegram-preprocess-top-users"),
         topics: document.getElementById("telegram-preprocess-topics"),
         activeUsers: document.getElementById("telegram-preprocess-active-users"),
+        stageBanner: document.getElementById("telegram-preprocess-stage-banner"),
+        liveNote: document.getElementById("telegram-preprocess-live-note"),
+        livePill: document.getElementById("telegram-preprocess-live-pill"),
+        coverageChip: document.getElementById("telegram-preprocess-coverage-chip"),
+        weeklyConcurrencyChip: document.getElementById("telegram-preprocess-weekly-concurrency-chip"),
+        activeAgentChip: document.getElementById("telegram-preprocess-active-agent-chip"),
+        tokenChip: document.getElementById("telegram-preprocess-token-chip"),
+        snapshotChip: document.getElementById("telegram-preprocess-snapshot-chip"),
+        laneStrip: document.getElementById("telegram-preprocess-agent-lanes"),
     };
 
     renderBundle(state.bundle);
     renderTraceList();
     renderLiveOutput();
+    renderAgentLanes();
+    setLiveState(state.bundle?.status && isRunning(state.bundle.status) ? "live" : "idle");
     connectStream();
 
     function connectStream() {
         if (!state.runId) {
             return;
         }
+        stopStream();
+        setLiveState("connecting");
         state.stream = new EventSource(`/api/projects/${state.projectId}/preprocess/runs/${encodeURIComponent(state.runId)}/stream`);
+
         state.stream.addEventListener("snapshot", (event) => {
             const payload = safeParseJson(event.data, null);
-            if (!payload) {
+            if (!payload || !acceptSnapshot(payload)) {
                 return;
             }
             state.bundle = payload;
             mergePersistedTrace(payload.trace_events || []);
             renderBundle(payload);
             renderTraceList();
+            renderLiveOutput();
+            renderAgentLanes();
+            setLiveState(isRunning(payload.status) ? "live" : "idle");
             if (!isRunning(payload.status)) {
                 stopStream();
             }
         });
+
         state.stream.addEventListener("trace", (event) => {
             const payload = safeParseJson(event.data, null);
             if (!payload) {
@@ -77,10 +101,13 @@ if (bootstrap?.project_id) {
             }
             handleTraceEvent(payload);
         });
+
         state.stream.addEventListener("done", async () => {
             stopStream();
+            setLiveState("idle");
             await refreshBundle();
         });
+
         state.stream.onerror = () => {
             stopStream();
             beginPolling();
@@ -98,11 +125,13 @@ if (bootstrap?.project_id) {
         if (state.pollTimer || !state.runId) {
             return;
         }
+        setLiveState("polling");
         state.pollTimer = window.setInterval(async () => {
             await refreshBundle();
             if (!isRunning(state.bundle?.status)) {
                 window.clearInterval(state.pollTimer);
                 state.pollTimer = null;
+                setLiveState("idle");
             }
         }, 1800);
     }
@@ -113,20 +142,40 @@ if (bootstrap?.project_id) {
         }
         try {
             const payload = await fetchJson(`/api/projects/${state.projectId}/preprocess/runs/${encodeURIComponent(state.runId)}`);
+            if (!acceptSnapshot(payload)) {
+                return;
+            }
             state.bundle = payload;
             mergePersistedTrace(payload.trace_events || []);
             renderBundle(payload);
             renderTraceList();
             renderLiveOutput();
+            renderAgentLanes();
+            setLiveState(isRunning(payload.status) ? "live" : "idle");
         } catch (error) {
-            updateText(elements.liveTitle, error.message || "刷新预处理状态失败");
+            updateText(elements.liveTitle, error.message || "Failed to refresh preprocess status.");
+            setLiveState("polling");
         }
     }
 
+    function acceptSnapshot(payload) {
+        const nextVersion = Number(payload.snapshot_version || 0);
+        const nextUpdatedAt = String(payload.updated_at || "");
+        if (nextVersion < state.snapshotVersion) {
+            return false;
+        }
+        if (nextVersion === state.snapshotVersion && state.updatedAt && nextUpdatedAt && nextUpdatedAt < state.updatedAt) {
+            return false;
+        }
+        state.snapshotVersion = nextVersion;
+        state.updatedAt = nextUpdatedAt || state.updatedAt;
+        return true;
+    }
+
     function mergePersistedTrace(events) {
-        const seen = new Set(state.traceEvents.map((item) => String(item.seq ?? `${item.timestamp}:${item.kind}:${item.request_key || ""}`)));
+        const seen = new Set(state.traceEvents.map((item) => buildTraceKey(item)));
         (events || []).forEach((item) => {
-            const key = String(item.seq ?? `${item.timestamp}:${item.kind}:${item.request_key || ""}`);
+            const key = buildTraceKey(item);
             if (seen.has(key)) {
                 return;
             }
@@ -136,57 +185,69 @@ if (bootstrap?.project_id) {
         state.traceEvents.sort((left, right) => {
             const leftSeq = Number(left.seq || 0);
             const rightSeq = Number(right.seq || 0);
-            if (leftSeq && rightSeq) {
+            if (leftSeq && rightSeq && leftSeq !== rightSeq) {
                 return leftSeq - rightSeq;
             }
             return String(left.timestamp || "").localeCompare(String(right.timestamp || ""));
         });
     }
 
+    function buildTraceKey(event) {
+        return String(
+            event?.seq
+            ?? `${event?.timestamp || ""}:${event?.kind || ""}:${event?.request_key || ""}:${event?.tool_name || ""}:${event?.week_key || ""}`
+        );
+    }
+
     function handleTraceEvent(event) {
-        if (event.kind === "llm_delta") {
-            if (event.request_key) {
-                state.activeRequestKey = event.request_key;
-                state.liveOutputByRequest[event.request_key] = String(event.text_preview || "");
-            }
-            renderLiveOutput(event);
-            return;
+        const requestKey = String(event.request_key || "").trim();
+        if (event.kind === "llm_request_started" && requestKey) {
+            state.activeRequestKey = requestKey;
+            state.liveOutputByRequest[requestKey] = state.liveOutputByRequest[requestKey] || "";
         }
-        mergePersistedTrace([event]);
-        if (event.kind === "llm_request_started" && event.request_key) {
-            state.activeRequestKey = event.request_key;
-            state.liveOutputByRequest[event.request_key] = "";
+        if (event.kind === "llm_delta" && requestKey) {
+            state.activeRequestKey = requestKey;
+            state.liveOutputByRequest[requestKey] = String(event.text_preview || "");
         }
-        if (event.kind === "llm_request_completed" && event.request_key) {
-            state.activeRequestKey = event.request_key;
-            state.liveOutputByRequest[event.request_key] = String(
-                event.response_text_preview || state.liveOutputByRequest[event.request_key] || ""
+        if (event.kind === "llm_request_completed" && requestKey) {
+            state.activeRequestKey = requestKey;
+            state.liveOutputByRequest[requestKey] = String(
+                event.response_text_preview || state.liveOutputByRequest[requestKey] || ""
             );
         }
+        mergePersistedTrace([event]);
         renderTraceList();
         renderLiveOutput(event);
+        renderAgentLanes();
     }
 
     function renderBundle(bundle) {
         if (!bundle) {
             setStatusTone(elements.statusChip, "idle", "idle");
-            updateText(elements.stage, "等待开始");
+            updateText(elements.stage, "Waiting");
+            updateText(elements.stageBanner, "Waiting");
             updateText(elements.progressLabel, "0%");
-            if (elements.progressLabel2) updateText(elements.progressLabel2, "0%");
-            if (elements.currentProgressLabel) updateText(elements.currentProgressLabel, "0%");
+            updateText(elements.progressLabelDuplicate, "0%");
+            updateText(elements.currentProgressLabel, "0%");
             updateText(elements.weeklyCandidateCount, "0");
             updateText(elements.topUserCount, "0");
             updateText(elements.topicCount, "0");
             updateText(elements.activeUserCount, "0");
+            updateText(elements.weeklyConcurrency, "1");
+            updateText(elements.activeAgents, "0");
+            updateText(elements.completedWeeks, "0");
+            updateText(elements.remainingWeeks, "0");
             updateText(elements.totalTokens, "0");
             updateText(elements.cacheRead, "0");
-            updateText(elements.runMeta, "暂无预处理 run");
-            if (elements.progressFill) {
-                elements.progressFill.style.width = "0%";
-            }
-            if (elements.currentProgressFill) {
-                elements.currentProgressFill.style.width = "0%";
-            }
+            updateText(elements.runMeta, "No preprocess run yet.");
+            updateText(elements.liveNote, "Waiting for a new preprocess run.");
+            updateText(elements.coverageChip, "Topics 0 / 0");
+            updateText(elements.weeklyConcurrencyChip, "Concurrency 1");
+            updateText(elements.activeAgentChip, "Active 0");
+            updateText(elements.tokenChip, "Tokens 0");
+            updateText(elements.snapshotChip, "Snapshot 0");
+            setWidth(elements.progressFill, 0);
+            setWidth(elements.currentProgressFill, 0);
             renderWeeklyCandidates([]);
             renderTopUsers([]);
             renderTopics([]);
@@ -195,58 +256,216 @@ if (bootstrap?.project_id) {
         }
 
         const percent = clampPercent(bundle.progress_percent || 0);
-        setStatusTone(elements.statusChip, bundle.status, bundle.status);
-        updateText(elements.stage, bundle.current_stage || "等待开始");
-        updateText(elements.progressLabel, `${percent}%`);
-        if (elements.progressLabel2) updateText(elements.progressLabel2, `${percent}%`);
-        
-        const candidatesCount = bundle.weekly_candidate_count || bundle.window_count || 0;
-        const topicCount = bundle.topic_count || 0;
-        updateText(elements.weeklyCandidateCount, candidatesCount);
-        updateText(elements.topUserCount, bundle.top_user_count || 0);
-        updateText(elements.topicCount, topicCount);
+        const completedWeeks = Number(bundle.completed_week_count || 0);
+        const remainingWeeks = Number(bundle.remaining_week_count || 0);
+        const totalWeeks = completedWeeks + remainingWeeks || Number(bundle.weekly_candidate_count || bundle.window_count || 0);
+        const currentPercent = totalWeeks > 0
+            ? clampPercent(Math.floor((completedWeeks / totalWeeks) * 100))
+            : 0;
+        const weeklyConcurrency = Number(bundle.requested_weekly_concurrency || bundle.weekly_summary_concurrency || 1);
+        const activeAgents = Number(bundle.active_agents || 0);
+        const snapshotVersion = Number(bundle.snapshot_version || 0);
 
-        let currentPercent = 0;
-        if (candidatesCount > 0) {
-            currentPercent = clampPercent(Math.floor((topicCount / candidatesCount) * 100));
-        } else if (topicCount > 0) {
-            currentPercent = 100;
-        }
-        if (elements.currentProgressLabel) updateText(elements.currentProgressLabel, `${currentPercent}%`);
-        if (elements.currentProgressFill) elements.currentProgressFill.style.width = `${currentPercent}%`;
+        setStatusTone(elements.statusChip, bundle.status, bundle.status);
+        updateText(elements.stage, bundle.current_stage || "Waiting");
+        updateText(elements.stageBanner, bundle.current_stage || "Waiting");
+        updateText(elements.progressLabel, `${percent}%`);
+        updateText(elements.progressLabelDuplicate, `${percent}%`);
+        updateText(elements.currentProgressLabel, `${currentPercent}%`);
+        updateText(elements.weeklyCandidateCount, bundle.weekly_candidate_count || bundle.window_count || 0);
+        updateText(elements.topUserCount, bundle.top_user_count || 0);
+        updateText(elements.topicCount, bundle.topic_count || 0);
         updateText(elements.activeUserCount, bundle.active_user_count || 0);
+        updateText(elements.weeklyConcurrency, weeklyConcurrency);
+        updateText(elements.activeAgents, activeAgents);
+        updateText(elements.completedWeeks, completedWeeks);
+        updateText(elements.remainingWeeks, remainingWeeks);
         updateText(elements.totalTokens, bundle.total_tokens || 0);
         updateText(elements.cacheRead, bundle.cache_read_tokens || 0);
         updateText(
             elements.runMeta,
-            `${formatDateTime(bundle.started_at || bundle.created_at)} -> ${formatDateTime(bundle.finished_at)}`
+            `${formatDateTime(bundle.started_at || bundle.created_at)} → ${formatDateTime(bundle.finished_at || bundle.updated_at)}`
         );
-        if (elements.progressFill) {
-            elements.progressFill.style.width = `${percent}%`;
-        }
+        updateText(elements.liveNote, buildProgressNote(bundle, totalWeeks, completedWeeks, remainingWeeks));
+        updateText(elements.coverageChip, `Topics ${bundle.topic_count || 0} / ${bundle.weekly_candidate_count || bundle.window_count || 0}`);
+        updateText(elements.weeklyConcurrencyChip, `Concurrency ${weeklyConcurrency}`);
+        updateText(elements.activeAgentChip, `Active ${activeAgents}`);
+        updateText(elements.tokenChip, `Tokens ${bundle.total_tokens || 0}`);
+        updateText(elements.snapshotChip, `Snapshot ${snapshotVersion}`);
+        setWidth(elements.progressFill, percent);
+        setWidth(elements.currentProgressFill, currentPercent);
+
         if (elements.error) {
             elements.error.hidden = !bundle.error_message;
             elements.error.textContent = bundle.error_message || "";
         }
+
         renderWeeklyCandidates(bundle.weekly_candidates || []);
         renderTopUsers(bundle.top_users || []);
         renderTopics(bundle.topics || []);
         renderActiveUsers(bundle.active_users || []);
     }
 
-    function renderTraceList() {
-        elements.traceList.innerHTML = "";
-        const events = state.traceEvents.slice(-80);
-        if (!events.length) {
-            elements.traceList.innerHTML = `<div class="empty-panel"><strong>等待任务事件。</strong></div>`;
+    function setWidth(element, percent) {
+        if (element) {
+            element.style.width = `${percent}%`;
+        }
+    }
+
+    function buildProgressNote(bundle, totalWeeks, completedWeeks, remainingWeeks) {
+        return [
+            bundle.current_stage || bundle.status || "idle",
+            totalWeeks ? `${completedWeeks}/${totalWeeks} weeks complete` : "",
+            remainingWeeks ? `${remainingWeeks} weeks pending` : "",
+            bundle.active_agents ? `${bundle.active_agents} active workers` : "",
+            bundle.updated_at ? `Updated ${formatDateTime(bundle.updated_at)}` : "",
+        ].filter(Boolean).join(" · ");
+    }
+
+    function renderAgentLanes() {
+        if (!elements.laneStrip) {
             return;
         }
-        
+        elements.laneStrip.innerHTML = "";
+
+        const activeTracks = deriveWorkerTracks();
+        const expected = Number(state.bundle?.active_agents || 0);
+
+        if (!activeTracks.length && !expected) {
+            const placeholder = document.createElement("article");
+            placeholder.className = "agent-lane-card agent-lane-card--empty";
+            placeholder.innerHTML = "<strong>No active workers</strong><p>The command center will light up when weekly workers start.</p>";
+            elements.laneStrip.appendChild(placeholder);
+            return;
+        }
+
+        activeTracks.forEach((track) => {
+            const card = document.createElement("article");
+            card.className = `agent-lane-card status-${escapeHtml(track.status)}`;
+            card.innerHTML = `
+                <div class="agent-lane-card__head">
+                    <div>
+                        <strong>${escapeHtml(track.label)}</strong>
+                        <span>${escapeHtml(track.agent)}</span>
+                    </div>
+                    <span class="status-pill">${escapeHtml(track.statusLabel)}</span>
+                </div>
+                <div class="agent-lane-card__meta">
+                    <span>${escapeHtml(track.stage)}</span>
+                    <span>${escapeHtml(track.updatedAt)}</span>
+                </div>
+                <p class="agent-lane-card__requests">${escapeHtml(track.detail)}</p>
+            `;
+            elements.laneStrip.appendChild(card);
+        });
+
+        if (activeTracks.length < expected) {
+            for (let index = activeTracks.length; index < expected; index += 1) {
+                const placeholder = document.createElement("article");
+                placeholder.className = "agent-lane-card status-running";
+                placeholder.innerHTML = `
+                    <div class="agent-lane-card__head">
+                        <div>
+                            <strong>Worker Slot ${index + 1}</strong>
+                            <span>weekly_topic_agent</span>
+                        </div>
+                        <span class="status-pill">Running</span>
+                    </div>
+                    <div class="agent-lane-card__meta">
+                        <span>Waiting for next trace</span>
+                        <span>${escapeHtml(formatDateTime(state.bundle?.updated_at || state.bundle?.started_at))}</span>
+                    </div>
+                    <p class="agent-lane-card__requests">This slot is active but has not emitted a detailed trace event yet.</p>
+                `;
+                elements.laneStrip.appendChild(placeholder);
+            }
+        }
+    }
+
+    function deriveWorkerTracks() {
+        const openTracks = new Map();
+        orderedTraceEvents().forEach((event) => {
+            const key = workerTrackKey(event);
+            if (!key) {
+                return;
+            }
+            const label = event.week_key ? `Week ${event.week_key}` : (event.label || event.request_key || "Worker");
+            const existing = openTracks.get(key) || {
+                key,
+                label,
+                agent: event.agent || "worker",
+                stage: event.stage || "working",
+                detail: event.request_key || event.message || "Live trace",
+                updatedAt: formatDateTime(event.timestamp),
+                status: "running",
+                statusLabel: "Running",
+            };
+
+            existing.label = label;
+            existing.agent = event.agent || existing.agent;
+            existing.stage = event.stage || existing.stage;
+            existing.detail = event.request_key || event.tool_name || event.message || existing.detail;
+            existing.updatedAt = formatDateTime(event.timestamp);
+
+            if (event.kind === "agent_completed") {
+                existing.status = "completed";
+                existing.statusLabel = "Completed";
+            } else if (event.kind === "agent_retry") {
+                existing.status = "failed";
+                existing.statusLabel = "Retrying";
+            } else {
+                existing.status = "running";
+                existing.statusLabel = "Running";
+            }
+
+            openTracks.set(key, existing);
+        });
+
+        return [...openTracks.values()]
+            .filter((track) => track.status !== "completed" || isRunning(state.bundle?.status))
+            .slice(-12);
+    }
+
+    function workerTrackKey(event) {
+        if (!event || !event.kind) {
+            return "";
+        }
+        if (event.week_key) {
+            return `${event.agent || "worker"}:${event.week_key}`;
+        }
+        if (event.request_key) {
+            return `${event.agent || "worker"}:${event.request_key}`;
+        }
+        if (event.kind === "agent_started" || event.kind === "agent_completed" || event.kind === "agent_retry") {
+            return `${event.agent || "worker"}:${event.stage || "stage"}`;
+        }
+        return "";
+    }
+
+    function orderedTraceEvents() {
+        return [...state.traceEvents].sort((left, right) => {
+            const leftSeq = Number(left.seq || 0);
+            const rightSeq = Number(right.seq || 0);
+            if (leftSeq && rightSeq && leftSeq !== rightSeq) {
+                return leftSeq - rightSeq;
+            }
+            return String(left.timestamp || "").localeCompare(String(right.timestamp || ""));
+        });
+    }
+
+    function renderTraceList() {
+        if (!elements.traceList) {
+            return;
+        }
+        elements.traceList.innerHTML = "";
+
+        const events = orderedTraceEvents().slice(-120);
+        if (!events.length) {
+            elements.traceList.appendChild(renderEmptyPanel("Waiting for preprocess events."));
+            return;
+        }
+
         events.forEach((event) => {
-            const wrapper = document.createElement("div");
-            wrapper.style.marginBottom = "0.75rem";
-            
-            const detailText = event.response_text_preview || event.output_preview || event.arguments_preview || event.prompt_preview || "";
             const meta = [
                 event.stage || "",
                 event.agent || "",
@@ -256,64 +475,110 @@ if (bootstrap?.project_id) {
             ].filter(Boolean).join(" · ");
 
             if (event.kind === "llm_request_started" || event.kind === "llm_request_completed") {
-                // Assistant Message (AI 普通回复) 或请求状态
-                wrapper.className = "msg-assistant";
-                wrapper.innerHTML = `
-                    <div class="msg-assistant-header" style="font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--chat-muted, #71717A); margin-bottom: 0.25rem;">
-                        ${event.kind === 'llm_request_started' ? '思考中...' : '回复'} · ${escapeHtml(meta || "--")}
-                    </div>
-                    ${detailText ? `
-                    <div class="code-block-wrapper" style="border: 1px solid var(--chat-code-border, rgba(255,255,255,0.1)); border-radius: var(--radius-sm, 12px); background: var(--chat-code-bg, #000); overflow: hidden;">
-                        <div class="code-block-header" style="display: flex; justify-content: space-between; padding: 0.4rem 1rem; background: var(--chat-surface, rgba(255,255,255,0.03)); border-bottom: 1px solid var(--chat-code-border, rgba(255,255,255,0.05)); font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--text-soft, #A1A1AA);">
-                            <span>${escapeHtml(summarizeTraceEvent(event))}</span>
-                            <button class="copy-btn" style="background: transparent; border: none; color: var(--chat-muted, #71717A); cursor: pointer;">Copy</button>
-                        </div>
-                        <pre style="margin: 0; padding: 1rem; overflow-x: auto; font-size: 0.85rem; color: var(--text, #E2E8F0); font-family: var(--font-mono, monospace);"><code>${escapeHtml(detailText)}</code></pre>
-                    </div>` : `<p style="color: var(--text-dim, #A1A1AA); font-size: 0.85rem;">等待响应...</p>`}
-                `;
-            } else if (event.kind === "tool_call" || event.kind === "tool_result") {
-                // Tool Call Bubble (工具调用)
-                wrapper.className = "tool-call";
-                wrapper.style.border = "1px solid var(--chat-tool-border, rgba(255,255,255,0.1))";
-                wrapper.style.borderRadius = "var(--radius-sm, 12px)";
-                wrapper.style.overflow = "hidden";
-                wrapper.style.background = "transparent";
-                
-                const isResult = event.kind === "tool_result";
-                wrapper.innerHTML = `
-                    <details ${!isResult ? 'open' : ''}>
-                        <summary style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; cursor: pointer; font-family: var(--font-mono, monospace); font-size: 0.8rem; color: var(--chat-muted, #71717A); background: var(--chat-surface, rgba(255,255,255,0.03)); list-style: none;">
-                            <span style="color: var(--text-soft, #A1A1AA);">${isResult ? '✓' : '⚙️'}</span>
-                            <span>${escapeHtml(summarizeTraceEvent(event))} ${escapeHtml(meta ? `(${meta})` : '')}</span>
-                        </summary>
-                        ${detailText ? `
-                        <div style="border-top: 1px solid var(--chat-tool-border, rgba(255,255,255,0.05)); background: rgba(0,0,0,0.3); padding: 0.75rem; font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--text-soft, #A1A1AA); overflow-x: auto;">
-                            <pre style="margin:0;"><code>${escapeHtml(detailText)}</code></pre>
-                        </div>` : ''}
-                    </details>
-                `;
-            } else {
-                // Turn / Context Indicator (轮次与状态)
-                wrapper.className = "context-indicator-wrapper";
-                wrapper.style.display = "flex";
-                wrapper.style.justifyContent = "center";
-                wrapper.style.margin = "1rem 0";
-                
-                wrapper.innerHTML = `
-                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.75rem; background: var(--chat-pill-bg, rgba(255,255,255,0.03)); backdrop-filter: blur(8px); border: 1px solid var(--chat-tool-border, rgba(255,255,255,0.1)); border-radius: var(--radius-xl, 9999px); font-size: 0.75rem; color: var(--chat-muted, #71717A); box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
-                        ${['agent_started', 'stage_progress'].includes(event.kind) ? '<div style="width: 8px; height: 8px; border: 1.5px solid var(--chat-muted, #71717A); border-top-color: var(--text, #EDEDED); border-radius: 50%; animation: spin 1s linear infinite;"></div>' : '<span>ℹ️</span>'}
-                        ${escapeHtml(summarizeTraceEvent(event))}
+                const bubble = document.createElement("article");
+                bubble.className = "bubble bubble--assistant preprocess-trace-bubble";
+                bubble.innerHTML = `
+                    <div class="bubble__head bubble__head--assistant">
+                        <span class="bubble__badge">LLM</span>
+                        <span class="bubble__meta">${escapeHtml(meta || "--")}</span>
                     </div>
                 `;
+                const content = document.createElement("div");
+                content.className = "bubble__content";
+                const detailText = event.response_text_preview || event.prompt_preview || "";
+                if (detailText) {
+                    content.appendChild(createCodeBlock(
+                        event.kind === "llm_request_started" ? "request" : "response",
+                        detailText
+                    ));
+                } else {
+                    content.innerHTML = `<p class="muted">${escapeHtml(event.kind === "llm_request_started" ? "Waiting for the model to answer..." : "No displayable text was returned.")}</p>`;
+                }
+                bubble.appendChild(content);
+                elements.traceList.appendChild(bubble);
+                return;
             }
-            elements.traceList.appendChild(wrapper);
+
+            if (event.kind === "tool_call" || event.kind === "tool_result") {
+                const details = document.createElement("details");
+                details.className = "bubble bubble--tool preprocess-trace-bubble";
+                details.open = event.kind === "tool_call";
+                details.innerHTML = `
+                    <summary class="bubble__tool-summary">
+                        <span class="bubble__tool-label">&gt;_ ${escapeHtml(event.tool_name || "tool")}</span>
+                        <span class="bubble__meta">${escapeHtml(meta || summarizeTraceEvent(event))}</span>
+                    </summary>
+                    <div class="bubble__tool-body"></div>
+                `;
+                const body = details.querySelector(".bubble__tool-body");
+                if (event.arguments_preview) {
+                    body.appendChild(createCodeBlock("arguments", event.arguments_preview));
+                }
+                if (event.output_preview) {
+                    body.appendChild(createCodeBlock("result", event.output_preview));
+                }
+                if (event.error) {
+                    body.appendChild(createCodeBlock("error", event.error, { tone: "error" }));
+                }
+                if (!event.arguments_preview && !event.output_preview && !event.error) {
+                    body.innerHTML = "<p class=\"muted\">This tool event did not include extra content.</p>";
+                }
+                elements.traceList.appendChild(details);
+                return;
+            }
+
+            elements.traceList.appendChild(buildContextBubble({
+                text: summarizeTraceEvent(event),
+                meta,
+                active: ["agent_started", "stage_progress"].includes(event.kind),
+                tone: traceTone(event.kind),
+            }));
         });
+    }
+
+    function buildContextBubble(item) {
+        const row = document.createElement("div");
+        row.className = "bubble-context-row";
+        row.innerHTML = `
+            <div class="bubble bubble--context bubble--context-${escapeHtml(item.tone || "processing")}">
+                ${item.active ? '<span class="bubble__spinner" aria-hidden="true"></span>' : '<span class="bubble__dot" aria-hidden="true"></span>'}
+                <span>${escapeHtml(item.text || "Context update")}</span>
+                ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
+            </div>
+        `;
+        return row;
+    }
+
+    function createCodeBlock(label, text, options = {}) {
+        const wrapper = document.createElement("div");
+        wrapper.className = `code-block ${options.tone === "error" ? "code-block--error" : ""}`;
+        const value = String(text || "").trim();
+        wrapper.innerHTML = `
+            <div class="code-block__header">
+                <span>${escapeHtml(label)}</span>
+                <button type="button" class="code-block__copy">Copy</button>
+            </div>
+            <pre><code>${escapeHtml(value)}</code></pre>
+        `;
+        wrapper.querySelector(".code-block__copy")?.addEventListener("click", async (event) => {
+            try {
+                await navigator.clipboard.writeText(value);
+                const button = event.currentTarget;
+                button.textContent = "Copied";
+                window.setTimeout(() => {
+                    button.textContent = "Copy";
+                }, 1200);
+            } catch (error) {
+                console.error(error);
+            }
+        });
+        return wrapper;
     }
 
     function renderLiveOutput(event = null) {
         const requestKey = event?.request_key || state.activeRequestKey;
         if (!requestKey) {
-            updateText(elements.liveTitle, "等待新的 LLM 请求开始。");
+            updateText(elements.liveTitle, "Waiting for the next LLM request.");
             updateText(elements.liveOutput, "");
             return;
         }
@@ -322,10 +587,34 @@ if (bootstrap?.project_id) {
         updateText(elements.liveOutput, text);
     }
 
+    function summarizeLiveTitle(event, requestKey) {
+        let traceEvent = event || null;
+        if (!traceEvent) {
+            const events = orderedTraceEvents();
+            for (let index = events.length - 1; index >= 0; index -= 1) {
+                if (events[index]?.request_key === requestKey) {
+                    traceEvent = events[index];
+                    break;
+                }
+            }
+        }
+        if (!traceEvent) {
+            return `Live output · ${requestKey}`;
+        }
+        return [
+            traceEvent.label || traceEvent.week_key || requestKey,
+            traceEvent.stage || "",
+            traceEvent.agent || "",
+        ].filter(Boolean).join(" · ");
+    }
+
     function renderWeeklyCandidates(candidates) {
+        if (!elements.weeklyCandidates) {
+            return;
+        }
         elements.weeklyCandidates.innerHTML = "";
         if (!candidates.length) {
-            elements.weeklyCandidates.innerHTML = `<div class="empty-panel"><strong>当前 Run 还没有周话题候选结果。</strong></div>`;
+            elements.weeklyCandidates.appendChild(renderEmptyPanel("No weekly candidates have been materialized yet."));
             return;
         }
         candidates.forEach((candidate) => {
@@ -339,11 +628,11 @@ if (bootstrap?.project_id) {
             card.innerHTML = `
                 <div class="document-card__head">
                     <strong>${escapeHtml(candidate.week_key || candidate.id)}</strong>
-                    <span class="status-chip tone-processing">${escapeHtml(String(candidate.message_count || 0))} 条</span>
+                    <span class="status-chip tone-processing">${escapeHtml(String(candidate.message_count || 0))} msgs</span>
                 </div>
-                <p class="helper-text">${escapeHtml(formatDateTime(candidate.start_at))} -> ${escapeHtml(formatDateTime(candidate.end_at))}</p>
-                <p class="helper-text">消息锚点: #${escapeHtml(String(candidate.start_message_id || "--"))} -> #${escapeHtml(String(candidate.end_message_id || "--"))}</p>
-                <p class="helper-text">参与者: ${escapeHtml(String(candidate.participant_count || 0))}</p>
+                <p class="helper-text">${escapeHtml(formatDateTime(candidate.start_at))} → ${escapeHtml(formatDateTime(candidate.end_at))}</p>
+                <p class="helper-text">Message window: #${escapeHtml(String(candidate.start_message_id || "--"))} → #${escapeHtml(String(candidate.end_message_id || "--"))}</p>
+                <p class="helper-text">Participants ${escapeHtml(String(candidate.participant_count || 0))}</p>
                 ${participants ? `<p class="helper-text">${escapeHtml(participants)}</p>` : ""}
             `;
             elements.weeklyCandidates.appendChild(card);
@@ -351,9 +640,12 @@ if (bootstrap?.project_id) {
     }
 
     function renderTopUsers(users) {
+        if (!elements.topUsers) {
+            return;
+        }
         elements.topUsers.innerHTML = "";
         if (!users.length) {
-            elements.topUsers.innerHTML = `<div class="empty-panel"><strong>当前 Run 还没有 SQL Top Users 结果。</strong></div>`;
+            elements.topUsers.appendChild(renderEmptyPanel("Top users are not ready yet."));
             return;
         }
         users.forEach((user) => {
@@ -362,103 +654,139 @@ if (bootstrap?.project_id) {
             card.innerHTML = `
                 <div class="document-card__head">
                     <strong>#${escapeHtml(String(user.rank || "--"))} · ${escapeHtml(user.display_name || user.username || user.uid || user.participant_id)}</strong>
-                    <span class="status-chip tone-processing">${escapeHtml(String(user.message_count || 0))} 条</span>
+                    <span class="status-chip tone-processing">${escapeHtml(String(user.message_count || 0))} msgs</span>
                 </div>
-                <p class="helper-text">UID: ${escapeHtml(user.uid || "--")} · username: ${escapeHtml(user.username || "--")}</p>
-                <p class="helper-text">${escapeHtml(formatDateTime(user.first_seen_at))} -> ${escapeHtml(formatDateTime(user.last_seen_at))}</p>
+                <p class="helper-text">UID ${escapeHtml(user.uid || "--")} · @${escapeHtml(user.username || "--")}</p>
+                <p class="helper-text">${escapeHtml(formatDateTime(user.first_seen_at))} → ${escapeHtml(formatDateTime(user.last_seen_at))}</p>
             `;
             elements.topUsers.appendChild(card);
         });
     }
 
-    function renderTopics(topics) {
-        elements.topics.innerHTML = "";
-        if (!topics.length) {
-            elements.topics.innerHTML = `<div class="empty-panel"><strong>当前 Run 还没有最终话题结果。</strong></div>`;
+    function renderActiveUsers(users) {
+        if (!elements.activeUsers) {
             return;
         }
-        topics.forEach((topic) => {
-            const card = document.createElement("article");
-            card.className = "document-card";
-            card.innerHTML = `
-                <div class="document-card__head">
-                    <strong>${escapeHtml(topic.title || `Topic ${topic.topic_index || ""}`)}</strong>
-                    <span class="status-chip tone-ready">${escapeHtml(String(topic.message_count || 0))} 条消息</span>
-                </div>
-                <p>${escapeHtml(topic.summary || "")}</p>
-                <p class="helper-text">${escapeHtml(formatDateTime(topic.start_at))} -> ${escapeHtml(formatDateTime(topic.end_at))} · 参与者 ${escapeHtml(String(topic.participant_count || 0))}</p>
-                <p class="helper-text">消息锚点: #${escapeHtml(String(topic.start_message_id || "--"))} -> #${escapeHtml(String(topic.end_message_id || "--"))}</p>
-                ${topic.participants?.length ? `<p class="helper-text">${escapeHtml(topic.participants.slice(0, 8).map((item) => item.display_name || item.username || item.participant_id).join(" / "))}</p>` : ""}
-                ${topic.keywords?.length ? `<p class="helper-text">${escapeHtml(topic.keywords.join(" · "))}</p>` : ""}
-            `;
-            elements.topics.appendChild(card);
-        });
-    }
-
-    function renderActiveUsers(users) {
         elements.activeUsers.innerHTML = "";
         if (!users.length) {
-            elements.activeUsers.innerHTML = `<div class="empty-panel"><strong>当前 Run 还没有活跃用户结果。</strong></div>`;
+            elements.activeUsers.appendChild(renderEmptyPanel("No active user summary yet."));
             return;
         }
         users.forEach((user) => {
             const card = document.createElement("article");
-            card.className = "document-card";
+            card.className = "document-card compact-card";
+            const aliases = (user.aliases || []).filter(Boolean).join(" / ");
             card.innerHTML = `
                 <div class="document-card__head">
-                    <strong>#${escapeHtml(String(user.rank || "--"))} · ${escapeHtml(user.primary_alias || user.display_name || user.username || user.uid || user.participant_id)}</strong>
-                    <span class="status-chip tone-processing">${escapeHtml(String(user.message_count || 0))} 条</span>
+                    <strong>#${escapeHtml(String(user.rank || "--"))} · ${escapeHtml(user.display_name || user.username || user.primary_alias || user.participant_id)}</strong>
+                    <span class="status-chip tone-ready">${escapeHtml(String(user.message_count || 0))} msgs</span>
                 </div>
-                <p class="helper-text">UID: ${escapeHtml(user.uid || "--")} · username: ${escapeHtml(user.username || "--")}</p>
-                <p class="helper-text">display_name: ${escapeHtml(user.display_name || "--")}</p>
-                ${user.aliases?.length ? `<p class="helper-text">别名: ${escapeHtml(user.aliases.join(" / "))}</p>` : ""}
-                <p class="helper-text">${escapeHtml(formatDateTime(user.first_seen_at))} -> ${escapeHtml(formatDateTime(user.last_seen_at))}</p>
+                <p class="helper-text">Primary alias: ${escapeHtml(user.primary_alias || "--")}</p>
+                ${aliases ? `<p class="helper-text">${escapeHtml(aliases)}</p>` : ""}
             `;
             elements.activeUsers.appendChild(card);
         });
     }
 
-    function summarizeTraceEvent(event) {
-        if (event.message) {
-            return event.message;
+    function renderTopics(topics) {
+        if (!elements.topics) {
+            return;
         }
-        const mapping = {
-            agent_started: "Agent 开始执行",
-            agent_completed: "Agent 完成",
-            agent_retry: "Agent 重试",
-            stage_progress: "阶段进展",
-            llm_request_started: "LLM 请求开始",
-            llm_request_completed: "LLM 请求完成",
-            tool_call: "Tool 调用",
-            tool_result: "Tool 返回",
-            run_completed: "预处理完成",
-            run_failed: "预处理失败",
-        };
-        return mapping[event.kind] || event.kind || "trace";
+        elements.topics.innerHTML = "";
+        if (!topics.length) {
+            elements.topics.appendChild(renderEmptyPanel("Final weekly topics are not ready yet."));
+            return;
+        }
+        topics.forEach((topic) => {
+            const card = document.createElement("article");
+            card.className = "document-card";
+            const keywords = (topic.keywords || []).filter(Boolean).join(" · ");
+            const participants = (topic.participants || [])
+                .map((item) => item.display_name || item.username || item.participant_id)
+                .filter(Boolean)
+                .join(" / ");
+            card.innerHTML = `
+                <div class="document-card__head">
+                    <strong>${escapeHtml(topic.title || `Topic ${topic.topic_index || ""}`)}</strong>
+                    <span class="status-chip tone-ready">${escapeHtml(String(topic.message_count || 0))} msgs</span>
+                </div>
+                <p>${escapeHtml(topic.summary || "")}</p>
+                ${keywords ? `<p class="helper-text">${escapeHtml(keywords)}</p>` : ""}
+                ${participants ? `<p class="helper-text">${escapeHtml(participants)}</p>` : ""}
+            `;
+            elements.topics.appendChild(card);
+        });
     }
 
-    function summarizeLiveTitle(event, requestKey) {
-        if (event?.label) {
-            return `${event.label} · ${requestKey}`;
+    function renderEmptyPanel(text) {
+        const panel = document.createElement("div");
+        panel.className = "empty-panel";
+        panel.innerHTML = `<strong>${escapeHtml(text)}</strong>`;
+        return panel;
+    }
+
+    function summarizeTraceEvent(event) {
+        if (event.kind === "agent_started") {
+            return `${event.label || event.week_key || event.agent || "Agent"} started`;
         }
-        const latestTrace = [...state.traceEvents].reverse().find((item) => item.request_key === requestKey);
-        if (latestTrace?.label) {
-            return `${latestTrace.label} · ${requestKey}`;
+        if (event.kind === "agent_completed") {
+            return `${event.label || event.week_key || event.agent || "Agent"} completed`;
         }
-        return requestKey;
+        if (event.kind === "agent_retry") {
+            return `${event.label || event.week_key || event.agent || "Agent"} retrying`;
+        }
+        if (event.kind === "llm_request_started") {
+            return `${event.label || event.week_key || "LLM"} request started`;
+        }
+        if (event.kind === "llm_request_completed") {
+            return `${event.label || event.week_key || "LLM"} request completed`;
+        }
+        if (event.kind === "tool_call") {
+            return `Calling ${event.tool_name || "tool"}`;
+        }
+        if (event.kind === "tool_result") {
+            return `${event.tool_name || "tool"} returned`;
+        }
+        return event.message || event.kind || "trace";
     }
 
     function traceTone(kind) {
-        if (kind === "run_failed") {
-            return "failed";
+        switch (kind) {
+            case "agent_completed":
+                return "ready";
+            case "agent_retry":
+            case "error":
+                return "failed";
+            default:
+                return "processing";
         }
-        if (kind === "run_completed" || kind === "agent_completed") {
-            return "ready";
-        }
-        return "processing";
     }
 
     function isRunning(status) {
-        return status === "queued" || status === "running";
+        return String(status || "").toLowerCase() === "running";
+    }
+
+    function setLiveState(mode) {
+        if (!elements.livePill) {
+            return;
+        }
+        elements.livePill.classList.remove("is-connecting", "is-live", "is-idle", "is-polling");
+        switch (mode) {
+            case "connecting":
+                elements.livePill.classList.add("is-connecting");
+                elements.livePill.textContent = "Connecting";
+                break;
+            case "live":
+                elements.livePill.classList.add("is-live");
+                elements.livePill.textContent = "Live";
+                break;
+            case "polling":
+                elements.livePill.classList.add("is-polling");
+                elements.livePill.textContent = "Polling";
+                break;
+            default:
+                elements.livePill.classList.add("is-idle");
+                elements.livePill.textContent = "Idle";
+        }
     }
 }

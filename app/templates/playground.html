@@ -1,77 +1,99 @@
 {% extends "base.html" %}
+{% block body_class %}theme-ambient--playground{% endblock %}
+{% block page_class %}page-playground{% endblock %}
 {% block title %}{{ project.name }} · {{ ui.title }}{% endblock %}
 {% block content %}
-<section class="hero-panel">
-    <div class="hero-copy">
-        <p class="eyebrow">{{ ui.eyebrow }}</p>
-        <h1>{{ project.name }} · {{ ui.title }}</h1>
-        {% if version %}
-            <p class="hero-note">{{ ui.hero_note_ready }}</p>
-            <div class="chip-row">
-                <span class="status-chip tone-ready">{{ ui.version_label }} · v{{ version.version_number }}</span>
+<div class="page-frame">
+    <section class="page-banner">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+            <div class="page-banner__title-row">
+                <h1>{{ project.name }} · {{ ui.title }}</h1>
+                <span class="page-banner__label">Simulation Bay</span>
             </div>
-        {% else %}
-            <p class="hero-note">{{ ui.hero_note_missing }}</p>
-        {% endif %}
-    </div>
-    <div class="hero-actions">
-        <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.common.back_to_assets }}</a>
-    </div>
-</section>
-
-{% if version %}
-    <section class="immersive-chat">
-        <aside class="surface-card chat-context-card">
-            <div class="section-head slim-head">
-                <div>
-                    <p class="eyebrow">Skill</p>
-                    <h2>当前版本</h2>
+            {% if version %}
+                <p>{{ ui.hero_note_ready }}</p>
+                <div class="page-banner__chip-row">
+                    <span class="status-chip tone-ready">{{ ui.version_label }} · v{{ version.version_number }}</span>
                 </div>
+            {% else %}
+                <p>{{ ui.hero_note_missing }}</p>
+            {% endif %}
+        </div>
+        <div class="page-banner__meta">
+            <div class="page-banner__portrait"></div>
+            <div class="page-banner__actions">
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.common.back_to_assets }}</a>
             </div>
-            <div class="metric-list">
-                <div class="metric-row"><span>项目</span><strong>{{ project.name }}</strong></div>
-                <div class="metric-row"><span>版本</span><strong>v{{ version.version_number }}</strong></div>
-                <div class="metric-row"><span>状态</span><strong>已发布</strong></div>
-            </div>
-        </aside>
-
-        <section class="surface-card chat-shell">
-            <div class="chat-history" id="chat-history">
-                {% if not turns %}
-                    <article class="chat-row chat-row--assistant">
-                        <div class="system-banner">
-                            <strong>{{ ui.system_notice }}</strong>
-                            <p>{{ ui.empty_turns }}</p>
-                        </div>
-                    </article>
-                {% endif %}
-                {% for turn in turns %}
-                    <article class="chat-row chat-row--{{ 'user' if turn.role == 'user' else 'assistant' }}" id="turn-{{ turn.id }}">
-                        <div class="chat-bubble chat-bubble--{{ 'user' if turn.role == 'user' else 'assistant' }}">
-                            {{ turn.content }}
-                        </div>
-                        <div class="chat-meta">
-                            {{ ui.you if turn.role == 'user' else project.name }} ·
-                            {{ turn.created_at.strftime('%Y-%m-%d %H:%M') if turn.created_at else '--' }}
-                        </div>
-                    </article>
-                {% endfor %}
-            </div>
-            <form method="post" action="/projects/{{ project.id }}/playground/chat" class="chat-composer" id="playground-form">
-                <textarea name="message" id="playground-input" rows="3" placeholder="{{ ui.placeholder }}" required></textarea>
-                <div class="button-row button-row--end">
-                    <button type="submit" class="primary-button">{{ ui.send }}</button>
-                </div>
-            </form>
-        </section>
-    </section>
-{% else %}
-    <section class="surface-card">
-        <div class="empty-panel">
-            <strong>{{ ui.publish_first }}</strong>
         </div>
     </section>
-{% endif %}
+
+    {% if version %}
+        <section class="page-content">
+            <aside class="panel-shell chat-context-card">
+                <div class="panel-header panel-header--slim">
+                    <div>
+                        <p class="eyebrow">Skill</p>
+                        <h2>{{ ui.version_label }}</h2>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="metric-list panel-scroll" data-panel-scroll>
+                        <div class="metric-row"><span>Project</span><strong>{{ project.name }}</strong></div>
+                        <div class="metric-row"><span>Version</span><strong>v{{ version.version_number }}</strong></div>
+                        <div class="metric-row"><span>Status</span><strong>Published</strong></div>
+                    </div>
+                </div>
+            </aside>
+
+            <section class="panel-shell chat-shell">
+                <div class="panel-header panel-header--slim">
+                    <div>
+                        <p class="eyebrow">Playground</p>
+                        <h2>{{ ui.title }}</h2>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="chat-history panel-scroll" id="chat-history" data-live-feed data-panel-scroll>
+                        {% if not turns %}
+                            <article class="chat-row chat-row--assistant">
+                                <div class="system-banner">
+                                    <strong>{{ ui.system_notice }}</strong>
+                                    <p>{{ ui.empty_turns }}</p>
+                                </div>
+                            </article>
+                        {% endif %}
+                        {% for turn in turns %}
+                            <article class="chat-row chat-row--{{ 'user' if turn.role == 'user' else 'assistant' }}" id="turn-{{ turn.id }}">
+                                <div class="chat-bubble chat-bubble--{{ 'user' if turn.role == 'user' else 'assistant' }}">
+                                    {{ turn.content }}
+                                </div>
+                                <div class="chat-meta">
+                                    {{ ui.you if turn.role == 'user' else project.name }} ·
+                                    {{ turn.created_at.strftime('%Y-%m-%d %H:%M') if turn.created_at else '--' }}
+                                </div>
+                            </article>
+                        {% endfor %}
+                    </div>
+                    <form method="post" action="/projects/{{ project.id }}/playground/chat" class="chat-composer" id="playground-form">
+                        <textarea name="message" id="playground-input" rows="3" placeholder="{{ ui.placeholder }}" required></textarea>
+                        <div class="button-row button-row--end">
+                            <button type="submit" class="primary-button">{{ ui.send }}</button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+        </section>
+    {% else %}
+        <section class="panel-shell">
+            <div class="panel-body">
+                <div class="empty-panel">
+                    <strong>{{ ui.publish_first }}</strong>
+                </div>
+            </div>
+        </section>
+    {% endif %}
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
