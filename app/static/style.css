@@ -682,18 +682,55 @@ textarea {
     display: flex;
     align-items: center;
     gap: 12px;
-    white-space: nowrap;
-    overflow-x: auto;
     padding: 8px 12px;
+    overflow: hidden;
 }
 
 .compact-card > * {
     margin: 0 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+}
+
+.compact-card .document-card__head,
+.compact-card .project-card__title-row {
     flex-shrink: 0;
+    max-width: 40%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.compact-card .document-card__head strong,
+.compact-card .project-card__title-row strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .compact-card pre {
     padding: 4px 8px;
+}
+
+.scroll-y-panel {
+    max-height: 480px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.scroll-y-panel::-webkit-scrollbar {
+    width: 6px;
+}
+
+.scroll-y-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.scroll-y-panel::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 999px;
 }
 
 .progress-track {
