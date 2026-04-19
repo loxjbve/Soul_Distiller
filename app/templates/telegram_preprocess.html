@@ -112,7 +112,7 @@
                 <h2>Subagent 时间线</h2>
             </div>
         </div>
-        <div id="telegram-preprocess-trace-list" class="context-list">
+        <div id="telegram-preprocess-trace-list" class="context-list scroll-y-panel">
             <div class="empty-panel">
                 <strong>等待任务事件。</strong>
             </div>
@@ -139,7 +139,7 @@
                 <h2>Weekly Candidates</h2>
             </div>
         </div>
-        <div id="telegram-preprocess-weekly-candidates" class="document-board">
+        <div id="telegram-preprocess-weekly-candidates" class="document-board scroll-y-panel">
             {% if not weekly_candidates %}
                 <div class="empty-panel"><strong>当前 Run 还没有周候选结果。</strong></div>
             {% endif %}
@@ -153,7 +153,7 @@
                 <h2>Top Users</h2>
             </div>
         </div>
-        <div id="telegram-preprocess-top-users" class="document-board">
+        <div id="telegram-preprocess-top-users" class="document-board scroll-y-panel">
             {% if not top_users %}
                 <div class="empty-panel"><strong>当前 Run 还没有 SQL Top Users 结果。</strong></div>
             {% endif %}
