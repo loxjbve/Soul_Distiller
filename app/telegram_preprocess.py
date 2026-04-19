@@ -568,19 +568,40 @@ class TelegramPreprocessWorker:
         )
         topics: list[dict[str, Any]] = []
         total = max(len(candidates), 1)
-        for index, candidate in enumerate(candidates, start=1):
+
+        def _process_candidate(index: int, candidate: TelegramPreprocessWeeklyTopicCandidate) -> dict[str, Any]:
             self._ensure_active()
-            topics.append(self._summarize_weekly_candidate_with_retries(run_id, candidate, index))
-            self._progress(
-                progress_callback,
-                "weekly_topic_summary",
-                min(40 + int((index / total) * 34), 76),
-                {
-                    "current_week": candidate.week_key,
-                    "topic_count": len(topics),
-                    "weekly_candidate_count": len(candidates),
-                },
-            )
+            return self._summarize_weekly_candidate_with_retries(run_id, candidate, index)
+
+        with ThreadPoolExecutor(max_workers=None, thread_name_prefix="weekly-topic") as executor:
+            from concurrent.futures import as_completed
+            future_to_index = {
+                executor.submit(_process_candidate, index, candidate): index
+                for index, candidate in enumerate(candidates, start=1)
+            }
+            completed_count = 0
+            for future in as_completed(future_to_index):
+                completed_count += 1
+                try:
+                    topic = future.result()
+                    topics.append(topic)
+                except Exception as exc:
+                    self._trace(
+                        "agent_retry",
+                        stage="weekly_topic_summary",
+                        agent="weekly_topic_agent",
+                        message=f"Weekly topic summary unhandled error: {exc}",
+                    )
+                self._progress(
+                    progress_callback,
+                    "weekly_topic_summary",
+                    min(40 + int((completed_count / total) * 34), 76),
+                    {
+                        "topic_count": len(topics),
+                        "weekly_candidate_count": len(candidates),
+                    },
+                )
+
         self._trace(
             "agent_completed",
             stage="weekly_topic_summary",

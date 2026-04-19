@@ -1021,3 +1021,128 @@ button:hover, .primary-button:hover {
 .workspace-panel:hover::before, .workspace-panel:hover::after {
     opacity: 1; width: 40px; height: 40px; box-shadow: 0 0 15px var(--accent-soft);
 }
+
+/* =========================================
+   Agentic Trace UI (Multi-dimensional Analysis)
+   ========================================= */
+.msg-assistant {
+    width: 100%;
+    font-size: 0.95rem;
+    padding: 0.5rem 0;
+    line-height: 1.6;
+}
+
+.msg-assistant p { margin-bottom: 1rem; }
+.msg-assistant p:last-child { margin-bottom: 0; }
+
+.code-block-wrapper {
+    position: relative;
+    margin: 1rem 0;
+    border-radius: var(--radius-sm, 6px);
+    overflow: hidden;
+    border: 1px solid var(--line);
+    background: #000;
+}
+
+.code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.4rem 1rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-bottom: 1px solid var(--line);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.code-block-wrapper pre {
+    margin: 0;
+    padding: 1rem;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: #E2E8F0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-call {
+    width: 100%;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    overflow: hidden;
+    transition: background 0.2s ease;
+    margin-bottom: 0.5rem;
+}
+.tool-call:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tool-call summary.tool-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-soft);
+    list-style: none;
+}
+.tool-call summary.tool-header::-webkit-details-marker {
+    display: none;
+}
+
+.tool-icon {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+
+.tool-body {
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(0, 0, 0, 0.3);
+    padding: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+.tool-body pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.context-indicator-wrapper {
+    display: flex;
+    justify-content: center;
+    margin: 1rem 0;
+}
+
+.context-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    color: var(--text-soft);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--text-soft);
+    border-top-color: var(--text-main);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
