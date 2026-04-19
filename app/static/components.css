@@ -131,15 +131,29 @@
         color: #05070b;
         background:
             linear-gradient(135deg, var(--accent-blue), #dbe6ff 45%, #f6b8ff 100%);
-        box-shadow: 0 12px 28px rgba(97, 168, 255, 0.28);
+        box-shadow: 0 12px 28px rgba(97, 168, 255, 0.35);
+        transition: all var(--motion-fast) var(--easing-standard);
+    }
+    
+    .primary-button:hover {
+        box-shadow: 0 15px 35px rgba(97, 168, 255, 0.5), 0 0 20px rgba(246, 184, 255, 0.4);
+        transform: translateY(-2px);
     }
 
     .ghost-button,
     .secondary-button,
     .filter-chip {
         color: var(--text-primary);
-        border-color: var(--line-subtle);
-        background: rgba(255, 255, 255, 0.03);
+        border-color: var(--line-strong);
+        background: rgba(255, 255, 255, 0.05);
+        transition: all var(--motion-fast) var(--easing-standard);
+    }
+
+    .ghost-button:hover,
+    .filter-chip:hover {
+        background: rgba(255, 255, 255, 0.1);
+        border-color: var(--line-accent);
+        box-shadow: 0 0 12px rgba(97, 168, 255, 0.15);
     }
 
     .secondary-button {
