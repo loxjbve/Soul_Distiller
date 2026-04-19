@@ -38,6 +38,11 @@
                 <nav class="nav-links" aria-label="Primary">
                     <a href="/" class="{% if path == '/' or path.startswith('/projects') %}is-active{% endif %}">{{ ui.common.nav_projects }}</a>
                     <a href="/settings" class="{% if path.startswith('/settings') %}is-active{% endif %}">{{ ui.common.nav_settings }}</a>
+                    <div class="lang-switcher" style="margin-left: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                        <a href="/set-locale?locale=en-US&next={{ request.url.path }}" class="{% if locale == 'en-US' %}is-active{% endif %}" style="font-size: 0.875rem;">EN</a>
+                        <span style="opacity: 0.5;">|</span>
+                        <a href="/set-locale?locale=zh-CN&next={{ request.url.path }}" class="{% if locale == 'zh-CN' %}is-active{% endif %}" style="font-size: 0.875rem;">中文</a>
+                    </div>
                 </nav>
             </div>
         </header>

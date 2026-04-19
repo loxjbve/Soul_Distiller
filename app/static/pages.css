@@ -55,6 +55,11 @@
         gap: var(--shell-gap);
     }
 
+    .persona-studio-main {
+        flex: 1 1 auto;
+        overflow: hidden;
+    }
+
     .persona-studio-main,
     .persona-studio-rail,
     .persona-stage-stack {
@@ -65,10 +70,12 @@
     }
 
     .persona-stage-stack {
-        overflow: hidden;
+        flex: 1 1 auto;
+        overflow-y: auto;
     }
 
     .persona-stage-card {
+        flex-shrink: 0;
         min-height: 0;
         padding: 16px;
         border-radius: var(--radius-sm);
@@ -77,7 +84,6 @@
         display: flex;
         flex-direction: column;
         gap: var(--space-3);
-        overflow: hidden;
     }
 
     .persona-stage-card--target {

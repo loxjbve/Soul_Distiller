@@ -45,6 +45,18 @@ from app.web.ui_strings import DEFAULT_LOCALE, page_strings
 
 
 router = APIRouter()
+
+from fastapi.responses import RedirectResponse
+
+def get_locale(request: Request) -> str:
+    return request.cookies.get("locale", DEFAULT_LOCALE)
+
+@router.get("/set-locale")
+def set_locale(locale: str, next: str = "/"):
+    response = RedirectResponse(url=next)
+    response.set_cookie(key="locale", value=locale, max_age=31536000)
+    return response
+
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 PROVIDER_OPTIONS = (
     {"value": "openai", "label": "OpenAI 官方"},
@@ -156,10 +168,11 @@ def get_session(request: Request):
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
-def _page_context(page_name: str, **kwargs: Any) -> dict[str, Any]:
+def _page_context(request: Request, page_name: str, **kwargs: Any) -> dict[str, Any]:
+    locale = get_locale(request)
     return {
-        "locale": DEFAULT_LOCALE,
-        "ui": page_strings(page_name),
+        "locale": locale,
+        "ui": page_strings(page_name, locale),
         **kwargs,
     }
 
@@ -186,7 +199,7 @@ def index(request: Request, session: SessionDep):
         request=request,
         name="index.html",
         context=_page_context(
-            "index",
+            request, "index",
             projects=repository.list_projects(session),
             chat_configured=repository.get_service_config(session, "chat_service") is not None,
             embedding_configured=repository.get_service_config(session, "embedding_service") is not None,
@@ -263,11 +276,11 @@ def create_profile_form(
 
 @router.get("/projects/{project_id}", response_class=HTMLResponse)
 def project_detail(request: Request, project_id: str, session: SessionDep):
-    context = _project_context(session, project_id)
+    context = _project_context(request, session, project_id)
     return templates.TemplateResponse(
         request=request,
         name="project_detail.html",
-        context=_page_context("project", **context),
+        context=_page_context(request, "project", **context),
     )
 
 
@@ -370,7 +383,7 @@ def analysis_page(
         request=request,
         name="analysis.html",
         context=_page_context(
-            "analysis",
+            request, "analysis",
             project=project,
             run=run,
             serialized_run=json.dumps(serialized_run, ensure_ascii=False) if serialized_run else "null",
@@ -456,7 +469,7 @@ def assets_page(
         request=request,
         name="assets.html",
         context=_page_context(
-            "assets",
+            request, "assets",
             project=project,
             asset_kind=asset_kind,
             asset_label=_asset_label(asset_kind),
@@ -680,7 +693,7 @@ def playground_page(request: Request, project_id: str, session: SessionDep):
         request=request,
         name="playground.html",
         context=_page_context(
-            "playground",
+            request, "playground",
             project=project,
             version=version,
             chat_session=chat_session,
@@ -709,13 +722,13 @@ def preprocess_page(
     run_id: str | None = Query(default=None),
     mention: str | None = Query(default=None),
 ):
-    context = _project_context(session, project_id)
+    context = _project_context(request, session, project_id)
     if context["project"].mode == "telegram":
         telegram_context = _telegram_preprocess_context(session, project_id, run_id=run_id)
         return templates.TemplateResponse(
             request=request,
             name="telegram_preprocess.html",
-            context=_page_context("preprocess", **telegram_context),
+            context=_page_context(request, "preprocess", **telegram_context),
         )
     sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     if not sessions:
@@ -739,14 +752,14 @@ def preprocess_page(
         "selected_session": _serialize_preprocess_session_detail(selected_session),
         "documents": [_serialize_document(item) for item in context["documents"]],
         "initial_mention": mention or "",
-        "locale": DEFAULT_LOCALE,
-        "ui_strings": page_strings("preprocess"),
+        "locale": get_locale(request),
+        "ui_strings": page_strings("preprocess", get_locale(request)),
     }
     return templates.TemplateResponse(
         request=request,
         name="preprocess.html",
         context=_page_context(
-            "preprocess",
+            request, "preprocess",
             project=context["project"],
             bootstrap=json.dumps(bootstrap, ensure_ascii=False),
         ),
@@ -780,7 +793,7 @@ def settings_page(request: Request, session: SessionDep):
         request=request,
         name="settings.html",
         context=_page_context(
-            "settings",
+            request, "settings",
             chat_setting=_settings_payload(chat_setting.value_json if chat_setting else {}, default_provider="openai"),
             embedding_setting=_settings_payload(
                 embedding_setting.value_json if embedding_setting else {},
@@ -1722,7 +1735,7 @@ def _enrich_telegram_binding(
     return merged
 
 
-def _project_context(session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
+def _project_context(request: Request, session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
     source_project_id = repository.get_target_project_id(session, project_id)
     telegram_data_project_id = source_project_id if project.mode == "telegram" else project.id
@@ -1831,8 +1844,8 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
                     "processing_count": doc_counts.get("processing", 0),
                     "pending_count": doc_counts.get("pending", 0),
                 },
-                "locale": DEFAULT_LOCALE,
-                "ui_strings": page_strings("project"),
+                "locale": get_locale(request),
+                "ui_strings": page_strings("project", get_locale(request)),
             },
             ensure_ascii=False,
         ),
