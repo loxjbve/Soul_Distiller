@@ -3,15 +3,15 @@
 {% block content %}
 <section class="project-hero">
     <div class="project-hero-copy">
-        <p class="eyebrow">Skill 预览</p>
-        <h1>{{ project.name }} 的 Skill 草稿</h1>
-        <p class="hero-note">从最新分析生成草稿，编辑后再发布为正式版本。</p>
+        <p class="eyebrow">{{ ui.preview }}</p>
+        <h1>{{ project.name }} {{ ui.draft_title }}</h1>
+        <p class="hero-note">{{ ui.hero_note }}</p>
     </div>
     <div class="project-hero-actions">
         <form method="post" action="/projects/{{ project.id }}/skills/generate">
-            <button type="submit">重新生成草稿</button>
+            <button type="submit">{{ ui.regenerate }}</button>
         </form>
-        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">返回分析</a>
+        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.back_to_analysis }}</a>
     </div>
 </section>
 
@@ -19,8 +19,8 @@
     <section class="workspace-panel">
         <div class="section-head">
             <div>
-                <p class="eyebrow">草稿</p>
-                <h2>编辑草稿</h2>
+                <p class="eyebrow">{{ ui.draft_eyebrow }}</p>
+                <h2>{{ ui.edit_draft }}</h2>
             </div>
         </div>
         <form method="post" action="/projects/{{ project.id }}/skills/{{ draft.id }}/save" class="stack roomy">
@@ -37,26 +37,26 @@
                 <textarea name="system_prompt" rows="14">{{ draft.system_prompt }}</textarea>
             </label>
             <label>
-                <span>审核备注</span>
+                <span>{{ ui.review_notes }}</span>
                 <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
             </label>
             <div class="inline-actions">
-                <button type="submit">保存草稿</button>
-                <button formaction="/projects/{{ project.id }}/skills/{{ draft.id }}/publish" type="submit">发布版本</button>
+                <button type="submit">{{ ui.save_draft }}</button>
+                <button formaction="/projects/{{ project.id }}/skills/{{ draft.id }}/publish" type="submit">{{ ui.publish_version }}</button>
             </div>
         </form>
     </section>
 {% else %}
     <section class="workspace-panel">
-        <p class="muted">当前没有草稿。先等分析完成，再生成 Skill。</p>
+        <p class="muted">{{ ui.no_draft }}</p>
     </section>
 {% endif %}
 
 <section class="workspace-panel">
     <div class="section-head">
         <div>
-            <p class="eyebrow">版本记录</p>
-            <h2>已发布版本</h2>
+            <p class="eyebrow">{{ ui.version_history }}</p>
+            <h2>{{ ui.published_versions }}</h2>
         </div>
     </div>
     {% if versions %}
@@ -67,12 +67,12 @@
                         <strong>v{{ version.version_number }}</strong>
                         <p>{{ version.published_at }}</p>
                     </div>
-                    <span>已发布</span>
+                    <span>{{ ui.published }}</span>
                 </div>
             {% endfor %}
         </div>
     {% else %}
-        <p class="muted">暂无已发布版本。</p>
+        <p class="muted">{{ ui.no_versions }}</p>
     {% endif %}
 </section>
 {% endblock %}

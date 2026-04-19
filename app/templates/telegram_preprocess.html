@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block body_class %}theme-ambient--telegram{% endblock %}
 {% block page_class %}page-telegram-preprocess{% endblock %}
-{% block title %}{{ project.name }} | Telegram 预处理{% endblock %}
+{% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 
 {% block content %}
 <div class="page-frame">
@@ -9,15 +9,15 @@
         <div class="page-banner__main">
             <span class="page-banner__eyebrow">Telegram</span>
             <div class="page-banner__title-row">
-                <h1>{{ project.name }} · Telegram 预处理指挥台</h1>
+                <h1>{{ project.name }} · {{ ui.hero_title }}</h1>
                 <span class="page-banner__label">Operation Bridge</span>
             </div>
-            <p>导入结构化 JSON 后，这里会实时显示 SQL 物化、周总结并发、话题沉淀与中间产物状态。</p>
+            <p>{{ ui.hero_note }}</p>
             <div class="page-banner__actions">
-                <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
                 <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="inline-form telegram-preprocess-start-form">
                     <label class="inline-number-field">
-                        <span>周总结并发</span>
+                        <span>{{ ui.concurrency_label }}</span>
                         <input
                             type="number"
                             name="weekly_summary_concurrency"
@@ -26,7 +26,7 @@
                         >
                     </label>
                     <button type="submit" class="primary-button" {% if not can_start %}disabled{% endif %}>
-                        {{ "继续预处理" if selected_run_data and selected_run_data.resume_available else "开始预处理" }}
+                        {{ ui.btn_resume if selected_run_data and selected_run_data.resume_available else ui.btn_start }}
                     </button>
                 </form>
             </div>
@@ -47,10 +47,10 @@
             <div class="panel-header">
                 <div>
                     <p class="eyebrow">Run Pulse</p>
-                    <h2 id="telegram-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else "等待开始" }}</h2>
-                    <p class="section-note" id="telegram-preprocess-live-note">实时监听 SQL 物化、周总结和最终话题写入的进度。</p>
+                    <h2 id="telegram-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</h2>
+                    <p class="section-note" id="telegram-preprocess-live-note">{{ ui.live_note }}</p>
                 </div>
-                <span class="analysis-live-pill" id="telegram-preprocess-live-pill">等待任务</span>
+                <span class="analysis-live-pill" id="telegram-preprocess-live-pill">{{ ui.status_waiting }}</span>
             </div>
             <div class="panel-body">
                 <div class="analysis-signal-chip-row">
@@ -62,7 +62,7 @@
                 </div>
                 <div class="progress-shell">
                     <div class="progress-labels">
-                        <strong>总体进度</strong>
+                        <strong>{{ ui.overall_progress }}</strong>
                         <span id="telegram-preprocess-progress-label-duplicate">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
                     </div>
                     <div class="progress-track">
@@ -71,7 +71,7 @@
                 </div>
                 <div class="progress-shell">
                     <div class="progress-labels">
-                        <strong>周总结覆盖率</strong>
+                        <strong>{{ ui.coverage_progress }}</strong>
                         <span id="telegram-preprocess-current-progress-label">0%</span>
                     </div>
                     <div class="progress-track">
@@ -85,22 +85,22 @@
             <div class="panel-header panel-header--slim">
                 <div>
                     <p class="eyebrow">Current</p>
-                    <h2>当前 Run</h2>
+                    <h2>{{ ui.current_run }}</h2>
                 </div>
                 <span class="status-chip" id="telegram-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
             </div>
             <div class="panel-body panel-body--tight">
                 <div class="metric-list panel-scroll" data-panel-scroll>
-                    <div class="metric-row"><span>阶段</span><strong id="telegram-preprocess-stage">{{ selected_run_data.current_stage if selected_run_data else "等待开始" }}</strong></div>
-                    <div class="metric-row"><span>总进度</span><strong id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</strong></div>
-                    <div class="metric-row"><span>周候选数</span><strong id="telegram-preprocess-weekly-candidate-count">{{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.stage }}</span><strong id="telegram-preprocess-stage">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.total_progress }}</span><strong id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</strong></div>
+                    <div class="metric-row"><span>{{ ui.weekly_candidates }}</span><strong id="telegram-preprocess-weekly-candidate-count">{{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</strong></div>
                     <div class="metric-row"><span>Top Users</span><strong id="telegram-preprocess-top-user-count">{{ selected_run_data.top_user_count if selected_run_data else 0 }}</strong></div>
                     <div class="metric-row"><span>Active Users</span><strong id="telegram-preprocess-active-user-count">{{ selected_run_data.active_user_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>最终话题数</span><strong id="telegram-preprocess-topic-count">{{ selected_run_data.topic_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>请求并发</span><strong id="telegram-preprocess-weekly-concurrency">{{ selected_run_data.requested_weekly_concurrency if selected_run_data else 1 }}</strong></div>
-                    <div class="metric-row"><span>活跃 Worker</span><strong id="telegram-preprocess-active-agents">{{ selected_run_data.active_agents if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>已完成周数</span><strong id="telegram-preprocess-completed-weeks">{{ selected_run_data.completed_week_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>剩余周数</span><strong id="telegram-preprocess-remaining-weeks">{{ selected_run_data.remaining_week_count if selected_run_data else 0 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.final_topics }}</span><strong id="telegram-preprocess-topic-count">{{ selected_run_data.topic_count if selected_run_data else 0 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.request_concurrency }}</span><strong id="telegram-preprocess-weekly-concurrency">{{ selected_run_data.requested_weekly_concurrency if selected_run_data else 1 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.active_workers }}</span><strong id="telegram-preprocess-active-agents">{{ selected_run_data.active_agents if selected_run_data else 0 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.completed_weeks }}</span><strong id="telegram-preprocess-completed-weeks">{{ selected_run_data.completed_week_count if selected_run_data else 0 }}</strong></div>
+                    <div class="metric-row"><span>{{ ui.remaining_weeks }}</span><strong id="telegram-preprocess-remaining-weeks">{{ selected_run_data.remaining_week_count if selected_run_data else 0 }}</strong></div>
                     <div class="metric-row"><span>Total Tokens</span><strong id="telegram-preprocess-total-tokens">{{ selected_run_data.total_tokens if selected_run_data else 0 }}</strong></div>
                     <div class="metric-row"><span>Cache Read</span><strong id="telegram-preprocess-cache-read">{{ selected_run_data.cache_read_tokens if selected_run_data else 0 }}</strong></div>
                 </div>
@@ -108,7 +108,7 @@
                     {% if selected_run_data %}
                         {{ selected_run_data.created_at or selected_run_data.started_at or selected_run_data.id }}
                     {% else %}
-                        暂无预处理 run
+                        {{ ui.no_run }}
                     {% endif %}
                 </p>
                 <p class="section-note" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
@@ -121,13 +121,13 @@
             <div class="panel-header panel-header--slim">
                 <div>
                     <p class="eyebrow">Workers</p>
-                    <h2>并发轨道</h2>
+                    <h2>{{ ui.worker_lanes }}</h2>
                 </div>
             </div>
             <div class="panel-body panel-body--tight">
                 <div id="telegram-preprocess-agent-lanes" class="agent-lane-strip panel-scroll" data-lane-strip data-panel-scroll>
                     <div class="empty-panel">
-                        <strong>尚无活跃 worker。</strong>
+                        <strong>{{ ui.no_workers }}</strong>
                     </div>
                 </div>
             </div>
@@ -139,13 +139,13 @@
                     <div class="panel-header panel-header--slim">
                         <div>
                             <p class="eyebrow">Trace</p>
-                            <h2>Subagent 时间线</h2>
+                            <h2>{{ ui.trace_timeline }}</h2>
                         </div>
                     </div>
                     <div class="panel-body panel-body--tight">
                         <div id="telegram-preprocess-trace-list" class="context-list panel-scroll" data-panel-scroll>
                             <div class="empty-panel">
-                                <strong>等待任务事件。</strong>
+                                <strong>{{ ui.waiting_events }}</strong>
                             </div>
                         </div>
                     </div>
@@ -155,11 +155,11 @@
                     <div class="panel-header panel-header--slim">
                         <div>
                             <p class="eyebrow">Live Output</p>
-                            <h2>当前 LLM 输出</h2>
+                            <h2>{{ ui.live_output }}</h2>
                         </div>
                     </div>
                     <div class="panel-body panel-body--tight">
-                        <p class="helper-text" id="telegram-preprocess-live-title">等待新的 LLM 请求开始。</p>
+                        <p class="helper-text" id="telegram-preprocess-live-title">{{ ui.waiting_llm }}</p>
                         <pre class="trace-box live-trace-box panel-scroll" id="telegram-preprocess-live-output" data-panel-scroll></pre>
                     </div>
                 </article>
@@ -178,7 +178,7 @@
                     <div class="panel-body panel-body--tight">
                         <div id="telegram-preprocess-weekly-candidates" class="document-board panel-scroll" data-documents-board data-panel-scroll>
                             {% if not weekly_candidates %}
-                                <div class="empty-panel"><strong>当前 Run 还没有周候选结果。</strong></div>
+                                <div class="empty-panel"><strong>{{ ui.empty_weekly }}</strong></div>
                             {% endif %}
                         </div>
                     </div>
@@ -194,7 +194,7 @@
                     <div class="panel-body panel-body--tight">
                         <div id="telegram-preprocess-top-users" class="document-board panel-scroll" data-documents-board data-panel-scroll>
                             {% if not top_users %}
-                                <div class="empty-panel"><strong>当前 Run 还没有 Top Users 结果。</strong></div>
+                                <div class="empty-panel"><strong>{{ ui.empty_top }}</strong></div>
                             {% endif %}
                         </div>
                     </div>
@@ -209,7 +209,7 @@
                     </div>
                     <div class="panel-body panel-body--tight">
                         <div id="telegram-preprocess-active-users" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                            <div class="empty-panel"><strong>当前 Run 还没有活跃用户结果。</strong></div>
+                            <div class="empty-panel"><strong>{{ ui.empty_active }}</strong></div>
                         </div>
                     </div>
                 </article>
@@ -218,13 +218,13 @@
                     <div class="panel-header panel-header--slim">
                         <div>
                             <p class="eyebrow">Final Result</p>
-                            <h2>周话题表</h2>
+                            <h2>{{ ui.topic_table }}</h2>
                         </div>
                     </div>
                     <div class="panel-body panel-body--tight">
                         <div id="telegram-preprocess-topics" class="document-board panel-scroll" data-documents-board data-panel-scroll>
                             {% if not topics %}
-                                <div class="empty-panel"><strong>当前 Run 还没有最终话题结果。</strong></div>
+                                <div class="empty-panel"><strong>{{ ui.empty_topics }}</strong></div>
                             {% endif %}
                         </div>
                     </div>
@@ -234,7 +234,7 @@
                     <div class="panel-header panel-header--slim">
                         <div>
                             <p class="eyebrow">History</p>
-                            <h2>历史 Run</h2>
+                            <h2>{{ ui.history_run }}</h2>
                         </div>
                     </div>
                     <div class="panel-body panel-body--tight">
@@ -250,7 +250,7 @@
                             </div>
                         {% else %}
                             <div class="empty-panel">
-                                <strong>暂无历史预处理记录。</strong>
+                                <strong>{{ ui.empty_history }}</strong>
                             </div>
                         {% endif %}
                     </div>

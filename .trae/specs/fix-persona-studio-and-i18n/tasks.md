@@ -1,0 +1,11 @@
+# Tasks
+- [x] Task 1: 修复 Persona Studio 样式重叠问题
+  - [x] 检查并修改 `app/static/pages.css` 中 `.persona-stage-stack`、`.persona-stage-card`、`.persona-studio-main` 的 flex 和 overflow 属性。
+  - [x] 调整样式以允许内容正常撑开卡片，或者提供局部滚动（如 `overflow-y: auto`），确保步骤面板不会压在其他内容之上。
+- [x] Task 2: 建立后端多语言支持 (i18n)
+  - [x] 扩展 `app/web/ui_strings.py`，支持 `en-US` 和 `zh-CN` 两种语言配置字典，补充当前缺失的翻译词条。
+  - [x] 修改 `app/web/routes.py` 的相关路由注入逻辑，根据请求的 Cookie (`locale`) 动态返回对应语言的 `ui` 对象到 Jinja 模板中。
+  - [x] 增加一个用于切换语言的路由（例如 `/set-locale`），并设置相应的 Cookie。
+- [x] Task 3: 更新前端模板与添加语言切换控件
+  - [x] 遍历 `app/templates/` 下的核心 HTML 文件，将硬编码的中文或英文统一替换为 `{{ ui.xxx }}`。
+  - [x] 在 `app/templates/base.html` 的导航栏右侧添加语言切换按钮，点击后触发 `/set-locale` API 并刷新页面。
