@@ -454,10 +454,17 @@ if (bootstrap.project?.id) {
                 const username = button?.dataset.username || "";
                 const uid = button?.dataset.uid || "";
                 const meta = [username ? `@${username}` : "", uid].filter(Boolean).join(" · ");
+                const chipLabel = button
+                    ? (state.ui.telegram_picker_selected_chip || "Selected target")
+                    : (state.ui.telegram_picker_manual_chip || "Manual search");
+                const title = label || state.ui.telegram_picker_select_first_title || "Select a Telegram user first";
+                const fallbackNote = button
+                    ? (state.ui.telegram_picker_selected_note || "")
+                    : (state.ui.telegram_picker_manual_note || "");
                 summary.innerHTML = `
-                    <span class="status-chip tone-${button ? "ready" : "processing"}">${escapeHtml(button ? "已选择目标" : "手动搜索")}</span>
-                    <strong>${escapeHtml(label || "先选择一个 Telegram 用户")}</strong>
-                    <p>${escapeHtml(meta || (button ? "将用这个目标直接创建并绑定子画像。" : "将使用当前搜索词去解析目标用户。"))}</p>
+                    <span class="status-chip tone-${button ? "ready" : "processing"}">${escapeHtml(chipLabel)}</span>
+                    <strong>${escapeHtml(title)}</strong>
+                    <p>${escapeHtml(meta || fallbackNote)}</p>
                 `;
             };
 
@@ -514,10 +521,13 @@ if (bootstrap.project?.id) {
                     }
                     setSummary(value, participantInput.value ? selectedCard : null);
                 } else if (!participantInput.value && summary) {
+                    const pendingChip = state.ui.telegram_picker_pending_chip || "Pending";
+                    const pendingTitle = state.ui.telegram_picker_select_first_title || "Select a Telegram user first";
+                    const pendingNote = state.ui.telegram_picker_pending_note || "";
                     summary.innerHTML = `
-                        <span class="status-chip tone-processing">待选择</span>
-                        <strong>先选择一个 Telegram 用户</strong>
-                        <p>创建后会直接进入绑定好的分析流程，不再重复选择 Top User。</p>
+                        <span class="status-chip tone-processing">${escapeHtml(pendingChip)}</span>
+                        <strong>${escapeHtml(pendingTitle)}</strong>
+                        <p>${escapeHtml(pendingNote)}</p>
                     `;
                 }
                 syncSubmit();
@@ -570,14 +580,14 @@ if (bootstrap.project?.id) {
 
     function stageToLabel(stage) {
         const mapping = {
-            queued: "排队中",
-            parsing: "解析中",
-            chunking: "切块中",
-            embedding: "生成向量",
-            storing: "写入索引",
-            completed: "已完成",
-            failed: "失败",
-            retrying: "重试中",
+            queued: state.ui.ingest_stage_queued || "Queued",
+            parsing: state.ui.ingest_stage_parsing || "Parsing",
+            chunking: state.ui.ingest_stage_chunking || "Chunking",
+            embedding: state.ui.ingest_stage_embedding || "Embedding",
+            storing: state.ui.ingest_stage_storing || "Storing",
+            completed: state.ui.ingest_stage_completed || "Completed",
+            failed: state.ui.ingest_stage_failed || "Failed",
+            retrying: state.ui.common?.retry || "Retrying",
         };
         return mapping[stage] || stage || "--";
     }

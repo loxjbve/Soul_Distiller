@@ -9,12 +9,12 @@
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
                 <h1>{{ project.name }}</h1>
-                <span class="page-banner__label">Task Bridge</span>
+                <span class="page-banner__label">{{ ui.task_bridge_label }}</span>
             </div>
             <p>{{ project.description or ui.no_project_description }}</p>
             <div class="page-banner__chip-row">
-                <span class="status-chip tone-processing">{{ stats.document_count }} docs</span>
-                <span class="status-chip tone-ready">{{ stats.ready_count }} ready</span>
+                <span class="status-chip tone-processing">{{ stats.document_count }} {{ ui.docs_suffix }}</span>
+                <span class="status-chip tone-ready">{{ stats.ready_count }} {{ ui.ready_suffix }}</span>
                 <span class="status-chip {{ 'tone-warning' if latest_run else 'tone-queued' }}">
                     {{ ui.latest_analysis }} · {{ latest_run.status if latest_run else ui.not_analyzed }}
                 </span>
@@ -24,12 +24,12 @@
             </div>
             <div class="page-banner__actions">
                 {% if parent_project %}
-                    <a class="ghost-button" href="/projects/{{ parent_project.id }}">Back to parent</a>
+                    <a class="ghost-button" href="/projects/{{ parent_project.id }}">{{ ui.back_to_parent }}</a>
                 {% endif %}
                 {% if latest_run and not telegram_is_parent_workspace %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.common.back_to_analysis }}</a>
                 {% endif %}
-                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">Assets</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.open_assets }}</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
                 <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
                 <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
@@ -59,7 +59,7 @@
         <article class="panel-shell project-panel--upload">
             <div class="panel-header">
                 <div>
-                    <p class="eyebrow">Upload</p>
+                    <p class="eyebrow">{{ ui.section_upload_eyebrow }}</p>
                     <h2>{{ ui.upload_title }}</h2>
                 </div>
                 <span class="status-chip tone-processing">
@@ -79,7 +79,7 @@
                     <div class="empty-panel" data-empty-state>
                         <strong>{{ ui.child_project_hint }}</strong>
                         {% if telegram_is_child_persona %}
-                            <p>This Telegram child persona reuses the parent project's dataset. Return to the parent workspace for uploads and preprocess actions.</p>
+                            <p>{{ ui.child_project_dataset_note }}</p>
                         {% endif %}
                     </div>
                 {% else %}
@@ -109,10 +109,10 @@
             {% if telegram_is_parent_workspace %}
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Persona Studio</p>
-                        <h2>Telegram Persona Studio</h2>
+                        <p class="eyebrow">{{ ui.telegram_persona_eyebrow }}</p>
+                        <h2>{{ ui.telegram_persona_title }}</h2>
                     </div>
-                    <span class="status-chip tone-processing">Create → Bind → Analyze</span>
+                    <span class="status-chip tone-processing">{{ ui.telegram_persona_stage_chip }}</span>
                 </div>
                 <div class="panel-body">
                     {% if latest_successful_preprocess_run %}
@@ -133,8 +133,8 @@
                                         <div class="persona-step__head">
                                             <span class="persona-step__index">01</span>
                                             <div>
-                                                <strong>Select target user</strong>
-                                                <p>Use the latest preprocess top users first. Manual search is only a fallback for users outside the top list.</p>
+                                                <strong>{{ ui.telegram_persona_step01_title }}</strong>
+                                                <p>{{ ui.telegram_persona_step01_note }}</p>
                                             </div>
                                         </div>
                                         <div class="panel-scroll" data-panel-scroll>
@@ -150,10 +150,10 @@
                                                         data-username="{{ user.username or '' }}"
                                                         data-uid="{{ user.uid or '' }}"
                                                     >
-                                                        <span class="persona-top-user-card__rank">Top {{ user.rank }}</span>
+                                                        <span class="persona-top-user-card__rank">{{ ui.telegram_persona_top_prefix }} {{ user.rank }}</span>
                                                         <strong>{{ user_label }}</strong>
                                                         <small>
-                                                            {{ user.message_count }} messages
+                                                            {{ user.message_count }} {{ ui.telegram_persona_messages_suffix }}
                                                             {% if user.username %} · @{{ user.username }}{% endif %}
                                                             {% if user.uid %} · {{ user.uid }}{% endif %}
                                                         </small>
@@ -162,12 +162,12 @@
                                             </div>
                                         </div>
                                         <label>
-                                            <span>Manual target fallback</span>
+                                            <span>{{ ui.telegram_persona_manual_fallback_label }}</span>
                                             <input
                                                 type="text"
                                                 name="target_user_query"
                                                 value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
-                                                placeholder="Display name / username / UID"
+                                                placeholder="{{ ui.telegram_persona_target_query_placeholder }}"
                                                 data-target-query-input
                                             >
                                         </label>
@@ -177,17 +177,17 @@
                                         <div class="persona-step__head">
                                             <span class="persona-step__index">02</span>
                                             <div>
-                                                <strong>Fill persona context</strong>
-                                                <p>The persona name auto-follows the selected alias, while analysis context inherits the parent project description.</p>
+                                                <strong>{{ ui.telegram_persona_step02_title }}</strong>
+                                                <p>{{ ui.telegram_persona_step02_note }}</p>
                                             </div>
                                         </div>
                                         <label>
-                                            <span>Persona name</span>
+                                            <span>{{ ui.telegram_persona_persona_name_label }}</span>
                                             <input
                                                 type="text"
                                                 name="name"
                                                 value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
-                                                placeholder="Bob Persona"
+                                                placeholder="{{ ui.telegram_persona_persona_name_placeholder }}"
                                                 data-persona-name-input
                                                 required
                                             >
@@ -202,18 +202,18 @@
                                         <div class="persona-step__head">
                                             <span class="persona-step__index">03</span>
                                             <div>
-                                                <strong>Create and start analysis</strong>
-                                                <p>Submitting creates a bound Telegram child persona, immediately starts the first run, and jumps to the analysis center.</p>
+                                                <strong>{{ ui.telegram_persona_step03_title }}</strong>
+                                                <p>{{ ui.telegram_persona_step03_note }}</p>
                                             </div>
                                         </div>
-                                        <p class="section-note">Telegram parent workspaces now have a single recommended path. No more empty child persona followed by a second target selection.</p>
+                                        <p class="section-note">{{ ui.telegram_persona_step03_policy_note }}</p>
                                         <label>
                                             <span>{{ ui.analysis_concurrency }}</span>
                                             <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
                                         </label>
                                         <div class="button-row button-row--end">
                                             <button type="submit" class="primary-button" data-target-submit {% if not can_analyze %}disabled{% endif %}>
-                                                Create persona and analyze
+                                                {{ ui.telegram_persona_submit_create_and_analyze }}
                                             </button>
                                         </div>
                                     </section>
@@ -222,31 +222,31 @@
 
                             <aside class="persona-studio-rail">
                                 <div class="persona-rail-card telegram-binding-card telegram-binding-card--summary" data-target-summary>
-                                    <span class="status-chip tone-processing">Waiting</span>
-                                    <strong>Select a Telegram user first</strong>
-                                    <p>The selected user becomes the bound target for the child persona and is reused on reruns.</p>
+                                    <span class="status-chip tone-processing">{{ ui.telegram_persona_waiting_chip }}</span>
+                                    <strong>{{ ui.telegram_persona_select_user_first }}</strong>
+                                    <p>{{ ui.telegram_persona_target_summary_note }}</p>
                                 </div>
                                 <div class="persona-rail-card">
-                                    <p class="eyebrow">Run Policy</p>
+                                    <p class="eyebrow">{{ ui.telegram_persona_run_policy_title }}</p>
                                     <div class="persona-rail-status">
-                                        <div class="metric-row"><span>Top users</span><strong>{{ telegram_top_users | length }}</strong></div>
-                                        <div class="metric-row"><span>Auto analyze</span><strong>Enabled</strong></div>
-                                        <div class="metric-row"><span>Binding source</span><strong>Latest preprocess</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_top_users }}</span><strong>{{ telegram_top_users | length }}</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_auto_analyze }}</span><strong>{{ ui.telegram_persona_policy_enabled }}</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_binding_source }}</span><strong>{{ ui.telegram_persona_policy_latest_preprocess }}</strong></div>
                                     </div>
                                 </div>
                             </aside>
                         </form>
                     {% else %}
                         <div class="empty-panel" data-empty-state>
-                            <strong>Telegram Persona Studio is waiting for preprocess output.</strong>
-                            <p>Run a successful Telegram preprocess first so the top user list can seed the create-and-bind workflow.</p>
+                            <strong>{{ ui.telegram_persona_waiting_preprocess_title }}</strong>
+                            <p>{{ ui.telegram_persona_waiting_preprocess_note }}</p>
                         </div>
                     {% endif %}
                 </div>
             {% elif supports_profiles %}
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Profiles</p>
+                        <p class="eyebrow">{{ ui.profiles_eyebrow }}</p>
                         <h2>{{ ui.group_profiles }}</h2>
                     </div>
                     <button type="button" class="primary-button" data-modal-open="add-profile-modal">{{ ui.add_profile }}</button>
@@ -272,7 +272,7 @@
                                             <input type="hidden" name="concurrency" value="{{ analysis_concurrency_default }}">
                                             <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>{{ ui.profile_run_analysis }}</button>
                                         </form>
-                                        <a class="ghost-button" href="/projects/{{ profile.id }}">Open persona</a>
+                                        <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.open_persona }}</a>
                                         {% if profile.latest_run %}
                                             <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
                                         {% endif %}
@@ -292,11 +292,11 @@
             {% elif telegram_is_child_persona %}
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Persona</p>
-                        <h2>Telegram child persona</h2>
+                        <p class="eyebrow">{{ ui.telegram_child_eyebrow }}</p>
+                        <h2>{{ ui.telegram_child_title }}</h2>
                     </div>
                     {% if parent_project %}
-                        <a class="ghost-button" href="/projects/{{ parent_project.id }}">Rebind from parent</a>
+                        <a class="ghost-button" href="/projects/{{ parent_project.id }}">{{ ui.telegram_child_rebind_from_parent }}</a>
                     {% endif %}
                 </div>
                 <div class="panel-body">
@@ -304,12 +304,12 @@
                         <div class="persona-bind-shell">
                             <div class="persona-stage-stack">
                                 <div class="telegram-binding-card">
-                                    <span class="status-chip tone-ready">Bound target</span>
+                                    <span class="status-chip tone-ready">{{ ui.telegram_child_bound_target_chip }}</span>
                                     <strong>{{ telegram_binding.label }}</strong>
                                     <p>
                                         {% if telegram_binding.username %}@{{ telegram_binding.username }}{% endif %}
                                         {% if telegram_binding.uid %}{% if telegram_binding.username %} · {% endif %}{{ telegram_binding.uid }}{% endif %}
-                                        {% if not telegram_binding.username and not telegram_binding.uid %}Recovered from the latest successful run summary.{% endif %}
+                                        {% if not telegram_binding.username and not telegram_binding.uid %}{{ ui.telegram_child_recovered_hint }}{% endif %}
                                     </p>
                                 </div>
                                 <form method="post" action="/projects/{{ project.id }}/analyze" class="form-stack" id="analyze-form">
@@ -323,32 +323,32 @@
                                         <span>{{ ui.analysis_concurrency }}</span>
                                         <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
                                     </label>
-                                    <p class="section-note">This child persona is already bound to a Telegram user. Reruns only update context and analysis parameters.</p>
+                                    <p class="section-note">{{ ui.telegram_child_rerun_only_note }}</p>
                                     <div class="button-row">
                                         <button type="submit" class="primary-button" id="analyze-submit-btn" {% if not can_analyze %}disabled{% endif %}>
-                                            {{ 'Rerun persona analysis' if latest_run else 'Start persona analysis' }}
+                                            {{ ui.telegram_child_submit_rerun if latest_run else ui.telegram_child_submit_start }}
                                         </button>
                                         {% if latest_run %}
-                                            <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">Open latest analysis</a>
+                                            <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.telegram_child_open_latest_analysis }}</a>
                                         {% endif %}
                                     </div>
                                 </form>
                             </div>
                             <aside class="persona-studio-rail">
                                 <div class="persona-rail-card">
-                                    <p class="eyebrow">Snapshot</p>
+                                    <p class="eyebrow">{{ ui.telegram_child_snapshot_title }}</p>
                                     <div class="metric-list">
-                                        <div class="metric-row"><span>Bound user</span><strong>{{ telegram_binding.label }}</strong></div>
-                                        <div class="metric-row"><span>Latest run</span><strong>{{ latest_run.status if latest_run else 'Not started' }}</strong></div>
-                                        <div class="metric-row"><span>Rebind path</span><strong>Parent workspace</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_child_snapshot_bound_user }}</span><strong>{{ telegram_binding.label }}</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_child_snapshot_latest_run }}</span><strong>{{ latest_run.status if latest_run else ui.telegram_child_snapshot_not_started }}</strong></div>
+                                        <div class="metric-row"><span>{{ ui.telegram_child_snapshot_rebind_path }}</span><strong>{{ ui.telegram_child_snapshot_parent_workspace }}</strong></div>
                                     </div>
                                 </div>
                             </aside>
                         </div>
                     {% else %}
                         <div class="empty-panel">
-                            <strong>This Telegram child persona still needs a bound target.</strong>
-                            <p>Legacy child personas bind once, then automatically switch into rerun mode.</p>
+                            <strong>{{ ui.telegram_child_needs_binding_title }}</strong>
+                            <p>{{ ui.telegram_child_needs_binding_note }}</p>
                         </div>
                         {% if latest_successful_preprocess_run %}
                             <form
@@ -365,8 +365,8 @@
                                             <div class="persona-step__head">
                                                 <span class="persona-step__index">01</span>
                                                 <div>
-                                                    <strong>Bind target user</strong>
-                                                    <p>Once this run completes, the child persona remembers the current target and the UI becomes rerun-only.</p>
+                                                    <strong>{{ ui.telegram_child_bind_step01_title }}</strong>
+                                                    <p>{{ ui.telegram_child_bind_step01_note }}</p>
                                                 </div>
                                             </div>
                                             <div class="panel-scroll" data-panel-scroll>
@@ -382,10 +382,10 @@
                                                             data-username="{{ user.username or '' }}"
                                                             data-uid="{{ user.uid or '' }}"
                                                         >
-                                                            <span class="persona-top-user-card__rank">Top {{ user.rank }}</span>
+                                                            <span class="persona-top-user-card__rank">{{ ui.telegram_persona_top_prefix }} {{ user.rank }}</span>
                                                             <strong>{{ user_label }}</strong>
                                                             <small>
-                                                                {{ user.message_count }} messages
+                                                                {{ user.message_count }} {{ ui.telegram_persona_messages_suffix }}
                                                                 {% if user.username %} · @{{ user.username }}{% endif %}
                                                                 {% if user.uid %} · {{ user.uid }}{% endif %}
                                                             </small>
@@ -394,12 +394,12 @@
                                                 </div>
                                             </div>
                                             <label>
-                                                <span>Manual target fallback</span>
+                                                <span>{{ ui.telegram_persona_manual_fallback_label }}</span>
                                                 <input
                                                     type="text"
                                                     name="target_user_query"
                                                     value="{{ analysis_defaults.target_user_query }}"
-                                                    placeholder="Display name / username / UID"
+                                                    placeholder="{{ ui.telegram_persona_target_query_placeholder }}"
                                                     data-target-query-input
                                                 >
                                             </label>
@@ -409,8 +409,8 @@
                                             <div class="persona-step__head">
                                                 <span class="persona-step__index">02</span>
                                                 <div>
-                                                    <strong>Analysis context</strong>
-                                                    <p>Complete this first bound analysis once. Future runs no longer ask for a visible top user selector.</p>
+                                                    <strong>{{ ui.telegram_child_bind_step02_title }}</strong>
+                                                    <p>{{ ui.telegram_child_bind_step02_note }}</p>
                                                 </div>
                                             </div>
                                             <label>
@@ -426,7 +426,7 @@
                                         <section class="persona-stage-card persona-stage-card--launch">
                                             <div class="button-row button-row--end">
                                                 <button type="submit" class="primary-button" id="analyze-submit-btn" data-target-submit {% if not can_analyze %}disabled{% endif %}>
-                                                    Bind and start analysis
+                                                    {{ ui.telegram_child_bind_submit_bind_and_start }}
                                                 </button>
                                             </div>
                                         </section>
@@ -434,21 +434,21 @@
                                 </div>
                                 <aside class="persona-studio-rail">
                                     <div class="persona-rail-card telegram-binding-card telegram-binding-card--summary" data-target-summary>
-                                        <span class="status-chip tone-processing">Pending bind</span>
-                                        <strong>Select a Telegram user first</strong>
-                                        <p>This first successful run becomes the bound target snapshot for the child persona.</p>
+                                        <span class="status-chip tone-processing">{{ ui.telegram_child_bind_pending_bind_chip }}</span>
+                                        <strong>{{ ui.telegram_persona_select_user_first }}</strong>
+                                        <p>{{ ui.telegram_child_bind_pending_bind_note }}</p>
                                     </div>
                                 </aside>
                             </form>
                         {% else %}
-                            <p class="section-note">Run Telegram preprocess on the parent workspace first, then return here to bind a target user.</p>
+                            <p class="section-note">{{ ui.telegram_child_bind_preprocess_first_note }}</p>
                         {% endif %}
                     {% endif %}
                 </div>
             {% else %}
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Analysis</p>
+                        <p class="eyebrow">{{ ui.analysis_eyebrow }}</p>
                         <h2>{{ ui.analysis_title }}</h2>
                     </div>
                 </div>
@@ -481,8 +481,8 @@
             <article class="panel-shell">
                 <div class="panel-header panel-header--slim">
                     <div>
-                        <p class="eyebrow">Status</p>
-                        <h2>Workspace telemetry</h2>
+                        <p class="eyebrow">{{ ui.section_status_eyebrow }}</p>
+                        <h2>{{ ui.workspace_telemetry_title }}</h2>
                     </div>
                 </div>
                 <div class="panel-body panel-body--tight">
@@ -492,11 +492,11 @@
                         <div class="metric-row"><span>{{ ui.stats_pending }}</span><strong id="status-pending">{{ stats.pending_count + stats.queued_count + stats.processing_count }}</strong></div>
                         <div class="metric-row"><span>{{ ui.stats_failed }}</span><strong id="status-failed">{{ stats.failed_count }}</strong></div>
                         {% if project.mode == 'telegram' %}
-                            <div class="metric-row"><span>Top Users</span><strong>{{ telegram_top_users | length }}</strong></div>
+                            <div class="metric-row"><span>{{ ui.telegram_stats_top_users }}</span><strong>{{ telegram_top_users | length }}</strong></div>
                             {% if telegram_binding %}
-                                <div class="metric-row"><span>Current bind</span><strong>{{ telegram_binding.label }}</strong></div>
+                                <div class="metric-row"><span>{{ ui.telegram_stats_current_bind }}</span><strong>{{ telegram_binding.label }}</strong></div>
                             {% elif telegram_is_child_persona %}
-                                <div class="metric-row"><span>Current bind</span><strong>Pending</strong></div>
+                                <div class="metric-row"><span>{{ ui.telegram_stats_current_bind }}</span><strong>{{ ui.telegram_stats_pending }}</strong></div>
                             {% endif %}
                         {% endif %}
                     </div>
@@ -507,8 +507,8 @@
                 <article class="panel-shell">
                     <div class="panel-header panel-header--slim">
                         <div>
-                            <p class="eyebrow">Personas</p>
-                            <h2>Created personas</h2>
+                            <p class="eyebrow">{{ ui.telegram_personas_section_eyebrow }}</p>
+                            <h2>{{ ui.telegram_personas_created_title }}</h2>
                         </div>
                         <span class="status-chip tone-processing">{{ profiles | length }}</span>
                     </div>
@@ -527,25 +527,25 @@
                                                     {{ profile.latest_run.status }}
                                                 </span>
                                             {% else %}
-                                                <span class="status-chip tone-queued">Pending bind</span>
+                                                <span class="status-chip tone-queued">{{ ui.telegram_personas_pending_bind_chip }}</span>
                                             {% endif %}
                                         </div>
 
                                         {% if profile.binding %}
                                             <div class="telegram-binding-card telegram-binding-card--profile">
-                                                <span class="status-chip tone-ready">Bound user</span>
+                                                <span class="status-chip tone-ready">{{ ui.telegram_personas_bound_user_chip }}</span>
                                                 <strong>{{ profile.binding.label }}</strong>
                                                 <p>
                                                     {% if profile.binding.username %}@{{ profile.binding.username }}{% endif %}
                                                     {% if profile.binding.uid %}{% if profile.binding.username %} · {% endif %}{{ profile.binding.uid }}{% endif %}
-                                                    {% if not profile.binding.username and not profile.binding.uid %}Recovered from latest run summary.{% endif %}
+                                                    {% if not profile.binding.username and not profile.binding.uid %}{{ ui.telegram_personas_recovered_hint }}{% endif %}
                                                 </p>
                                             </div>
                                         {% else %}
                                             <div class="telegram-binding-card telegram-binding-card--profile telegram-binding-card--warning">
-                                                <span class="status-chip tone-warning">Needs binding</span>
-                                                <strong>This persona has no Telegram target yet.</strong>
-                                                <p>Open the child persona once to finish its first bound analysis run.</p>
+                                                <span class="status-chip tone-warning">{{ ui.telegram_personas_needs_binding_chip }}</span>
+                                                <strong>{{ ui.telegram_personas_needs_binding_title }}</strong>
+                                                <p>{{ ui.telegram_personas_needs_binding_note }}</p>
                                             </div>
                                         {% endif %}
 
@@ -564,13 +564,13 @@
                                                             min="1"
                                                         >
                                                     </label>
-                                                    <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>Rerun</button>
+                                                    <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>{{ ui.telegram_personas_rerun }}</button>
                                                 </form>
                                                 <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
                                             {% else %}
-                                                <a class="ghost-button" href="/projects/{{ profile.id }}">Continue binding</a>
+                                                <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_continue_binding }}</a>
                                             {% endif %}
-                                            <a class="ghost-button" href="/projects/{{ profile.id }}">Open</a>
+                                            <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_open }}</a>
                                             {% if profile.latest_skill %}
                                                 <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=skill">{{ ui.profile_view_asset }}</a>
                                             {% endif %}
@@ -583,8 +583,8 @@
                             </div>
                         {% else %}
                             <div class="empty-panel" data-empty-state>
-                                <strong>No Telegram child personas yet.</strong>
-                                <p>Select a target user in Persona Studio to create the first bound persona.</p>
+                            <strong>{{ ui.telegram_personas_empty_title }}</strong>
+                            <p>{{ ui.telegram_personas_empty_note }}</p>
                             </div>
                         {% endif %}
                     </div>
@@ -593,15 +593,15 @@
                 <article class="panel-shell">
                     <div class="panel-header panel-header--slim">
                         <div>
-                            <p class="eyebrow">Latest Run</p>
+                            <p class="eyebrow">{{ ui.latest_run_eyebrow }}</p>
                             <h2>{{ ui.latest_analysis }}</h2>
                         </div>
                         <span class="status-chip tone-processing">{{ latest_run.status }}</span>
                     </div>
                     <div class="panel-body">
                         <div class="metric-list">
-                            <div class="metric-row"><span>Status</span><strong>{{ latest_run.status }}</strong></div>
-                            <div class="metric-row"><span>Run</span><strong>{{ latest_run.id[:8] }}</strong></div>
+                            <div class="metric-row"><span>{{ ui.latest_run_status_label }}</span><strong>{{ latest_run.status }}</strong></div>
+                            <div class="metric-row"><span>{{ ui.latest_run_id_label }}</span><strong>{{ latest_run.id[:8] }}</strong></div>
                         </div>
                     </div>
                 </article>
@@ -611,7 +611,7 @@
         <section class="panel-shell project-panel--documents">
             <div class="panel-header">
                 <div>
-                    <p class="eyebrow">Documents</p>
+                    <p class="eyebrow">{{ ui.section_documents_eyebrow }}</p>
                     <h2>{{ ui.document_panel }}</h2>
                 </div>
                 <div class="button-row">
@@ -644,7 +644,7 @@
     <div class="modal-dialog modal-dialog--wide">
         <div class="modal-head">
             <div>
-                <p class="eyebrow">Document</p>
+                <p class="eyebrow">{{ ui.modal_document_eyebrow }}</p>
                 <h3 id="document-modal-title">{{ ui.modal_document_title }}</h3>
             </div>
             <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
@@ -658,18 +658,18 @@
     <div class="modal-dialog">
         <div class="modal-head">
             <div>
-                <p class="eyebrow">Edit</p>
+                <p class="eyebrow">{{ ui.modal_edit_eyebrow }}</p>
                 <h3>{{ ui.modal_edit_project }}</h3>
             </div>
             <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
         </div>
         <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
             <label>
-                <span>Project name</span>
+                <span>{{ ui.modal_project_name_label }}</span>
                 <input type="text" name="name" value="{{ project.name }}" required>
             </label>
             <label>
-                <span>Project description</span>
+                <span>{{ ui.modal_project_description_label }}</span>
                 <textarea name="description" rows="5">{{ project.description or '' }}</textarea>
             </label>
             <label>
@@ -692,7 +692,7 @@
     <div class="modal-dialog">
         <div class="modal-head">
             <div>
-                <p class="eyebrow">Profile</p>
+                <p class="eyebrow">{{ ui.modal_profile_eyebrow }}</p>
                 <h3>{{ ui.modal_add_profile }}</h3>
             </div>
             <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>

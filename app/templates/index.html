@@ -9,7 +9,7 @@
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
                 <h1>{{ ui.hero_title }}</h1>
-                <span class="page-banner__label">Launch Deck</span>
+                <span class="page-banner__label">{{ ui.launch_deck_label }}</span>
             </div>
             <p>{{ ui.hero_note }}</p>
             <div class="page-banner__chip-row">
@@ -19,14 +19,14 @@
                 <span class="status-chip {{ 'tone-ready' if embedding_configured else 'tone-warning' }}">
                     {{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}
                 </span>
-                <span class="status-chip tone-processing">FastAPI + Jinja + Native JS</span>
+                <span class="status-chip tone-processing">{{ ui.tech_stack_chip }}</span>
             </div>
         </div>
         <div class="page-banner__meta">
             <div class="page-banner__portrait"></div>
             <div class="page-banner__signal-row">
                 <span class="page-banner__label">{{ ui.panel_existing }}</span>
-                <span class="page-banner__label">{{ projects|length }} workspaces</span>
+                <span class="page-banner__label">{{ projects|length }} {{ ui.workspaces_suffix }}</span>
             </div>
         </div>
     </section>
@@ -35,10 +35,10 @@
         <article class="panel-shell">
             <div class="panel-header">
                 <div>
-                    <p class="eyebrow">Create</p>
+                    <p class="eyebrow">{{ ui.section_create_eyebrow }}</p>
                     <h2>{{ ui.panel_create }}</h2>
                 </div>
-                <span class="status-chip tone-processing">New workspace</span>
+                <span class="status-chip tone-processing">{{ ui.new_workspace_chip }}</span>
             </div>
             <div class="panel-body">
                 <form method="post" action="/projects">
@@ -69,10 +69,10 @@
             <article class="panel-shell">
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Systems</p>
+                        <p class="eyebrow">{{ ui.section_systems_eyebrow }}</p>
                         <h2>{{ ui.title }}</h2>
                     </div>
-                    <span class="status-chip tone-ready">Workbench</span>
+                    <span class="status-chip tone-ready">{{ ui.workbench_chip }}</span>
                 </div>
                 <div class="panel-body">
                     <div class="home-status-grid">
@@ -82,19 +82,19 @@
                             <p>{{ ui.metric_note }}</p>
                         </article>
                         <article class="metric-card">
-                            <span>Chat</span>
-                            <strong>{{ "READY" if chat_configured else "CHECK" }}</strong>
+                            <span>{{ ui.metric_chat_label }}</span>
+                            <strong>{{ ui.metric_status_ready if chat_configured else ui.metric_status_check }}</strong>
                             <p>{{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}</p>
                         </article>
                         <article class="metric-card">
-                            <span>Embedding</span>
-                            <strong>{{ "READY" if embedding_configured else "CHECK" }}</strong>
+                            <span>{{ ui.metric_embedding_label }}</span>
+                            <strong>{{ ui.metric_status_ready if embedding_configured else ui.metric_status_check }}</strong>
                             <p>{{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}</p>
                         </article>
                         <article class="metric-card">
-                            <span>Interface</span>
-                            <strong>AGENT</strong>
-                            <p>Cyber-aesthetic workstation shell</p>
+                            <span>{{ ui.metric_interface_label }}</span>
+                            <strong>{{ ui.metric_interface_value }}</strong>
+                            <p>{{ ui.metric_interface_note }}</p>
                         </article>
                     </div>
                 </div>
@@ -103,7 +103,7 @@
             <article class="panel-shell">
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Workspace</p>
+                        <p class="eyebrow">{{ ui.section_workspace_eyebrow }}</p>
                         <h2>{{ ui.panel_existing }}</h2>
                     </div>
                     <span class="status-chip tone-processing">{{ projects|length }}</span>
@@ -151,7 +151,7 @@
                                     <div class="modal-dialog">
                                         <div class="modal-head">
                                             <div>
-                                                <p class="eyebrow">Edit</p>
+                                                <p class="eyebrow">{{ ui.modal_edit_eyebrow }}</p>
                                                 <h3>{{ ui.modal_edit_title }}</h3>
                                             </div>
                                             <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
@@ -184,7 +184,7 @@
                     {% else %}
                         <div class="empty-panel" data-empty-state>
                             <strong>{{ ui.empty_projects }}</strong>
-                            <p>Create the first workspace to open the launch deck.</p>
+                            <p>{{ ui.empty_projects_note }}</p>
                         </div>
                     {% endif %}
                 </div>
