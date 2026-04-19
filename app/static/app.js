@@ -466,16 +466,48 @@ function renderFacetResult(facet, runStatus) {
         ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
         ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
     `;
+    const toolCallsHtml = (findings.retrieval_trace?.tool_calls || []).map(call => `
+        <details class="tool-call">
+            <summary class="tool-header">
+                <span class="tool-icon">⚙️</span>
+                <span>calling ${escapeHtml(call.tool)}(...)</span>
+            </summary>
+            <div class="tool-body">
+                <p>Arguments:</p>
+                <pre><code>${escapeHtml(typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments, null, 2))}</code></pre>
+                ${call.result ? `<p style="margin-top: 8px;">Result:</p><pre><code>${escapeHtml(typeof call.result === 'string' ? call.result : JSON.stringify(call.result, null, 2))}</code></pre>` : ''}
+                ${call.error ? `<p style="margin-top: 8px; color: var(--danger);">Error:</p><pre><code>${escapeHtml(call.error)}</code></pre>` : ''}
+            </div>
+        </details>
+    `).join("");
+
     const traceBody = `
-        ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
-        ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+        <div class="msg-assistant">
+            ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
+            ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+            ${toolCallsHtml}
+        </div>
     `;
     const liveTextBody = findings.llm_live_text
         ? `
-            ${findings.llm_live_text_truncated ? `<p class="muted">流式文本过长，当前展示最近一段预览。</p>` : ""}
-            <pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>
+            <div class="msg-assistant">
+                ${findings.llm_live_text_truncated ? `<p class="muted">流式文本过长，当前展示最近一段预览。</p>` : ""}
+                <div class="code-block-wrapper">
+                    <div class="code-block-header">
+                        <span>live_output</span>
+                    </div>
+                    <pre><code data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</code></pre>
+                </div>
+            </div>
         `
-        : `<p class="muted">还没有实时文本。</p>`;
+        : (status === "running" ? `
+            <div class="context-indicator-wrapper">
+                <div class="context-indicator">
+                    <div class="spinner"></div>
+                    Agent 思考中...
+                </div>
+            </div>
+        ` : `<p class="muted">还没有实时文本。</p>`);
 
     return `
         <details
@@ -508,7 +540,7 @@ function renderFacetResult(facet, runStatus) {
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
                 ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">还没有证据。</p>`, false)}
                 ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
-                ${(findings.llm_request_url || findings.llm_error)
+                ${(findings.llm_request_url || findings.llm_error || findings.retrieval_trace?.tool_calls?.length)
                     ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
                     : ""}
                 ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, true)}
@@ -903,17 +935,56 @@ function renderFacetResultV2(facet, runStatus) {
         ${facet.error_message ? `<p class="danger">${escapeHtml(facet.error_message)}</p>` : ""}
         ${findings.notes ? `<p class="muted">${escapeHtml(findings.notes)}</p>` : ""}
     `;
+    const toolCallsHtml = (findings.retrieval_trace?.tool_calls || []).map(call => `
+        <details class="tool-call">
+            <summary class="tool-header">
+                <span class="tool-icon">⚙️</span>
+                <span>calling ${escapeHtml(call.tool)}(...)</span>
+            </summary>
+            <div class="tool-body">
+                <p>Arguments:</p>
+                <pre><code>${escapeHtml(typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments, null, 2))}</code></pre>
+                ${call.result ? `<p style="margin-top: 8px;">Result:</p><pre><code>${escapeHtml(typeof call.result === 'string' ? call.result : JSON.stringify(call.result, null, 2))}</code></pre>` : ''}
+                ${call.error ? `<p style="margin-top: 8px; color: var(--danger);">Error:</p><pre><code>${escapeHtml(call.error)}</code></pre>` : ''}
+            </div>
+        </details>
+    `).join("");
+
     const traceBody = `
-        ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
-        ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
-        ${findings.llm_request_payload_preview ? `<pre class="trace-box">${escapeHtml(findings.llm_request_payload_preview)}</pre>` : ""}
+        <div class="msg-assistant">
+            ${findings.llm_request_url ? `<p class="muted">${escapeHtml(findings.llm_request_url)}</p>` : ""}
+            ${findings.llm_error ? `<p class="danger">${escapeHtml(findings.llm_error)}</p>` : ""}
+            ${toolCallsHtml}
+            ${findings.llm_request_payload_preview ? `
+                <div class="code-block-wrapper">
+                    <div class="code-block-header">
+                        <span>request_payload</span>
+                    </div>
+                    <pre><code>${escapeHtml(findings.llm_request_payload_preview)}</code></pre>
+                </div>
+            ` : ""}
+        </div>
     `;
     const liveTextBody = findings.llm_live_text
         ? `
-            ${findings.llm_live_text_truncated ? `<p class="muted">The live text preview was truncated to keep the card height bounded.</p>` : ""}
-            <pre class="trace-box live-trace-box" data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</pre>
+            <div class="msg-assistant">
+                ${findings.llm_live_text_truncated ? `<p class="muted">The live text preview was truncated to keep the card height bounded.</p>` : ""}
+                <div class="code-block-wrapper">
+                    <div class="code-block-header">
+                        <span>live_output</span>
+                    </div>
+                    <pre><code data-live-text-scroll>${escapeHtml(findings.llm_live_text)}</code></pre>
+                </div>
+            </div>
         `
-        : `<p class="muted">No live text has been stored for this facet yet.</p>`;
+        : (status === "running" ? `
+            <div class="context-indicator-wrapper">
+                <div class="context-indicator">
+                    <div class="spinner"></div>
+                    Agent thinking...
+                </div>
+            </div>
+        ` : `<p class="muted">No live text has been stored for this facet yet.</p>`);
 
     return `
         <details
@@ -942,7 +1013,7 @@ function renderFacetResultV2(facet, runStatus) {
                 ${bullets ? `<ul class="facet-bullets">${bullets}</ul>` : ""}
                 ${renderSubDetails(`facet:${facetKey}:evidence`, "证据", evidence || `<p class="muted">No evidence has been attached yet.</p>`, false)}
                 ${renderSubDetails(`facet:${facetKey}:notes`, "备注", notesBody, hasError)}
-                ${(findings.llm_request_url || findings.llm_error || findings.llm_request_payload_preview)
+                ${(findings.llm_request_url || findings.llm_error || findings.llm_request_payload_preview || findings.retrieval_trace?.tool_calls?.length)
                     ? renderSubDetails(`facet:${facetKey}:trace`, "LLM 追踪", traceBody, hasError)
                     : ""}
                 ${renderSubDetails(`facet:${facetKey}:live`, "LLM 实时输出", liveTextBody, status === "running")}
