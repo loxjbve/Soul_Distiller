@@ -753,25 +753,46 @@ class TelegramPreprocessWorker:
             candidate.id: index
             for index, candidate in enumerate(candidates, start=1)
         }
-        if self.weekly_summary_concurrency <= 1 or len(remaining_candidates) <= 1:
-            for candidate in remaining_candidates:
+        
+        self._trace(
+            "stage_progress",
+            stage="weekly_topic_summary",
+            message="Running weekly topic summaries concurrently.",
+            remaining_week_count=len(remaining_candidates),
+        )
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=None, thread_name_prefix="telegram-weekly-summary") as executor:
+            future_map = {
+                executor.submit(
+                    self._run_parallel_weekly_topic_task,
+                    run_id,
+                    candidate,
+                    topic_index_by_candidate.get(candidate.id, len(topics) + 1),
+                ): candidate
+                for candidate in remaining_candidates
+            }
+            for future in as_completed(future_map):
                 self._ensure_active()
-                topics = self._upsert_topic_payload(
-                    topics,
-                    self._summarize_weekly_candidate_with_retries(
-                        run_id,
-                        candidate,
-                        topic_index_by_candidate.get(candidate.id, len(topics) + 1),
-                    ),
-                )
-                repository.replace_telegram_preprocess_topics(
-                    self.session,
-                    run_id=run_id,
-                    project_id=self.project.id,
-                    chat_id=chat_id,
-                    topics=topics,
-                )
-                self.session.commit()
+                candidate = future_map[future]
+                try:
+                    result = future.result()
+                    self._add_usage(result.get("usage"))
+                    topics = self._upsert_topic_payload(topics, dict(result.get("topic") or {}))
+                    repository.replace_telegram_preprocess_topics(
+                        self.session,
+                        run_id=run_id,
+                        project_id=self.project.id,
+                        chat_id=chat_id,
+                        topics=topics,
+                    )
+                    self.session.commit()
+                except Exception as exc:
+                    self._trace(
+                        "agent_retry",
+                        stage="weekly_topic_summary",
+                        agent="weekly_topic_agent",
+                        message=f"Weekly topic summary unhandled error: {exc}",
+                    )
                 self._progress(
                     progress_callback,
                     "weekly_topic_summary",
@@ -786,52 +807,6 @@ class TelegramPreprocessWorker:
                         "usage": dict(self.usage_totals),
                     },
                 )
-        else:
-            self._trace(
-                "stage_progress",
-                stage="weekly_topic_summary",
-                message=f"Running weekly topic summaries with concurrency {self.weekly_summary_concurrency}.",
-                weekly_summary_concurrency=self.weekly_summary_concurrency,
-                remaining_week_count=len(remaining_candidates),
-            )
-            with ThreadPoolExecutor(max_workers=self.weekly_summary_concurrency, thread_name_prefix="telegram-weekly-summary") as executor:
-                future_map = {
-                    executor.submit(
-                        self._run_parallel_weekly_topic_task,
-                        run_id,
-                        candidate,
-                        topic_index_by_candidate.get(candidate.id, len(topics) + 1),
-                    ): candidate
-                    for candidate in remaining_candidates
-                }
-                for future in as_completed(future_map):
-                    self._ensure_active()
-                    candidate = future_map[future]
-                    result = future.result()
-                    self._add_usage(result.get("usage"))
-                    topics = self._upsert_topic_payload(topics, dict(result.get("topic") or {}))
-                    repository.replace_telegram_preprocess_topics(
-                        self.session,
-                        run_id=run_id,
-                        project_id=self.project.id,
-                        chat_id=chat_id,
-                        topics=topics,
-                    )
-                    self.session.commit()
-                    self._progress(
-                        progress_callback,
-                        "weekly_topic_summary",
-                        min(40 + int((len(topics) / total) * 34), 76),
-                        {
-                            "current_week": candidate.week_key,
-                            "topic_count": len(topics),
-                            "completed_week_count": len(topics),
-                            "remaining_week_count": max(len(candidates) - len(topics), 0),
-                            "weekly_candidate_count": len(candidates),
-                            "weekly_summary_concurrency": self.weekly_summary_concurrency,
-                            "usage": dict(self.usage_totals),
-                        },
-                    )
         self._trace(
             "agent_completed",
             stage="weekly_topic_summary",

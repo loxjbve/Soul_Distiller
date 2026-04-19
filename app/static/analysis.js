@@ -271,14 +271,43 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 card.appendChild(conflicts);
             }
 
-            if (facet.findings?.llm_response_text || facet.findings?.llm_live_text) {
+            if (facet.findings?.llm_response_text || facet.findings?.llm_live_text || facet.findings?.retrieval_trace?.tool_calls?.length) {
                 const trace = document.createElement("details");
-                trace.className = "trace-disclosure top-gap";
-                trace.innerHTML = `<summary class="trace-preview-line">${escapeHtml(ui.trace || "LLM 跟踪")}</summary>`;
-                const pre = document.createElement("pre");
-                pre.className = "trace-box trace-box--expanded top-gap";
-                pre.textContent = facet.findings.llm_response_text || facet.findings.llm_live_text || "";
-                trace.appendChild(pre);
+                trace.className = "top-gap";
+                trace.innerHTML = `<summary>${escapeHtml(ui.trace || "LLM 跟踪")}</summary>`;
+
+                const toolCallsHtml = (facet.findings?.retrieval_trace?.tool_calls || []).map(call => `
+                    <details class="tool-call">
+                        <summary class="tool-header">
+                            <span class="tool-icon">⚙️</span>
+                            <span>calling ${escapeHtml(call.tool)}(...)</span>
+                        </summary>
+                        <div class="tool-body">
+                            <p>Arguments:</p>
+                            <pre><code>${escapeHtml(typeof call.arguments === 'string' ? call.arguments : JSON.stringify(call.arguments, null, 2))}</code></pre>
+                            ${call.result ? `<p style="margin-top: 8px;">Result:</p><pre><code>${escapeHtml(typeof call.result === 'string' ? call.result : JSON.stringify(call.result, null, 2))}</code></pre>` : ''}
+                            ${call.error ? `<p style="margin-top: 8px; color: var(--danger);">Error:</p><pre><code>${escapeHtml(call.error)}</code></pre>` : ''}
+                        </div>
+                    </details>
+                `).join("");
+
+                const textOutput = facet.findings?.llm_response_text || facet.findings?.llm_live_text || "";
+                const textOutputHtml = textOutput ? `
+                    <div class="msg-assistant">
+                        <div class="code-block-wrapper">
+                            <div class="code-block-header">
+                                <span>output</span>
+                            </div>
+                            <pre><code>${escapeHtml(textOutput)}</code></pre>
+                        </div>
+                    </div>
+                ` : "";
+
+                const container = document.createElement("div");
+                container.className = "msg-assistant";
+                container.innerHTML = toolCallsHtml + textOutputHtml;
+
+                trace.appendChild(container);
                 card.appendChild(trace);
             }
 
