@@ -241,30 +241,72 @@ if (bootstrap?.project_id) {
             elements.traceList.innerHTML = `<div class="empty-panel"><strong>等待任务事件。</strong></div>`;
             return;
         }
+        
         events.forEach((event) => {
-            const card = document.createElement("article");
-            card.className = "event-card compact-card";
-            const title = summarizeTraceEvent(event);
+            const wrapper = document.createElement("div");
+            wrapper.style.marginBottom = "0.75rem";
+            
+            const detailText = event.response_text_preview || event.output_preview || event.arguments_preview || event.prompt_preview || "";
             const meta = [
                 event.stage || "",
                 event.agent || "",
                 event.week_key ? `week ${event.week_key}` : "",
                 event.round_index ? `round ${event.round_index}` : "",
                 event.tool_name ? `tool ${event.tool_name}` : "",
-            ]
-                .filter(Boolean)
-                .join(" · ");
-            const detailText = event.response_text_preview || event.output_preview || event.arguments_preview || event.prompt_preview || "";
-            card.innerHTML = `
-                <div class="project-card__title-row">
-                    <strong>${escapeHtml(title)}</strong>
-                    <span class="status-chip tone-${traceTone(event.kind)}">${escapeHtml(event.kind || "trace")}</span>
-                </div>
-                <p class="helper-text">${escapeHtml(meta || "--")}</p>
-                <div class="event-card__meta top-gap">${escapeHtml(formatDateTime(event.timestamp))}</div>
-                ${detailText ? `<pre class="trace-box top-gap">${escapeHtml(detailText)}</pre>` : ""}
-            `;
-            elements.traceList.appendChild(card);
+            ].filter(Boolean).join(" · ");
+
+            if (event.kind === "llm_request_started" || event.kind === "llm_request_completed") {
+                // Assistant Message (AI 普通回复) 或请求状态
+                wrapper.className = "msg-assistant";
+                wrapper.innerHTML = `
+                    <div class="msg-assistant-header" style="font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--chat-muted, #71717A); margin-bottom: 0.25rem;">
+                        ${event.kind === 'llm_request_started' ? '思考中...' : '回复'} · ${escapeHtml(meta || "--")}
+                    </div>
+                    ${detailText ? `
+                    <div class="code-block-wrapper" style="border: 1px solid var(--chat-code-border, rgba(255,255,255,0.1)); border-radius: var(--radius-sm, 12px); background: var(--chat-code-bg, #000); overflow: hidden;">
+                        <div class="code-block-header" style="display: flex; justify-content: space-between; padding: 0.4rem 1rem; background: var(--chat-surface, rgba(255,255,255,0.03)); border-bottom: 1px solid var(--chat-code-border, rgba(255,255,255,0.05)); font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--text-soft, #A1A1AA);">
+                            <span>${escapeHtml(summarizeTraceEvent(event))}</span>
+                            <button class="copy-btn" style="background: transparent; border: none; color: var(--chat-muted, #71717A); cursor: pointer;">Copy</button>
+                        </div>
+                        <pre style="margin: 0; padding: 1rem; overflow-x: auto; font-size: 0.85rem; color: var(--text, #E2E8F0); font-family: var(--font-mono, monospace);"><code>${escapeHtml(detailText)}</code></pre>
+                    </div>` : `<p style="color: var(--text-dim, #A1A1AA); font-size: 0.85rem;">等待响应...</p>`}
+                `;
+            } else if (event.kind === "tool_call" || event.kind === "tool_result") {
+                // Tool Call Bubble (工具调用)
+                wrapper.className = "tool-call";
+                wrapper.style.border = "1px solid var(--chat-tool-border, rgba(255,255,255,0.1))";
+                wrapper.style.borderRadius = "var(--radius-sm, 12px)";
+                wrapper.style.overflow = "hidden";
+                wrapper.style.background = "transparent";
+                
+                const isResult = event.kind === "tool_result";
+                wrapper.innerHTML = `
+                    <details ${!isResult ? 'open' : ''}>
+                        <summary style="display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem 0.75rem; cursor: pointer; font-family: var(--font-mono, monospace); font-size: 0.8rem; color: var(--chat-muted, #71717A); background: var(--chat-surface, rgba(255,255,255,0.03)); list-style: none;">
+                            <span style="color: var(--text-soft, #A1A1AA);">${isResult ? '✓' : '⚙️'}</span>
+                            <span>${escapeHtml(summarizeTraceEvent(event))} ${escapeHtml(meta ? `(${meta})` : '')}</span>
+                        </summary>
+                        ${detailText ? `
+                        <div style="border-top: 1px solid var(--chat-tool-border, rgba(255,255,255,0.05)); background: rgba(0,0,0,0.3); padding: 0.75rem; font-family: var(--font-mono, monospace); font-size: 0.75rem; color: var(--text-soft, #A1A1AA); overflow-x: auto;">
+                            <pre style="margin:0;"><code>${escapeHtml(detailText)}</code></pre>
+                        </div>` : ''}
+                    </details>
+                `;
+            } else {
+                // Turn / Context Indicator (轮次与状态)
+                wrapper.className = "context-indicator-wrapper";
+                wrapper.style.display = "flex";
+                wrapper.style.justifyContent = "center";
+                wrapper.style.margin = "1rem 0";
+                
+                wrapper.innerHTML = `
+                    <div style="display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0.75rem; background: var(--chat-pill-bg, rgba(255,255,255,0.03)); backdrop-filter: blur(8px); border: 1px solid var(--chat-tool-border, rgba(255,255,255,0.1)); border-radius: var(--radius-xl, 9999px); font-size: 0.75rem; color: var(--chat-muted, #71717A); box-shadow: 0 2px 8px rgba(0,0,0,0.2);">
+                        ${['agent_started', 'stage_progress'].includes(event.kind) ? '<div style="width: 8px; height: 8px; border: 1.5px solid var(--chat-muted, #71717A); border-top-color: var(--text, #EDEDED); border-radius: 50%; animation: spin 1s linear infinite;"></div>' : '<span>ℹ️</span>'}
+                        ${escapeHtml(summarizeTraceEvent(event))}
+                    </div>
+                `;
+            }
+            elements.traceList.appendChild(wrapper);
         });
     }
 
