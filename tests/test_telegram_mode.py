@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import io
 import json
+import threading
 import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 
-from app.analysis.telegram_agent import TelegramFacetAnalysisResult
+from app.analysis.facets import FacetDefinition
+from app.analysis.telegram_agent import TelegramAnalysisAgent, TelegramFacetAnalysisResult
 from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
+from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
 from app.storage import repository
 from app.telegram_preprocess import TelegramPreprocessWorker
 
@@ -144,6 +147,71 @@ def _dense_week_export() -> bytes:
         "messages": messages,
         "_expected_dense_start": dense_start,
         "_expected_dense_end": dense_end,
+    }
+    return _telegram_export_bytes(payload)
+
+
+def _two_week_export() -> bytes:
+    payload = {
+        "name": "Two Week Group",
+        "type": "supergroup",
+        "id": 24680,
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date": "2025-01-01T09:00:00",
+                "date_unixtime": "1735693200",
+                "from": "Alice",
+                "from_id": "alice",
+                "text": "Week one planning starts here.",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date": "2025-01-01T09:01:00",
+                "date_unixtime": "1735693260",
+                "from": "Bob",
+                "from_id": "bob",
+                "text": "Week one prefers SQL-first preprocessing.",
+            },
+            {
+                "id": 3,
+                "type": "message",
+                "date": "2025-01-02T10:00:00",
+                "date_unixtime": "1735783200",
+                "from": "Alice",
+                "from_id": "alice",
+                "text": "Week one wraps up with a checkpoint.",
+            },
+            {
+                "id": 4,
+                "type": "message",
+                "date": "2025-01-08T09:00:00",
+                "date_unixtime": "1736298000",
+                "from": "Bob",
+                "from_id": "bob",
+                "text": "Week two resumes from the saved checkpoint.",
+            },
+            {
+                "id": 5,
+                "type": "message",
+                "date": "2025-01-08T09:02:00",
+                "date_unixtime": "1736298120",
+                "from": "Alice",
+                "from_id": "alice",
+                "text": "Week two only needs the remaining summary.",
+            },
+            {
+                "id": 6,
+                "type": "message",
+                "date": "2025-01-09T11:00:00",
+                "date_unixtime": "1736420400",
+                "from": "Bob",
+                "from_id": "bob",
+                "text": "Week two finishes without starting over.",
+            },
+        ],
     }
     return _telegram_export_bytes(payload)
 
@@ -361,27 +429,77 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                         {"participant_id": bob.id, "role_hint": "proposer", "message_count": 1, "mention_count": 0},
                         {"participant_id": carol.id, "role_hint": "supporter", "message_count": 1, "mention_count": 0},
                     ],
+                    "metadata_json": {
+                        "week_key": "2025-W01",
+                        "source": "weekly_topic_agent",
+                        "candidate_id": "candidate-week-1",
+                        "subtopics": ["Telegram mode", "SQL evidence"],
+                        "interaction_patterns": ["Bob 提方案，Alice 起头，Carol 补充支持"],
+                        "participant_viewpoints": [
+                            {
+                                "participant_id": alice.id,
+                                "display_name": "Alice",
+                                "stance_summary": "提出要先补齐 Telegram mode。",
+                                "notable_points": ["先落地 Telegram 模式"],
+                                "evidence_message_ids": [1],
+                            },
+                            {
+                                "participant_id": bob.id,
+                                "display_name": "Bob",
+                                "stance_summary": "主张移除 embeddings，改成 agent + SQL。",
+                                "notable_points": ["强调 SQL 证据优先"],
+                                "evidence_message_ids": [2],
+                            },
+                        ],
+                    },
                 }
             ],
         )
-        repository.replace_telegram_preprocess_active_users(
+        run.window_count = 1
+        run.topic_count = 1
+        run.progress_percent = 100
+        run.current_stage = "completed"
+        return run.id
+
+
+def _seed_two_week_preprocess_tables(app, project_id: str) -> tuple[str, str]:
+    with app.state.db.session() as session:
+        chat = repository.get_latest_telegram_chat(session, project_id)
+        participants = repository.list_telegram_participants(session, project_id, limit=10)
+        alice = next(item for item in participants if item.display_name == "Alice")
+        bob = next(item for item in participants if item.display_name == "Bob")
+        run = repository.create_telegram_preprocess_run(
+            session,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            status="completed",
+            llm_model="demo-model",
+            summary_json={
+                "current_stage": "completed",
+                "progress_percent": 100,
+                "top_user_count": 2,
+                "weekly_candidate_count": 2,
+                "topic_count": 2,
+                "trace_event_count": 0,
+                "trace_events": [],
+            },
+        )
+        repository.replace_telegram_preprocess_top_users(
             session,
             run_id=run.id,
             project_id=project_id,
             chat_id=chat.id if chat else None,
-            active_users=[
+            top_users=[
                 {
                     "rank": 1,
                     "participant_id": bob.id,
                     "uid": bob.telegram_user_id,
                     "username": bob.username,
                     "display_name": bob.display_name,
-                    "primary_alias": "Bob",
-                    "aliases_json": ["Bob", "user2"],
-                    "message_count": 1,
+                    "message_count": bob.message_count,
                     "first_seen_at": bob.first_seen_at,
                     "last_seen_at": bob.last_seen_at,
-                    "evidence_json": [],
+                    "metadata_json": {"source": "sql_materialize"},
                 },
                 {
                     "rank": 2,
@@ -389,21 +507,167 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                     "uid": alice.telegram_user_id,
                     "username": alice.username,
                     "display_name": alice.display_name,
-                    "primary_alias": "Alice",
-                    "aliases_json": ["Alice", "user1"],
-                    "message_count": 1,
+                    "message_count": alice.message_count,
                     "first_seen_at": alice.first_seen_at,
                     "last_seen_at": alice.last_seen_at,
-                    "evidence_json": [],
+                    "metadata_json": {"source": "sql_materialize"},
                 },
             ],
         )
-        run.window_count = 1
-        run.topic_count = 1
-        run.active_user_count = 2
+        repository.replace_telegram_preprocess_weekly_topic_candidates(
+            session,
+            run_id=run.id,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            weekly_candidates=[
+                {
+                    "week_key": "2025-W01",
+                    "start_at": datetime.fromisoformat("2025-01-01T09:00:00"),
+                    "end_at": datetime.fromisoformat("2025-01-02T10:00:00"),
+                    "start_message_id": 1,
+                    "end_message_id": 3,
+                    "message_count": 3,
+                    "participant_count": 2,
+                    "top_participants_json": [
+                        {"participant_id": alice.id, "display_name": "Alice", "message_count": 2},
+                        {"participant_id": bob.id, "display_name": "Bob", "message_count": 1},
+                    ],
+                    "sample_messages_json": [
+                        {"message_id": 1, "participant_id": alice.id, "sender_name": "Alice", "sent_at": "2025-01-01T09:00:00", "text": "Week one planning starts here."},
+                        {"message_id": 2, "participant_id": bob.id, "sender_name": "Bob", "sent_at": "2025-01-01T09:01:00", "text": "Week one prefers SQL-first preprocessing."},
+                        {"message_id": 3, "participant_id": alice.id, "sender_name": "Alice", "sent_at": "2025-01-02T10:00:00", "text": "Week one wraps up with a checkpoint."},
+                    ],
+                    "metadata_json": {"source": "sql_materialize"},
+                },
+                {
+                    "week_key": "2025-W02",
+                    "start_at": datetime.fromisoformat("2025-01-08T09:00:00"),
+                    "end_at": datetime.fromisoformat("2025-01-09T11:00:00"),
+                    "start_message_id": 4,
+                    "end_message_id": 6,
+                    "message_count": 3,
+                    "participant_count": 2,
+                    "top_participants_json": [
+                        {"participant_id": bob.id, "display_name": "Bob", "message_count": 2},
+                        {"participant_id": alice.id, "display_name": "Alice", "message_count": 1},
+                    ],
+                    "sample_messages_json": [
+                        {"message_id": 4, "participant_id": bob.id, "sender_name": "Bob", "sent_at": "2025-01-08T09:00:00", "text": "Week two resumes from the saved checkpoint."},
+                        {"message_id": 5, "participant_id": alice.id, "sender_name": "Alice", "sent_at": "2025-01-08T09:02:00", "text": "Week two only needs the remaining summary."},
+                        {"message_id": 6, "participant_id": bob.id, "sender_name": "Bob", "sent_at": "2025-01-09T11:00:00", "text": "Week two finishes without starting over."},
+                    ],
+                    "metadata_json": {"source": "sql_materialize"},
+                },
+            ],
+        )
+        repository.replace_telegram_preprocess_topics(
+            session,
+            run_id=run.id,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            topics=[
+                {
+                    "topic_index": 1,
+                    "title": "Week one SQL-first plan",
+                    "summary": "Alice and Bob discuss using SQL-first preprocessing in week one.",
+                    "start_at": datetime.fromisoformat("2025-01-01T09:00:00"),
+                    "end_at": datetime.fromisoformat("2025-01-02T10:00:00"),
+                    "start_message_id": 1,
+                    "end_message_id": 3,
+                    "message_count": 3,
+                    "participant_count": 2,
+                    "keywords_json": ["week one", "sql-first", "preprocess"],
+                    "evidence_json": [
+                        {
+                            "message_id": 2,
+                            "sender_name": "Bob",
+                            "sent_at": "2025-01-01T09:01:00",
+                            "quote": "Week one prefers SQL-first preprocessing.",
+                        }
+                    ],
+                    "participants": [
+                        {"participant_id": alice.id, "role_hint": "planner", "message_count": 2, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "sql advocate", "message_count": 1, "mention_count": 0},
+                    ],
+                    "metadata_json": {
+                        "week_key": "2025-W01",
+                        "source": "weekly_topic_agent",
+                        "candidate_id": "candidate-week-1",
+                        "subtopics": ["SQL-first", "week one checkpoint"],
+                        "interaction_patterns": ["Alice 规划，Bob 提技术路线"],
+                        "participant_viewpoints": [
+                            {
+                                "participant_id": alice.id,
+                                "display_name": "Alice",
+                                "stance_summary": "负责规划和收束周内推进节奏。",
+                                "notable_points": ["启动计划", "补充阶段性 checkpoint"],
+                                "evidence_message_ids": [1, 3],
+                            },
+                            {
+                                "participant_id": bob.id,
+                                "display_name": "Bob",
+                                "stance_summary": "明确支持 SQL-first 的预处理方案。",
+                                "notable_points": ["强调 SQL-first preprocessing"],
+                                "evidence_message_ids": [2],
+                            },
+                        ],
+                    },
+                },
+                {
+                    "topic_index": 2,
+                    "title": "Week two resume flow",
+                    "summary": "Alice and Bob discuss resuming from the saved checkpoint in week two.",
+                    "start_at": datetime.fromisoformat("2025-01-08T09:00:00"),
+                    "end_at": datetime.fromisoformat("2025-01-09T11:00:00"),
+                    "start_message_id": 4,
+                    "end_message_id": 6,
+                    "message_count": 3,
+                    "participant_count": 2,
+                    "keywords_json": ["week two", "resume", "checkpoint"],
+                    "evidence_json": [
+                        {
+                            "message_id": 4,
+                            "sender_name": "Bob",
+                            "sent_at": "2025-01-08T09:00:00",
+                            "quote": "Week two resumes from the saved checkpoint.",
+                        }
+                    ],
+                    "participants": [
+                        {"participant_id": alice.id, "role_hint": "planner", "message_count": 1, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "resume advocate", "message_count": 2, "mention_count": 0},
+                    ],
+                    "metadata_json": {
+                        "week_key": "2025-W02",
+                        "source": "weekly_topic_agent",
+                        "candidate_id": "candidate-week-2",
+                        "subtopics": ["resume flow", "saved checkpoint"],
+                        "interaction_patterns": ["Bob 推进恢复，Alice 确认剩余工作"],
+                        "participant_viewpoints": [
+                            {
+                                "participant_id": bob.id,
+                                "display_name": "Bob",
+                                "stance_summary": "强调从已保存 checkpoint 继续，而不是整体重来。",
+                                "notable_points": ["resume from checkpoint", "avoid restart"],
+                                "evidence_message_ids": [4, 6],
+                            },
+                            {
+                                "participant_id": alice.id,
+                                "display_name": "Alice",
+                                "stance_summary": "认同续跑方案，补充剩余总结即可。",
+                                "notable_points": ["只补剩余总结"],
+                                "evidence_message_ids": [5],
+                            },
+                        ],
+                    },
+                },
+            ],
+        )
+        run.window_count = 2
+        run.topic_count = 2
         run.progress_percent = 100
         run.current_stage = "completed"
-        return run.id
+        session.commit()
+        return run.id, bob.id
 
 
 def test_telegram_ingest_stores_sql_rows_and_skips_embeddings_and_rechunk(client, app, monkeypatch):
@@ -427,22 +691,40 @@ def test_telegram_ingest_stores_sql_rows_and_skips_embeddings_and_rechunk(client
         assert (session.scalar(select(func.count()).select_from(TextChunk).where(TextChunk.project_id == project_id)) or 0) == 0
 
 
-def test_telegram_preprocess_run_persists_topics_active_users_and_new_counts(client, app, monkeypatch):
+def test_telegram_preprocess_run_persists_topics_top_users_and_new_counts(client, app, monkeypatch):
     project_id = _create_ingested_telegram_project(client, app, monkeypatch)
 
     def fake_process(self, run, *, progress_callback=None):
+        participant = repository.list_telegram_participants(self.session, self.project.id, limit=1)[0]
+        repository.replace_telegram_preprocess_top_users(
+            self.session,
+            run_id=run.id,
+            project_id=self.project.id,
+            chat_id=run.chat_id,
+            top_users=[
+                {
+                    "rank": 1,
+                    "participant_id": participant.id,
+                    "uid": participant.telegram_user_id,
+                    "username": participant.username,
+                    "display_name": participant.display_name,
+                    "message_count": participant.message_count,
+                    "first_seen_at": participant.first_seen_at,
+                    "last_seen_at": participant.last_seen_at,
+                    "metadata_json": {"source": "test"},
+                }
+            ],
+        )
         if progress_callback:
             progress_callback("sql_bootstrap", 20, {"window_count": 1})
             progress_callback("sql_materialize", 36, {"top_user_count": 1, "weekly_candidate_count": 1, "window_count": 1})
             progress_callback("weekly_topic_summary", 60, {"topic_count": 1})
-            progress_callback("active_users", 90, {"active_user_count": 1})
         return {
             "bootstrap": {"message_count": 4},
             "window_count": 1,
             "top_user_count": 1,
             "weekly_candidate_count": 1,
             "topic_count": 1,
-            "active_user_count": 1,
             "topics": [
                 {
                     "topic_index": 1,
@@ -457,21 +739,6 @@ def test_telegram_preprocess_run_persists_topics_active_users_and_new_counts(cli
                     "participants": [],
                 }
             ],
-            "active_users": [
-                {
-                    "rank": 1,
-                    "participant_id": repository.list_telegram_participants(self.session, self.project.id, limit=10)[0].id,
-                    "uid": "user1",
-                    "username": None,
-                    "display_name": "Alice",
-                    "primary_alias": "Alice",
-                    "aliases_json": ["Alice"],
-                    "message_count": 1,
-                    "first_seen_at": None,
-                    "last_seen_at": None,
-                    "evidence_json": [],
-                }
-            ],
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18, "cache_creation_tokens": 0, "cache_read_tokens": 0},
         }
 
@@ -483,16 +750,65 @@ def test_telegram_preprocess_run_persists_topics_active_users_and_new_counts(cli
 
     assert payload["status"] == "completed"
     assert payload["topic_count"] == 1
-    assert payload["active_user_count"] == 1
     assert payload["top_user_count"] == 1
     assert payload["weekly_candidate_count"] == 1
     assert payload["current_stage"] == "completed"
 
     topics_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/topics").json()
-    users_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/active-users").json()
+    top_users_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/top-users").json()
+    active_users_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/active-users").json()
 
     assert topics_payload["topics"][0]["title"] == "Telegram mode discussion"
-    assert users_payload["active_users"][0]["primary_alias"] == "Alice"
+    assert top_users_payload["top_users"][0]["display_name"] == "Alice"
+    assert active_users_payload["active_users"] == []
+
+
+def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+
+    def fake_process(self, run, *, progress_callback=None):
+        del self
+        assert (run.summary_json or {}).get("weekly_summary_concurrency") == 4
+        if progress_callback:
+            progress_callback("sql_bootstrap", 20, {"window_count": 1})
+            progress_callback(
+                "sql_materialize",
+                36,
+                {"top_user_count": 1, "weekly_candidate_count": 1, "window_count": 1},
+            )
+            progress_callback(
+                "weekly_topic_summary",
+                92,
+                {"topic_count": 0, "weekly_summary_concurrency": 4},
+            )
+        return {
+            "bootstrap": {"message_count": 4},
+            "window_count": 1,
+            "top_user_count": 1,
+            "weekly_candidate_count": 1,
+            "topic_count": 0,
+            "topics": [],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+            },
+        }
+
+    monkeypatch.setattr("app.telegram_preprocess.TelegramPreprocessWorker.process", fake_process)
+
+    response = client.post(
+        f"/api/projects/{project_id}/preprocess/runs",
+        json={"weekly_summary_concurrency": 4},
+    )
+    assert response.status_code == 200
+
+    payload = _wait_for_preprocess(client, project_id, response.json()["id"])
+
+    assert payload["status"] == "completed"
+    assert payload["weekly_summary_concurrency"] == 4
 
 
 def test_telegram_analysis_requires_successful_preprocess_run(client, app, monkeypatch):
@@ -573,8 +889,8 @@ def test_telegram_analysis_uses_preprocess_tables_and_skips_retrieval(client, ap
     monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     with app.state.db.session() as session:
-        active_users = repository.list_telegram_preprocess_active_users(session, project_id, run_id=preprocess_run_id)
-        participant_id = active_users[0].participant_id
+        top_users = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)
+        participant_id = top_users[0].participant_id
 
     response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -593,6 +909,277 @@ def test_telegram_analysis_uses_preprocess_tables_and_skips_retrieval(client, ap
     assert payload["summary"]["weekly_topic_count"] == 1
     assert payload["summary"]["target_user"]["participant_id"] == participant_id
     assert all(facet["findings"]["retrieval_mode"] == "telegram_agent" for facet in payload["facets"])
+
+
+def test_telegram_analysis_query_messages_balances_across_related_topics(client, app, monkeypatch):
+    project_id = _ingest_export_bytes(client, app, monkeypatch, _two_week_export(), project_name="Balanced Topics Workspace")
+    preprocess_run_id, participant_id = _seed_two_week_preprocess_tables(app, project_id)
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        agent = TelegramAnalysisAgent(session, project, llm_config=None)
+        target_user = agent.resolve_target_user(
+            target_user_query="Bob",
+            participant_id=participant_id,
+            preprocess_run_id=preprocess_run_id,
+        )
+        topics = repository.list_telegram_preprocess_topics(session, project_id, run_id=preprocess_run_id)
+        topic_ids = [topic.id for topic in topics]
+        output, state = agent._execute_tool(
+            "query_telegram_messages",
+            {
+                "participant_id": participant_id,
+                "topic_ids": topic_ids,
+                "limit": 4,
+            },
+            target_user,
+            preprocess_run_id,
+        )
+
+    message_ids = {item["message_id"] for item in output["messages"]}
+    assert any(message_id <= 3 for message_id in message_ids)
+    assert any(message_id >= 4 for message_id in message_ids)
+    assert state["week_keys"] == {"2025-W01", "2025-W02"}
+
+
+def test_telegram_analysis_related_topics_expose_participant_viewpoints(client, app, monkeypatch):
+    project_id = _ingest_export_bytes(client, app, monkeypatch, _two_week_export(), project_name="Related Topics Workspace")
+    preprocess_run_id, participant_id = _seed_two_week_preprocess_tables(app, project_id)
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        agent = TelegramAnalysisAgent(session, project, llm_config=None)
+        target_user = agent.resolve_target_user(
+            target_user_query="Bob",
+            participant_id=participant_id,
+            preprocess_run_id=preprocess_run_id,
+        )
+        output, state = agent._execute_tool(
+            "list_related_topics",
+            {"participant_id": participant_id, "limit": 6},
+            target_user,
+            preprocess_run_id,
+        )
+
+    assert output["topics"][0]["participant_viewpoints"][0]["stance_summary"]
+    assert output["topics"][0]["subtopics"]
+    assert state["week_keys"] == {"2025-W01", "2025-W02"}
+
+
+def test_telegram_analysis_blocks_raw_reads_before_topic_overview(client, app, monkeypatch):
+    project_id = _ingest_export_bytes(client, app, monkeypatch, _two_week_export(), project_name="Topic Guard Workspace")
+    preprocess_run_id, participant_id = _seed_two_week_preprocess_tables(app, project_id)
+    llm_config = ServiceConfig(
+        base_url="https://example.com/v1",
+        api_key="sk-test",
+        model="demo-model",
+        api_mode="responses",
+    )
+    round_counter = {"count": 0}
+
+    def fail_raw_reads(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("Raw Telegram reads should be blocked before topic overviews are listed.")
+
+    def fake_tool_round(self, messages, tools, **kwargs):
+        del self, tools, kwargs
+        round_counter["count"] += 1
+        if round_counter["count"] == 1:
+            return ToolRoundResult(
+                content="",
+                model="demo-model",
+                usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                tool_calls=[
+                    LLMToolCall(
+                        id="call-1",
+                        name="query_telegram_messages",
+                        arguments_json=json.dumps({"topic_ids": ["topic-a"], "limit": 2}),
+                        arguments={"topic_ids": ["topic-a"], "limit": 2},
+                    )
+                ],
+            )
+        assert "请先调用 list_related_topics" in messages[-1]["content"]
+        return ToolRoundResult(
+            content=json.dumps(
+                {
+                    "summary": "在查看话题概要前，原始消息读取已被阻止。",
+                    "bullets": ["必须先走 list_related_topics。"],
+                    "confidence": 0.73,
+                    "evidence": [],
+                    "conflicts": [],
+                    "notes": "tool loop guard worked",
+                },
+                ensure_ascii=False,
+            ),
+            model="demo-model",
+            usage={"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(repository, "list_telegram_messages", fail_raw_reads)
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        agent = TelegramAnalysisAgent(session, project, llm_config=llm_config)
+        result = agent.analyze_facet(
+            FacetDefinition(
+                key="personality",
+                label="人格特征",
+                purpose="验证 Telegram facet agent 的话题优先编排。",
+                search_query="人格",
+            ),
+            target_user_query="Bob",
+            participant_id=participant_id,
+            analysis_context="验证先话题、后原始消息。",
+            preprocess_run_id=preprocess_run_id,
+        )
+
+    assert round_counter["count"] == 2
+    assert result.payload["summary"] == "在查看话题概要前，原始消息读取已被阻止。"
+    assert result.retrieval_trace["tool_calls"][0]["tool"] == "query_telegram_messages"
+    assert "请先调用 list_related_topics" in result.retrieval_trace["tool_calls"][0]["result_preview"]
+
+
+def test_telegram_analysis_stream_emits_trace_events(client, app, monkeypatch):
+    project_payload = client.post(
+        "/api/projects",
+        json={"name": "Telegram Stream Trace", "description": "trace", "mode": "telegram"},
+    ).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="running",
+            summary_json={
+                "current_phase": "telegram_agent",
+                "active_facets": ["personality"],
+                "queued_facets": ["language_style"],
+            },
+        )
+        run_id = run.id
+        session.commit()
+
+    def push_trace_then_finish():
+        time.sleep(0.2)
+        app.state.analysis_stream_hub.publish(
+            run_id,
+            event="trace",
+            payload={
+                "kind": "tool_call",
+                "agent": "telegram_facet_agent",
+                "facet_key": "personality",
+                "request_key": "personality-round-1",
+                "tool_name": "list_related_topics",
+                "arguments_preview": "{\"limit\": 6}",
+            },
+        )
+        with app.state.db.session() as session:
+            live_run = repository.get_analysis_run(session, run_id)
+            live_run.status = "completed"
+            summary = dict(live_run.summary_json or {})
+            summary["active_facets"] = []
+            summary["queued_facets"] = []
+            summary["current_phase"] = "completed"
+            live_run.summary_json = summary
+            session.commit()
+        app.state.analysis_stream_hub.publish(run_id)
+
+    worker = threading.Thread(target=push_trace_then_finish, daemon=True)
+    worker.start()
+
+    stream_response = client.get(
+        f"/api/projects/{project_id}/analysis/stream",
+        params={"run_id": run_id},
+    )
+    worker.join(timeout=2.0)
+
+    assert stream_response.status_code == 200
+    assert "event: trace" in stream_response.text
+    assert '"tool_name": "list_related_topics"' in stream_response.text
+
+
+def test_telegram_profile_children_share_parent_preprocess_and_run_independently(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    preprocess_run_id = _seed_preprocess_tables(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    profile_response = client.post(
+        f"/projects/{project_id}/profiles",
+        data={"name": "Bob Persona", "description": "聚焦 Bob 的长期表达"},
+        follow_redirects=False,
+    )
+    assert profile_response.status_code == 303
+
+    with app.state.db.session() as session:
+        child = repository.list_child_projects(session, project_id)[0]
+        assert child.mode == "telegram"
+        participant_id = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)[0].participant_id
+
+    child_page = client.get(f"/projects/{child.id}")
+    assert child_page.status_code == 200
+    assert 'name="participant_id"' in child_page.text
+
+    shared_preprocess_run_id = preprocess_run_id
+
+    def fake_analyze_facet(self, facet, *, target_user_query, participant_id, analysis_context, preprocess_run_id=None):
+        assert self.project.id == project_id
+        assert target_user_query == "Bob"
+        assert preprocess_run_id == shared_preprocess_run_id
+        return TelegramFacetAnalysisResult(
+            payload={
+                "summary": f"{facet.key} for child telegram profile",
+                "bullets": [],
+                "confidence": 0.8,
+                "evidence": [],
+                "conflicts": [],
+                "notes": None,
+                "_meta": {
+                    "llm_called": True,
+                    "llm_success": True,
+                    "llm_attempts": 1,
+                    "provider_kind": "openai-compatible",
+                    "api_mode": "responses",
+                    "llm_model": "demo-model",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "cache_creation_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "request_url": "https://example.com/v1/responses",
+                    "request_payload": {"facet": facet.key, "mode": "telegram_user_analysis"},
+                    "raw_text": "{}",
+                    "llm_error": None,
+                    "log_path": None,
+                },
+            },
+            retrieval_trace={
+                "mode": "telegram_agent",
+                "tool_calls": [{"tool": "list_related_topics"}],
+                "preprocess_run_id": shared_preprocess_run_id,
+                "target_user": {"participant_id": participant_id, "label": "Bob"},
+                "topic_ids": ["topic-1"],
+                "topic_weeks_used": ["2025-W01"],
+                "queried_message_ids": [],
+                "topic_count_used": 1,
+            },
+            hit_count=0,
+        )
+
+    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+
+    response = client.post(
+        f"/api/projects/{child.id}/analyze",
+        json={"participant_id": participant_id, "target_user_query": "Bob", "analysis_context": "child telegram profile"},
+    )
+    assert response.status_code == 200
+    payload = _wait_for_analysis(client, child.id, response.json()["id"])
+
+    assert payload["status"] == "completed"
+    assert payload["summary"]["preprocess_run_id"] == shared_preprocess_run_id
+    assert payload["summary"]["telegram_message_count"] == 4
 
 
 def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch):
@@ -671,7 +1258,8 @@ def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(c
     assert payload["weekly_candidates"][0]["week_key"] == "2025-W01"
     assert payload["top_users"][0]["display_name"] == "Bob"
     assert payload["topics"][0]["title"] == "Telegram mode discussion"
-    assert payload["active_users"][0]["primary_alias"] == "Bob"
+    assert payload["topics"][0]["participant_viewpoints"][0]["stance_summary"] == "提出要先补齐 Telegram mode。"
+    assert payload["topics"][0]["subtopics"] == ["Telegram mode", "SQL evidence"]
     assert payload["trace_events"][0]["kind"] == "llm_request_started"
     assert payload["trace_events"][0]["stage"] == "weekly_topic_summary"
 
@@ -742,7 +1330,6 @@ def test_telegram_preprocess_failure_keeps_sql_intermediate_tables_without_final
 
     assert payload["status"] == "failed"
     assert payload["topics"] == []
-    assert payload["active_users"] == []
     assert payload["top_user_count"] >= 1
     assert payload["weekly_candidate_count"] >= 1
     assert all((event.get("agent") or "") != "window_topic_agent" for event in payload["trace_events"])
@@ -752,4 +1339,123 @@ def test_telegram_preprocess_failure_keeps_sql_intermediate_tables_without_final
         assert repository.list_telegram_preprocess_top_users(session, project_id, run_id=payload["id"])
         assert repository.list_telegram_preprocess_weekly_topic_candidates(session, project_id, run_id=payload["id"])
         assert repository.list_telegram_preprocess_topics(session, project_id, run_id=payload["id"]) == []
-        assert repository.list_telegram_preprocess_active_users(session, project_id, run_id=payload["id"]) == []
+
+
+def test_telegram_preprocess_resumes_existing_failed_run_from_checkpoint(client, app, monkeypatch):
+    project_id = _ingest_export_bytes(client, app, monkeypatch, _two_week_export(), project_name="Resume Workspace")
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        chat = repository.get_latest_telegram_chat(session, project_id)
+        run = repository.create_telegram_preprocess_run(
+            session,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            status="failed",
+            llm_model="demo-model",
+            summary_json={
+                "current_stage": "failed",
+                "progress_percent": 52,
+                "top_user_count": 0,
+                "weekly_candidate_count": 0,
+                "topic_count": 1,
+                "trace_events": [],
+                "trace_event_count": 0,
+                "resume_count": 0,
+                "resume_available": True,
+            },
+        )
+        worker = TelegramPreprocessWorker(session, project, llm_config=None)
+        top_users = worker._materialize_top_users(run.id, chat.id)
+        candidates = worker._materialize_weekly_topic_candidates(run.id, chat.id)
+        first_candidate = candidates[0]
+        first_participants = [
+            {
+                "participant_id": item["participant_id"],
+                "role_hint": None,
+                "message_count": int(item.get("message_count") or 0),
+                "mention_count": 0,
+            }
+            for item in list(first_candidate.top_participants_json or [])
+            if item.get("participant_id")
+        ]
+        repository.replace_telegram_preprocess_topics(
+            session,
+            run_id=run.id,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            topics=[
+                {
+                    "topic_index": 1,
+                    "title": f"{first_candidate.week_key} 周话题",
+                    "summary": "已保存的第一周总结。",
+                    "start_at": first_candidate.start_at,
+                    "end_at": first_candidate.end_at,
+                    "start_message_id": first_candidate.start_message_id,
+                    "end_message_id": first_candidate.end_message_id,
+                    "message_count": first_candidate.message_count,
+                    "participant_count": first_candidate.participant_count,
+                    "keywords_json": ["第一周", "checkpoint"],
+                    "evidence_json": [],
+                    "participants": first_participants,
+                    "metadata_json": {
+                        "week_key": first_candidate.week_key,
+                        "source": "weekly_topic_agent",
+                        "candidate_id": first_candidate.id,
+                    },
+                }
+            ],
+        )
+        session.commit()
+        resumable_run_id = run.id
+        remaining_week_key = candidates[1].week_key
+
+    called_weeks: list[str] = []
+
+    def fake_weekly_agent(self, run_id, candidate, topic_index, *, attempt):
+        del self, run_id, attempt
+        called_weeks.append(candidate.week_key)
+        return {
+            "topic_index": topic_index,
+            "title": f"{candidate.week_key} 周话题",
+            "summary": f"{candidate.week_key} 只补完剩余周，不重新扫描已完成周。",
+            "start_at": candidate.start_at,
+            "end_at": candidate.end_at,
+            "start_message_id": candidate.start_message_id,
+            "end_message_id": candidate.end_message_id,
+            "message_count": candidate.message_count,
+            "participant_count": candidate.participant_count,
+            "keywords_json": ["续跑", "checkpoint"],
+            "evidence_json": [],
+            "participants": [
+                {
+                    "participant_id": item["participant_id"],
+                    "role_hint": None,
+                    "message_count": int(item.get("message_count") or 0),
+                    "mention_count": 0,
+                }
+                for item in list(candidate.top_participants_json or [])
+                if item.get("participant_id")
+            ],
+            "metadata_json": {
+                "week_key": candidate.week_key,
+                "source": "weekly_topic_agent",
+                "candidate_id": candidate.id,
+            },
+        }
+
+    monkeypatch.setattr(TelegramPreprocessWorker, "_run_weekly_topic_agent", fake_weekly_agent)
+
+    response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert response.status_code == 200
+    assert response.json()["id"] == resumable_run_id
+
+    payload = _wait_for_preprocess(client, project_id, resumable_run_id)
+
+    assert payload["status"] == "completed"
+    assert payload["id"] == resumable_run_id
+    assert payload["topic_count"] == 2
+    assert called_weeks == [remaining_week_key]
+    assert any("saved checkpoint" in str(event.get("message") or "") for event in payload["trace_events"])
+    assert all((event.get("agent") or "") != "active_user_alias_agent" for event in payload["trace_events"])

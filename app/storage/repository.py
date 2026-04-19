@@ -744,6 +744,19 @@ def get_active_telegram_preprocess_run(session: Session, project_id: str) -> Tel
     return session.scalars(stmt).first()
 
 
+def get_latest_resumable_telegram_preprocess_run(session: Session, project_id: str) -> TelegramPreprocessRun | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessRun)
+        .where(
+            TelegramPreprocessRun.project_id == target_project_id,
+            TelegramPreprocessRun.status.in_(("failed", "cancelled", "queued", "running")),
+        )
+        .order_by(desc(TelegramPreprocessRun.created_at))
+    )
+    return session.scalars(stmt).first()
+
+
 def replace_telegram_preprocess_top_users(
     session: Session,
     *,

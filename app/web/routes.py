@@ -133,6 +133,10 @@ class PreprocessMessagePayload(BaseModel):
     message: str
 
 
+class TelegramPreprocessRunCreatePayload(BaseModel):
+    weekly_summary_concurrency: int | None = Field(default=None, ge=1, le=8)
+
+
 class AssetGeneratePayload(BaseModel):
     asset_kind: str = "skill"
 
@@ -210,8 +214,11 @@ def create_profile_form(
     name: Annotated[str, Form(...)],
     description: Annotated[str | None, Form()] = None,
 ):
-    _ensure_project(session, project_id)
-    child = repository.create_project(session, name=name, description=description, mode="single", parent_id=project_id)
+    parent = _ensure_project(session, project_id)
+    if parent.mode not in {"group", "telegram"}:
+        raise HTTPException(status_code=400, detail="Only group or Telegram projects can create child profiles.")
+    child_mode = "telegram" if parent.mode == "telegram" else "single"
+    child = repository.create_project(session, name=name, description=description, mode=child_mode, parent_id=project_id)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
 
@@ -708,11 +715,21 @@ def preprocess_page(
 
 
 @router.post("/projects/{project_id}/preprocess/run")
-def start_telegram_preprocess_form(request: Request, project_id: str, session: SessionDep):
+def start_telegram_preprocess_form(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    weekly_summary_concurrency: Annotated[int | None, Form(ge=1, le=8)] = None,
+):
     project = _ensure_project(session, project_id)
     if project.mode != "telegram":
         raise HTTPException(status_code=400, detail="Only Telegram projects use this preprocess flow.")
-    run = _create_telegram_preprocess_run(request, session, project_id)
+    run = _create_telegram_preprocess_run(
+        request,
+        session,
+        project_id,
+        weekly_summary_concurrency=weekly_summary_concurrency,
+    )
     return RedirectResponse(url=f"/projects/{project_id}/preprocess?run_id={run.id}", status_code=303)
 
 
@@ -1000,8 +1017,18 @@ def analyze_project_api(
 
 
 @router.post("/api/projects/{project_id}/preprocess/runs")
-def create_telegram_preprocess_run_api(request: Request, project_id: str, session: SessionDep):
-    run = _create_telegram_preprocess_run(request, session, project_id)
+def create_telegram_preprocess_run_api(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    payload: TelegramPreprocessRunCreatePayload | None = None,
+):
+    run = _create_telegram_preprocess_run(
+        request,
+        session,
+        project_id,
+        weekly_summary_concurrency=(payload.weekly_summary_concurrency if payload else None),
+    )
     return _ok_response("Telegram 预处理任务已创建。", **_serialize_telegram_preprocess_run(run))
 
 
@@ -1117,8 +1144,10 @@ def list_telegram_preprocess_top_users_api(project_id: str, run_id: str, session
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}/active-users")
 def list_telegram_preprocess_active_users_api(project_id: str, run_id: str, session: SessionDep):
     _resolve_telegram_preprocess_run(session, project_id, run_id)
-    users = repository.list_telegram_preprocess_active_users(session, project_id, run_id=run_id)
-    return _ok_response("已返回 Telegram 活跃用户表。", active_users=[_serialize_telegram_preprocess_active_user(item) for item in users])
+    return _ok_response(
+        "Telegram active-user snapshots have been removed from the preprocess flow. Use top-users instead.",
+        active_users=[],
+    )
 
 
 @router.get("/api/projects/{project_id}/analysis")
@@ -1155,23 +1184,34 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
                 return _serialize_analysis_run(live_run)
 
         try:
+            initial_payload = await run_in_threadpool(fetch_payload)
+            if initial_payload:
+                last_snapshot = json.dumps(initial_payload, ensure_ascii=False)
+                yield _format_sse("snapshot", initial_payload)
+                if initial_payload["status"] not in {"queued", "running"}:
+                    yield _format_sse("done", {"run_id": initial_payload["id"], "status": initial_payload["status"]})
+                    return
             while True:
                 try:
-                    await run_in_threadpool(subscription.get, True, 15.0)
+                    event = await run_in_threadpool(subscription.get, True, 15.0)
                 except Empty:
-                    pass
+                    event = {"event": "heartbeat", "payload": {}}
 
-                payload = await run_in_threadpool(fetch_payload)
-                if not payload:
-                    break
+                if event.get("event") == "trace":
+                    yield _format_sse("trace", event.get("payload") or {})
 
-                encoded = json.dumps(payload, ensure_ascii=False)
-                if encoded != last_snapshot:
-                    last_snapshot = encoded
-                    yield _format_sse("snapshot", payload)
-                if payload["status"] not in {"queued", "running"}:
-                    yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
-                    break
+                if event.get("event") in {"snapshot", "heartbeat"}:
+                    payload = await run_in_threadpool(fetch_payload)
+                    if not payload:
+                        break
+
+                    encoded = json.dumps(payload, ensure_ascii=False)
+                    if encoded != last_snapshot:
+                        last_snapshot = encoded
+                        yield _format_sse("snapshot", payload)
+                    if payload["status"] not in {"queued", "running"}:
+                        yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
+                        break
         finally:
             hub.unsubscribe(run.id, subscription)
 
@@ -1572,8 +1612,10 @@ def list_models_api(
 
 def _project_context(session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
+    source_project_id = repository.get_target_project_id(session, project_id)
     documents = repository.list_project_documents(session, project_id, limit=document_limit, offset=document_offset)
     doc_counts = repository.count_project_documents(session, project_id)
+    source_doc_counts = doc_counts if source_project_id == project_id else repository.count_project_documents(session, source_project_id)
     latest_run = repository.get_latest_analysis_run(session, project_id, load_facets=False, load_events=False)
     latest_draft = repository.get_latest_skill_draft(session, project_id)
     latest_version = repository.get_latest_skill_version(session, project_id)
@@ -1585,25 +1627,28 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         if project.mode == "telegram"
         else None
     )
-    telegram_active_users = (
-        repository.list_telegram_preprocess_active_users(session, project_id, run_id=latest_successful_preprocess_run.id)
+    telegram_top_users = (
+        repository.list_telegram_preprocess_top_users(session, project_id, run_id=latest_successful_preprocess_run.id)
         if latest_successful_preprocess_run
         else []
     )
-    can_analyze = doc_counts["ready"] > 0 and (
+    ready_count_for_analysis = source_doc_counts["ready"] if project.mode == "telegram" else doc_counts["ready"]
+    can_analyze = ready_count_for_analysis > 0 and (
         project.mode != "telegram" or latest_successful_preprocess_run is not None
     )
-    
+
     profiles = []
-    if project.mode == "group":
+    supports_profiles = project.parent_id is None and project.mode in {"group", "telegram"}
+    if supports_profiles:
         for p in repository.list_child_projects(session, project_id):
             p.latest_run = repository.get_latest_analysis_run(session, p.id)
             p.latest_skill = repository.get_latest_skill_version(session, p.id)
             profiles.append(p)
-            
+
     return {
         "project": project,
         "profiles": profiles,
+        "supports_profiles": supports_profiles,
         "documents": documents,
         "project_bootstrap": json.dumps(
             {
@@ -1630,7 +1675,9 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
         "latest_run": latest_run,
         "latest_preprocess_run": latest_preprocess_run,
         "latest_successful_preprocess_run": latest_successful_preprocess_run,
-        "telegram_active_users": telegram_active_users,
+        "telegram_top_users": telegram_top_users,
+        "telegram_active_users": telegram_top_users,
+        "preprocess_project_id": source_project_id if project.mode == "telegram" else project.id,
         "can_analyze": can_analyze,
         "latest_draft": latest_draft,
         "latest_version": latest_version,
@@ -1653,6 +1700,7 @@ def _project_context(session: Session, project_id: str, *, document_limit: int =
             "target_user_query": (
                 (latest_summary.get("target_user") or {}).get("label")
                 or latest_summary.get("target_user_query")
+                or (project.name if project.mode == "telegram" else "")
                 or ""
             ),
             "participant_id": latest_summary.get("participant_id") or "",
@@ -1685,11 +1733,6 @@ def _telegram_preprocess_context(
         if selected_run
         else []
     )
-    active_users = (
-        repository.list_telegram_preprocess_active_users(session, project_id, run_id=selected_run.id)
-        if selected_run
-        else []
-    )
     selected_run_payload = (
         _serialize_telegram_preprocess_detail(session, project_id, selected_run)
         if selected_run
@@ -1703,7 +1746,6 @@ def _telegram_preprocess_context(
         "top_users": selected_run_payload.get("top_users", []) if selected_run_payload else [],
         "weekly_candidates": selected_run_payload.get("weekly_candidates", []) if selected_run_payload else [],
         "topics": [_serialize_telegram_preprocess_topic(item) for item in topics],
-        "active_users": [_serialize_telegram_preprocess_active_user(item) for item in active_users],
         "can_start": repository.get_latest_telegram_chat(session, project_id) is not None,
         "telegram_preprocess_bootstrap": json.dumps(
             {
@@ -1716,21 +1758,23 @@ def _telegram_preprocess_context(
     }
 
 
-def _create_telegram_preprocess_run(request: Request, session: Session, project_id: str) -> TelegramPreprocessRun:
+def _create_telegram_preprocess_run(
+    request: Request,
+    session: Session,
+    project_id: str,
+    *,
+    weekly_summary_concurrency: int | None = None,
+) -> TelegramPreprocessRun:
     project = _ensure_project(session, project_id)
     if project.mode != "telegram":
         raise HTTPException(status_code=400, detail="Only Telegram projects use preprocess runs.")
-    if not repository.get_latest_telegram_chat(session, project_id):
+    source_project_id = repository.get_target_project_id(session, project_id)
+    if not repository.get_latest_telegram_chat(session, source_project_id):
         raise HTTPException(status_code=400, detail="Please upload and ingest a Telegram JSON export first.")
-    existing_run = repository.get_active_telegram_preprocess_run(session, project_id)
-    if existing_run and request.app.state.telegram_preprocess_manager.is_tracking(existing_run.id):
-        return existing_run
-    if existing_run and not request.app.state.telegram_preprocess_manager.is_tracking(existing_run.id):
-        existing_run.status = "failed"
-        existing_run.error_message = "Detected a stale Telegram preprocess run without a live worker."
-        existing_run.finished_at = utcnow()
-    session.commit()
-    created = request.app.state.telegram_preprocess_manager.submit(project_id)
+    created = request.app.state.telegram_preprocess_manager.submit(
+        source_project_id,
+        weekly_summary_concurrency=weekly_summary_concurrency,
+    )
     session.expire_all()
     refreshed = repository.get_telegram_preprocess_run(session, created.id)
     return refreshed or created
@@ -1740,8 +1784,9 @@ def _resolve_telegram_preprocess_run(session: Session, project_id: str, run_id: 
     project = _ensure_project(session, project_id)
     if project.mode != "telegram":
         raise HTTPException(status_code=400, detail="Only Telegram projects use preprocess runs.")
+    source_project_id = repository.get_target_project_id(session, project_id)
     run = repository.get_telegram_preprocess_run(session, run_id)
-    if not run or run.project_id != project_id:
+    if not run or run.project_id != source_project_id:
         raise HTTPException(status_code=404, detail="Telegram preprocess run not found.")
     return run
 
@@ -1758,18 +1803,14 @@ def _enqueue_analysis(
     concurrency: int | None = None,
 ) -> AnalysisRun:
     project = _ensure_project(session, project_id)
-    documents = repository.list_project_documents(session, project_id)
+    source_project_id = repository.get_target_project_id(session, project_id)
+    document_project_id = source_project_id if project.mode == "telegram" else project_id
+    documents = repository.list_project_documents(session, document_project_id)
     ready_documents = [document for document in documents if document.ingest_status == "ready"]
     if not ready_documents:
         raise HTTPException(status_code=400, detail="Upload at least one successfully ingested document first.")
-    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, project_id):
+    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, source_project_id):
         raise HTTPException(status_code=400, detail="Run Telegram preprocess successfully before analysis.")
-    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, project_id):
-        raise HTTPException(status_code=400, detail="Telegram 项目需要先完成一次成功的预处理。")
-    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, project_id):
-        raise HTTPException(status_code=400, detail="Telegram 项目需要先完成一次成功的预处理。")
-    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, project_id):
-        raise HTTPException(status_code=400, detail="Telegram 项目需要先完成一次成功的预处理。")
     existing_run = repository.get_active_analysis_run(session, project_id)
     if existing_run:
         if request.app.state.analysis_runner.is_tracking(existing_run.id):
@@ -2569,7 +2610,9 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
         "top_user_count": int(summary.get("top_user_count") or 0),
         "weekly_candidate_count": int(summary.get("weekly_candidate_count") or summary.get("window_count") or 0),
         "topic_count": int(run.topic_count or summary.get("topic_count") or 0),
-        "active_user_count": int(run.active_user_count or summary.get("active_user_count") or 0),
+        "weekly_summary_concurrency": int(summary.get("weekly_summary_concurrency") or 1),
+        "resume_available": bool(summary.get("resume_available")),
+        "resume_count": int(summary.get("resume_count") or 0),
         "error_message": run.error_message,
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -2614,6 +2657,7 @@ def _serialize_telegram_preprocess_weekly_candidate(candidate: TelegramPreproces
 
 
 def _serialize_telegram_preprocess_topic(topic: TelegramPreprocessTopic) -> dict[str, Any]:
+    metadata = dict(topic.metadata_json or {})
     return {
         "id": topic.id,
         "topic_index": topic.topic_index,
@@ -2627,6 +2671,18 @@ def _serialize_telegram_preprocess_topic(topic: TelegramPreprocessTopic) -> dict
         "participant_count": topic.participant_count,
         "keywords": topic.keywords_json or [],
         "evidence": topic.evidence_json or [],
+        "subtopics": [str(item).strip() for item in (metadata.get("subtopics") or []) if str(item).strip()],
+        "interaction_patterns": [
+            str(item).strip()
+            for item in (metadata.get("interaction_patterns") or [])
+            if str(item).strip()
+        ],
+        "participant_viewpoints": [
+            dict(item)
+            for item in (metadata.get("participant_viewpoints") or [])
+            if isinstance(item, dict)
+        ],
+        "metadata": metadata,
         "participants": [
             {
                 "participant_id": link.participant_id,
@@ -2676,10 +2732,6 @@ def _serialize_telegram_preprocess_detail(
     payload["topics"] = [
         _serialize_telegram_preprocess_topic(item)
         for item in repository.list_telegram_preprocess_topics(session, project_id, run_id=run.id)
-    ]
-    payload["active_users"] = [
-        _serialize_telegram_preprocess_active_user(item)
-        for item in repository.list_telegram_preprocess_active_users(session, project_id, run_id=run.id)
     ]
     return payload
 

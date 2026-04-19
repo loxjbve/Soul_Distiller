@@ -19,6 +19,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         payload: bootstrap.initial_run ? safeParseJson(bootstrap.initial_run, null) : null,
         pollTimer: null,
         stream: null,
+        traceEvents: [],
+        liveOutputByRequest: {},
+        activeRequestKey: null,
     };
 
     const elements = {
@@ -35,6 +38,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         facetList: document.getElementById("facet-status-list"),
         eventList: document.getElementById("analysis-events"),
         resultList: document.getElementById("analysis-result-list"),
+        liveTitle: document.getElementById("analysis-live-title"),
+        liveOutput: document.getElementById("analysis-live-output"),
+        traceList: document.getElementById("analysis-trace-list"),
     };
 
     if (state.payload) {
@@ -54,6 +60,13 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             if (!isRunning(payload.status)) {
                 stopStream();
             }
+        });
+        state.stream.addEventListener("trace", (event) => {
+            const payload = safeParseJson(event.data, null);
+            if (!payload) {
+                return;
+            }
+            handleTraceEvent(payload);
         });
         state.stream.addEventListener("done", () => stopStream());
         state.stream.onerror = () => {
@@ -84,6 +97,39 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         }, 1800);
     }
 
+    function handleTraceEvent(event) {
+        if (event.kind === "llm_delta") {
+            if (event.request_key) {
+                state.activeRequestKey = event.request_key;
+                state.liveOutputByRequest[event.request_key] = String(event.text_preview || "");
+            }
+            renderLiveOutput(event);
+            return;
+        }
+        pushTraceEvent(event);
+        if (event.kind === "llm_request_started" && event.request_key) {
+            state.activeRequestKey = event.request_key;
+            state.liveOutputByRequest[event.request_key] = "";
+        }
+        if (event.kind === "llm_request_completed" && event.request_key) {
+            state.activeRequestKey = event.request_key;
+            state.liveOutputByRequest[event.request_key] = String(
+                event.response_text_preview || state.liveOutputByRequest[event.request_key] || ""
+            );
+        }
+        renderTraceList();
+        renderLiveOutput(event);
+    }
+
+    function pushTraceEvent(event) {
+        const key = `${event.timestamp || ""}:${event.kind || ""}:${event.request_key || ""}:${event.tool_name || ""}:${event.round_index || ""}`;
+        if (state.traceEvents.some((item) => item._key === key)) {
+            return;
+        }
+        state.traceEvents.push({ ...event, _key: key });
+        state.traceEvents = state.traceEvents.slice(-120);
+    }
+
     function render(payload) {
         const summary = payload.summary || {};
         const facets = payload.facets || [];
@@ -108,6 +154,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         renderFacetList(facets);
         renderEvents(events);
         renderResults(facets);
+        renderTraceList();
+        renderLiveOutput();
     }
 
     function renderFacetList(facets) {
@@ -149,7 +197,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 </div>
                 <p>${escapeHtml(event.message || "")}</p>
                 <div class="event-card__meta top-gap">${escapeHtml(formatDateTime(event.created_at))}</div>
-                ${event.payload && Object.keys(event.payload).length ? `<pre class="top-gap">${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre>` : ""}
+                ${event.payload && Object.keys(event.payload).length ? `<details class="trace-disclosure top-gap"><summary class="trace-preview-line">${escapeHtml(collapseToSingleLine(JSON.stringify(event.payload, null, 2)))}</summary><pre class="trace-box trace-box--expanded top-gap">${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre></details>` : ""}
             `;
             elements.eventList.appendChild(card);
         });
@@ -187,6 +235,28 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 card.appendChild(evidence);
             }
 
+            const retrievalTrace = facet.findings?.retrieval_trace || null;
+            if (retrievalTrace) {
+                const trace = document.createElement("details");
+                trace.className = "trace-disclosure top-gap";
+                const toolCalls = retrievalTrace.tool_calls || [];
+                trace.innerHTML = `
+                    <summary class="trace-preview-line">${escapeHtml(buildRetrievalTracePreview(retrievalTrace))}</summary>
+                    <pre class="trace-box trace-box--expanded top-gap">${escapeHtml(JSON.stringify(retrievalTrace, null, 2))}</pre>
+                `;
+                card.appendChild(trace);
+
+                if (toolCalls.length) {
+                    const toolTrace = document.createElement("details");
+                    toolTrace.className = "trace-disclosure top-gap";
+                    toolTrace.innerHTML = `
+                        <summary class="trace-preview-line">${escapeHtml(`Tool Calls · ${toolCalls.length}`)}</summary>
+                        <pre class="trace-box trace-box--expanded top-gap">${escapeHtml(JSON.stringify(toolCalls, null, 2))}</pre>
+                    `;
+                    card.appendChild(toolTrace);
+                }
+            }
+
             if (facet.conflicts?.length) {
                 const conflicts = document.createElement("div");
                 conflicts.className = "top-gap";
@@ -203,9 +273,10 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
             if (facet.findings?.llm_response_text || facet.findings?.llm_live_text) {
                 const trace = document.createElement("details");
-                trace.className = "top-gap";
-                trace.innerHTML = `<summary>${escapeHtml(ui.trace || "LLM 跟踪")}</summary>`;
+                trace.className = "trace-disclosure top-gap";
+                trace.innerHTML = `<summary class="trace-preview-line">${escapeHtml(ui.trace || "LLM 跟踪")}</summary>`;
                 const pre = document.createElement("pre");
+                pre.className = "trace-box trace-box--expanded top-gap";
                 pre.textContent = facet.findings.llm_response_text || facet.findings.llm_live_text || "";
                 trace.appendChild(pre);
                 card.appendChild(trace);
@@ -225,6 +296,60 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         });
     }
 
+    function renderTraceList() {
+        if (!elements.traceList) {
+            return;
+        }
+        elements.traceList.innerHTML = "";
+        const events = state.traceEvents.slice(-80);
+        if (!events.length) {
+            elements.traceList.innerHTML = `<div class="empty-panel"><strong>等待 Agent trace…</strong></div>`;
+            return;
+        }
+        events.forEach((event) => {
+            const card = document.createElement("article");
+            card.className = "event-card compact-card";
+            const meta = [
+                event.agent || "",
+                event.facet_key || "",
+                event.round_index ? `round ${event.round_index}` : "",
+                event.tool_name ? `tool ${event.tool_name}` : "",
+            ]
+                .filter(Boolean)
+                .join(" · ");
+            const detailText = event.output_preview || event.response_text_preview || event.arguments_preview || event.prompt_preview || "";
+            card.innerHTML = `
+                <div class="project-card__title-row">
+                    <strong>${escapeHtml(summarizeTraceEvent(event))}</strong>
+                    <span class="status-chip tone-${traceTone(event.kind)}">${escapeHtml(event.kind || "trace")}</span>
+                </div>
+                <p class="helper-text">${escapeHtml(meta || "--")}</p>
+                <div class="event-card__meta top-gap">${escapeHtml(formatDateTime(event.timestamp))}</div>
+                ${detailText ? `
+                    <details class="trace-disclosure top-gap">
+                        <summary class="trace-preview-line">${escapeHtml(collapseToSingleLine(detailText))}</summary>
+                        <pre class="trace-box trace-box--expanded top-gap">${escapeHtml(detailText)}</pre>
+                    </details>
+                ` : ""}
+            `;
+            elements.traceList.appendChild(card);
+        });
+    }
+
+    function renderLiveOutput(event = null) {
+        if (!elements.liveTitle || !elements.liveOutput) {
+            return;
+        }
+        const requestKey = event?.request_key || state.activeRequestKey;
+        if (!requestKey) {
+            updateText(elements.liveTitle, "等待新的 Agent 请求");
+            updateText(elements.liveOutput, "");
+            return;
+        }
+        updateText(elements.liveTitle, summarizeLiveTitle(event, requestKey));
+        updateText(elements.liveOutput, state.liveOutputByRequest[requestKey] || "");
+    }
+
     async function rerunFacet(facetKey, button) {
         button.disabled = true;
         try {
@@ -236,6 +361,62 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         } finally {
             button.disabled = false;
         }
+    }
+
+    function buildRetrievalTracePreview(trace) {
+        const topicCount = Number(trace.topic_count_used || trace.topic_ids?.length || 0);
+        const weekCount = Number(trace.topic_weeks_used?.length || 0);
+        const toolCount = Number(trace.tool_calls?.length || 0);
+        return `Topics ${topicCount} · Weeks ${weekCount} · Tools ${toolCount}`;
+    }
+
+    function summarizeTraceEvent(event) {
+        if (event.kind === "agent_started") {
+            return `${event.label || event.facet_key || "Agent"} started`;
+        }
+        if (event.kind === "agent_completed") {
+            return `${event.label || event.facet_key || "Agent"} completed`;
+        }
+        if (event.kind === "llm_request_started") {
+            return "LLM 请求开始";
+        }
+        if (event.kind === "llm_request_completed") {
+            return "LLM 请求完成";
+        }
+        if (event.kind === "tool_call") {
+            return `Tool 调用 · ${event.tool_name || "unknown"}`;
+        }
+        if (event.kind === "tool_result") {
+            return `Tool 返回 · ${event.tool_name || "unknown"}`;
+        }
+        return event.kind || "trace";
+    }
+
+    function summarizeLiveTitle(event, requestKey) {
+        const trace = event || state.traceEvents.slice().reverse().find((item) => item.request_key === requestKey) || {};
+        const parts = [trace.agent || "agent", trace.facet_key || "", trace.tool_name ? `tool ${trace.tool_name}` : ""].filter(Boolean);
+        return parts.join(" · ") || requestKey;
+    }
+
+    function traceTone(kind) {
+        if (kind === "tool_call") {
+            return "queued";
+        }
+        if (kind === "tool_result" || kind === "llm_request_completed" || kind === "agent_completed") {
+            return "ready";
+        }
+        if (kind === "llm_request_started" || kind === "agent_started" || kind === "llm_delta") {
+            return "processing";
+        }
+        return "warning";
+    }
+
+    function collapseToSingleLine(text, limit = 220) {
+        const compact = String(text || "").replace(/\s+/g, " ").trim();
+        if (compact.length <= limit) {
+            return compact;
+        }
+        return `${compact.slice(0, limit)}...`;
     }
 
     function normalizeTone(status) {

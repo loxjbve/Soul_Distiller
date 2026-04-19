@@ -572,9 +572,11 @@ class AnalysisEngine:
         project: Project,
         chat_config: ServiceConfig | None,
     ) -> TelegramAnalysisAgent:
+        source_project_id = repository.get_target_project_id(session, project.id)
+        source_project = repository.get_project(session, source_project_id) or project
         return TelegramAnalysisAgent(
             session,
-            project,
+            source_project,
             llm_config=chat_config,
             log_path=self.llm_log_path,
         )
@@ -585,22 +587,24 @@ class AnalysisEngine:
         run: AnalysisRun,
     ) -> dict[str, Any]:
         summary = dict(run.summary_json or {})
+        source_project_id = repository.get_target_project_id(session, run.project_id)
         preprocess_run = None
         preprocess_run_id = summary.get("preprocess_run_id")
         if preprocess_run_id:
             preprocess_run = repository.get_telegram_preprocess_run(session, str(preprocess_run_id))
         if not preprocess_run:
-            preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, run.project_id)
+            preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, source_project_id)
         summary["chunk_count"] = 0
+        summary["telegram_source_project_id"] = source_project_id
         summary["telegram_message_count"] = int(
             session.scalar(
-                select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == run.project_id)
+                select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == source_project_id)
             )
             or 0
         )
         summary["telegram_participant_count"] = int(
             session.scalar(
-                select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == run.project_id)
+                select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == source_project_id)
             )
             or 0
         )
@@ -650,6 +654,7 @@ class AnalysisEngine:
         chat_config: ServiceConfig | None,
     ) -> None:
         agent = self._build_telegram_agent(session, project, chat_config)
+        agent.trace_callback = lambda event: self._publish_trace(run.id, event)
         summary = self._refresh_telegram_summary_counts(session, run)
         if not summary.get("preprocess_run_id"):
             raise ValueError("Telegram analysis requires a completed preprocess run.")
@@ -760,6 +765,7 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
     ) -> AnalysisRun:
         agent = self._build_telegram_agent(session, project, chat_config)
+        agent.trace_callback = lambda event: self._publish_trace(run.id, event)
         self._refresh_telegram_summary_counts(session, run)
         if not (run.summary_json or {}).get("preprocess_run_id"):
             raise ValueError("Telegram analysis requires a completed preprocess run.")
@@ -1801,7 +1807,7 @@ class AnalysisEngine:
     ) -> dict[str, Any]:
         project = repository.get_project(session, project_id)
         is_telegram = bool(project and project.mode == "telegram")
-        target_project_id = project_id if is_telegram else repository.get_target_project_id(session, project_id)
+        target_project_id = repository.get_target_project_id(session, project_id)
         document_count = (
             session.scalar(
                 select(func.count()).select_from(DocumentRecord).where(DocumentRecord.project_id == target_project_id)
@@ -1836,23 +1842,23 @@ class AnalysisEngine:
         if is_telegram:
             telegram_message_count = (
                 session.scalar(
-                    select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == project_id)
+                    select(func.count()).select_from(TelegramMessage).where(TelegramMessage.project_id == target_project_id)
                 )
                 or 0
             )
             telegram_participant_count = (
                 session.scalar(
-                    select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == project_id)
+                    select(func.count()).select_from(TelegramParticipant).where(TelegramParticipant.project_id == target_project_id)
                 )
                 or 0
             )
             telegram_report_count = (
                 session.scalar(
-                    select(func.count()).select_from(TelegramTopicReport).where(TelegramTopicReport.project_id == project_id)
+                    select(func.count()).select_from(TelegramTopicReport).where(TelegramTopicReport.project_id == target_project_id)
                 )
                 or 0
             )
-            latest_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+            latest_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, target_project_id)
             if latest_preprocess_run:
                 preprocess_run_id = latest_preprocess_run.id
                 weekly_candidate_count = int((latest_preprocess_run.summary_json or {}).get("weekly_candidate_count") or 0)
@@ -1870,6 +1876,7 @@ class AnalysisEngine:
             "telegram_message_count": telegram_message_count,
             "telegram_participant_count": telegram_participant_count,
             "telegram_report_count": telegram_report_count,
+            "telegram_source_project_id": target_project_id if is_telegram else None,
             "preprocess_run_id": preprocess_run_id,
             "topic_count_used": 0,
             "weekly_candidate_count": weekly_candidate_count,
@@ -1950,6 +1957,13 @@ class AnalysisEngine:
         session.commit()
         if run_id and self.stream_hub:
             self.stream_hub.publish(run_id)
+
+    def _publish_trace(self, run_id: str, event: dict[str, Any] | None) -> None:
+        if not self.stream_hub or not run_id:
+            return
+        payload = dict(event or {})
+        payload.setdefault("timestamp", utcnow().isoformat())
+        self.stream_hub.publish(run_id, event="trace", payload=payload)
 
     def _is_run_cancelled(self, run_id: str, project_id: str) -> bool:
         if not self.cancel_checker:

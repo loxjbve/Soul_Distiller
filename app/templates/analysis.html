@@ -95,6 +95,20 @@
         <section class="surface-card">
             <div class="section-head slim-head">
                 <div>
+                    <p class="eyebrow">Agent Trace</p>
+                    <h2>Live Agent Trace</h2>
+                </div>
+            </div>
+            <div class="stream-panel">
+                <p id="analysis-live-title" class="helper-text">等待新的 Agent 请求</p>
+                <pre id="analysis-live-output" class="trace-box top-gap"></pre>
+            </div>
+            <div id="analysis-trace-list" class="event-stream top-gap"></div>
+        </section>
+
+        <section class="surface-card">
+            <div class="section-head slim-head">
+                <div>
                     <p class="eyebrow">Results</p>
                     <h2>{{ ui.result_title }}</h2>
                 </div>

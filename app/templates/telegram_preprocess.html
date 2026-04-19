@@ -6,12 +6,24 @@
     <div class="hero-copy">
         <p class="eyebrow">Telegram</p>
         <h1>{{ project.name }} 的预处理任务</h1>
-        <p class="hero-note">上传结构化 JSON 后，系统会先把原始记录导入 SQLite，再执行 SQL 聚合、周话题 Agent 总结和活跃用户别名推断。页面会实时展示每一次 LLM 请求、工具调用和最终结构化结果。</p>
+        <p class="hero-note">上传结构化 JSON 后，系统会先导入 SQLite，再执行 SQL 聚合和周话题总结。页面会实时展示每次 LLM 请求与阶段进度。</p>
     </div>
     <div class="hero-actions">
         <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
-        <form method="post" action="/projects/{{ project.id }}/preprocess/run">
-            <button type="submit" class="primary-button" {% if not can_start %}disabled{% endif %}>开始预处理</button>
+        <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="form-stack telegram-preprocess-start-form">
+            <label>
+                <span>周总结并发</span>
+                <input
+                    type="number"
+                    name="weekly_summary_concurrency"
+                    min="1"
+                    max="8"
+                    value="{{ selected_run_data.weekly_summary_concurrency if selected_run_data else 1 }}"
+                >
+            </label>
+            <button type="submit" class="primary-button" {% if not can_start %}disabled{% endif %}>
+                {{ "继续预处理" if selected_run_data and selected_run_data.resume_available else "开始预处理" }}
+            </button>
         </form>
     </div>
 </section>
@@ -33,14 +45,14 @@
             <div class="metric-row"><span>周候选数</span><strong id="telegram-preprocess-weekly-candidate-count">{{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</strong></div>
             <div class="metric-row"><span>Top Users 数</span><strong id="telegram-preprocess-top-user-count">{{ selected_run_data.top_user_count if selected_run_data else 0 }}</strong></div>
             <div class="metric-row"><span>最终话题数</span><strong id="telegram-preprocess-topic-count">{{ selected_run_data.topic_count if selected_run_data else 0 }}</strong></div>
-            <div class="metric-row"><span>活跃用户数</span><strong id="telegram-preprocess-active-user-count">{{ selected_run_data.active_user_count if selected_run_data else 0 }}</strong></div>
+            <div class="metric-row"><span>周总结并发</span><strong id="telegram-preprocess-weekly-concurrency">{{ selected_run_data.weekly_summary_concurrency if selected_run_data else 1 }}</strong></div>
             <div class="metric-row"><span>Total Tokens</span><strong id="telegram-preprocess-total-tokens">{{ selected_run_data.total_tokens if selected_run_data else 0 }}</strong></div>
             <div class="metric-row"><span>Cache Read</span><strong id="telegram-preprocess-cache-read">{{ selected_run_data.cache_read_tokens if selected_run_data else 0 }}</strong></div>
         </div>
         <div class="progress-shell top-gap">
             <div class="progress-labels">
                 <strong>总体进度</strong>
-                <span id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
+                <span id="telegram-preprocess-progress-label-duplicate">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
             </div>
             <div class="progress-track">
                 <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
@@ -48,7 +60,7 @@
         </div>
         <div class="progress-shell top-gap">
             <div class="progress-labels">
-                <strong>当前进度 (周话题)</strong>
+                <strong>当前进度（周话题）</strong>
                 <span id="telegram-preprocess-current-progress-label">0%</span>
             </div>
             <div class="progress-track">
@@ -129,7 +141,7 @@
         </div>
         <div id="telegram-preprocess-weekly-candidates" class="document-board">
             {% if not weekly_candidates %}
-                <div class="empty-panel"><strong>当前 Run 还没有周话题候选结果。</strong></div>
+                <div class="empty-panel"><strong>当前 Run 还没有周候选结果。</strong></div>
             {% endif %}
         </div>
     </article>
@@ -159,20 +171,6 @@
     <div id="telegram-preprocess-topics" class="document-board">
         {% if not topics %}
             <div class="empty-panel"><strong>当前 Run 还没有最终话题结果。</strong></div>
-        {% endif %}
-    </div>
-</section>
-
-<section class="surface-card">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">Final Result</p>
-            <h2>活跃用户表</h2>
-        </div>
-    </div>
-    <div id="telegram-preprocess-active-users" class="document-board">
-        {% if not active_users %}
-            <div class="empty-panel"><strong>当前 Run 还没有活跃用户结果。</strong></div>
         {% endif %}
     </div>
 </section>

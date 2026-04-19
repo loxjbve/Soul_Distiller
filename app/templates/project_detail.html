@@ -23,7 +23,7 @@
         {% endif %}
         <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">资产输出</a>
         <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
-        <a class="ghost-button" href="/projects/{{ project.id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+        <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
         <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
         <form method="post" action="/projects/{{ project.id }}/delete">
             <button type="submit" class="ghost-button danger-button" data-confirm="{{ ui.common.confirm_delete_project }}">{{ ui.common.delete }}</button>
@@ -77,7 +77,7 @@
     </article>
 
     <article class="surface-card">
-        {% if project.mode == 'group' %}
+        {% if supports_profiles %}
             <div class="section-head">
                 <div>
                     <p class="eyebrow">Profiles</p>
@@ -100,11 +100,17 @@
                             </div>
                             <div class="button-row">
                                 <form method="post" action="/projects/{{ profile.id }}/analyze" class="inline-form">
-                                    <input type="hidden" name="target_role" value="{{ profile.name }}">
+                                    {% if profile.mode == 'telegram' %}
+                                        <input type="hidden" name="target_user_query" value="{{ profile.name }}">
+                                        <input type="hidden" name="participant_id" value="">
+                                    {% else %}
+                                        <input type="hidden" name="target_role" value="{{ profile.name }}">
+                                    {% endif %}
                                     <input type="hidden" name="analysis_context" value="{{ profile.description or '' }}">
-                                    <input type="hidden" name="concurrency" value="{{ analysis_concurrency_default }}">
-                                    <button type="submit" class="ghost-button" {% if stats.ready_count == 0 %}disabled{% endif %}>{{ ui.profile_run_analysis }}</button>
+                                    <input type="hidden" name="concurrency" value="{{ 1 if profile.mode == 'telegram' else analysis_concurrency_default }}">
+                                    <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>{{ ui.profile_run_analysis }}</button>
                                 </form>
+                                <a class="ghost-button" href="/projects/{{ profile.id }}">打开画像</a>
                                 {% if profile.latest_run %}
                                     <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
                                 {% endif %}
@@ -264,7 +270,7 @@
     </div>
 </div>
 
-{% if project.mode == 'group' %}
+{% if supports_profiles %}
 <div class="modal-overlay" id="add-profile-modal" hidden>
     <div class="modal-dialog">
         <div class="modal-head">
