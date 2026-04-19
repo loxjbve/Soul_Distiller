@@ -10,7 +10,7 @@
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
                 <h1>{{ project.name }} | {{ ui.title }}</h1>
-                <span class="page-banner__label">Agentic Analysis Center</span>
+                <span class="page-banner__label">{{ ui.banner_title_label }}</span>
             </div>
             <p>{{ ui.hero_note }}</p>
             <div class="page-banner__actions">
@@ -24,8 +24,8 @@
         <div class="page-banner__meta">
             <div class="page-banner__portrait"></div>
             <div class="page-banner__signal-row">
-                <span class="page-banner__label">Multi-agent lanes</span>
-                <span class="page-banner__label">Facet diagnostics</span>
+                <span class="page-banner__label">{{ ui.banner_lanes_label }}</span>
+                <span class="page-banner__label">{{ ui.banner_diagnostics_label }}</span>
             </div>
         </div>
     </section>
@@ -51,10 +51,10 @@
                     <article class="metric-card">
                         <span>{{ ui.concurrency }}</span>
                         <strong id="analysis-requested-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
-                        <p id="analysis-effective-note">Effective {{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</p>
+                        <p id="analysis-effective-note">{{ ui.effective_label }} {{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</p>
                     </article>
                     <article class="metric-card">
-                        <span>Active Agents</span>
+                        <span>{{ ui.active_agents_label }}</span>
                         <strong id="analysis-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
                         <p id="analysis-slot-usage">{{ summary.get("active_facets", 0) }} / {{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</p>
                     </article>
@@ -69,23 +69,23 @@
             <article class="panel-shell analysis-center-panel">
                 <div class="panel-header">
                     <div>
-                        <p class="eyebrow">Agent Center</p>
-                        <h2>Agentic Analysis Center</h2>
+                        <p class="eyebrow">{{ ui.agent_center_eyebrow }}</p>
+                        <h2>{{ ui.agent_center_title }}</h2>
                     </div>
-                    <span class="analysis-live-pill" id="analysis-live-pill">Connecting</span>
+                    <span class="analysis-live-pill" id="analysis-live-pill">{{ ui.live_connecting }}</span>
                 </div>
                 <div class="panel-body">
                     <div class="analysis-progress-spotlight__header">
                         <div>
-                            <p class="eyebrow">Run Pulse</p>
+                            <p class="eyebrow">{{ ui.run_pulse_eyebrow }}</p>
                             <h3 id="analysis-hero-stage">{{ summary.get("current_stage", ui.waiting) }}</h3>
                             <p class="section-note" id="analysis-hero-note">{{ summary.get("current_facet") or ui.waiting }}</p>
                         </div>
                         <div class="analysis-signal-chip-row">
-                            <span class="analysis-signal-chip" id="analysis-completed-count">Completed {{ summary.get("completed_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-running-count">Running {{ summary.get("active_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-queued-count">Queued {{ summary.get("queued_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-failed-count">Failed {{ summary.get("failed_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-completed-count">{{ ui.completed }} {{ summary.get("completed_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-running-count">{{ ui.running }} {{ summary.get("active_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-queued-count">{{ ui.queued }} {{ summary.get("queued_facets", 0) }}</span>
+                            <span class="analysis-signal-chip" id="analysis-failed-count">{{ ui.failed }} {{ summary.get("failed_facets", 0) }}</span>
                         </div>
                     </div>
                     <div class="progress-shell">
@@ -100,7 +100,7 @@
                     <div class="agent-center-stage">
                         <div class="agent-lane-strip panel-scroll" id="analysis-agent-lanes" data-lane-strip data-panel-scroll>
                             <div class="empty-panel">
-                                <strong>No active agents yet.</strong>
+                                <strong>{{ ui.no_active_agents }}</strong>
                             </div>
                         </div>
                         <div id="analysis-feed" class="agent-center-feed panel-scroll" data-live-feed data-panel-scroll></div>
@@ -112,7 +112,7 @@
                 <article class="panel-shell">
                     <div class="panel-header panel-header--slim">
                         <div>
-                            <p class="eyebrow">Run State</p>
+                            <p class="eyebrow">{{ ui.run_state_eyebrow }}</p>
                             <h2>{{ ui.progress }}</h2>
                         </div>
                         <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
@@ -120,15 +120,15 @@
                     <div class="panel-body">
                         <div class="metric-list">
                             <div class="metric-row">
-                                <span>Requested</span>
+                                <span>{{ ui.requested_label }}</span>
                                 <strong id="analysis-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
                             </div>
                             <div class="metric-row">
-                                <span>Effective</span>
+                                <span>{{ ui.effective_label }}</span>
                                 <strong id="analysis-effective-concurrency">{{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</strong>
                             </div>
                             <div class="metric-row">
-                                <span>Live Agents</span>
+                                <span>{{ ui.live_agents_label }}</span>
                                 <strong id="analysis-effective-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
                             </div>
                         </div>
@@ -169,7 +169,7 @@
                 </div>
                 <div class="panel-body panel-body--tight">
                     <details class="analysis-diagnostics" open>
-                        <summary>Inspect raw event stream and live diagnostics</summary>
+                        <summary>{{ ui.inspect_event_stream_summary }}</summary>
                         <div id="analysis-diagnostics-list" class="event-stream panel-scroll" data-panel-scroll></div>
                     </details>
                 </div>
