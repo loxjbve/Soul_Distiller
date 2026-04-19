@@ -1,6 +1,7 @@
 @layer pages {
     .page-home .page-content {
         grid-template-columns: minmax(320px, 0.92fr) minmax(0, 1.38fr);
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .home-rail-grid {
@@ -50,6 +51,7 @@
         min-height: 0;
         display: grid;
         grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.92fr);
+        grid-template-rows: minmax(0, 1fr);
         gap: var(--shell-gap);
     }
 
@@ -204,7 +206,7 @@
         flex: 1 1 auto;
         min-height: 0;
         display: grid;
-        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-rows: minmax(0, 0.8fr) minmax(0, 1.2fr);
         gap: var(--space-4);
     }
 
@@ -215,7 +217,7 @@
 
     .page-telegram-preprocess .page-content {
         grid-template-columns: minmax(0, 1.54fr) minmax(320px, 0.94fr);
-        grid-template-rows: auto auto minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
         grid-template-areas:
             "pulse status"
             "workers trace"
@@ -246,6 +248,7 @@
         min-height: 0;
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: minmax(0, 1fr);
         gap: var(--shell-gap);
     }
 
@@ -253,17 +256,19 @@
         min-height: 0;
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-rows: minmax(0, 1fr);
         gap: var(--shell-gap);
     }
 
     .page-assets .page-content {
         grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.26fr) minmax(300px, 0.92fr);
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .assets-side-column {
         min-height: 0;
         display: grid;
-        grid-template-rows: auto minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
         gap: var(--shell-gap);
     }
 
@@ -279,6 +284,7 @@
 
     .page-preprocess .page-content {
         grid-template-columns: minmax(260px, 0.78fr) minmax(0, 1.42fr) minmax(260px, 0.88fr);
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .preprocess-main,
@@ -317,10 +323,12 @@
 
     .page-playground .page-content {
         grid-template-columns: minmax(280px, 0.82fr) minmax(0, 1.48fr);
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .page-settings .page-content {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: minmax(0, 1fr);
     }
 
     .analysis-progress-spotlight__header,
@@ -347,7 +355,7 @@
     @media (max-width: 1500px) {
         .page-project .page-content {
             grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
-            grid-template-rows: auto auto minmax(0, 1fr);
+            grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
             grid-template-areas:
                 "upload rail"
                 "primary rail"
@@ -370,7 +378,7 @@
                 "rail"
                 "results"
                 "diagnostics";
-            grid-template-rows: auto minmax(0, 1.1fr) auto minmax(0, 0.8fr) minmax(0, 0.8fr);
+            grid-template-rows: auto minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
         }
 
         .page-telegram-preprocess .page-content {
@@ -380,6 +388,7 @@
                 "workers"
                 "trace"
                 "data";
+            grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
         }
 
         .telegram-preprocess-live-grid,

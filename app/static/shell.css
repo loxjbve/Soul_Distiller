@@ -27,7 +27,7 @@
         justify-content: space-between;
         gap: var(--space-5);
         padding: 14px 18px;
-        border: 1px solid var(--line-subtle);
+        border: 1px solid var(--line-strong);
         border-radius: var(--radius-md);
         background:
             var(--glass-sheen),
@@ -115,8 +115,9 @@
     .nav-links a:hover,
     .nav-links a.is-active {
         color: var(--text-strong);
-        border-color: rgba(97, 168, 255, 0.2);
-        background: rgba(97, 168, 255, 0.08);
+        border-color: rgba(97, 168, 255, 0.4);
+        background: rgba(97, 168, 255, 0.12);
+        box-shadow: 0 0 15px rgba(97, 168, 255, 0.2);
         transform: translateY(-1px);
     }
 
@@ -142,13 +143,13 @@
         grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.92fr);
         gap: var(--shell-gap);
         padding: 28px;
-        border: 1px solid var(--line-subtle);
+        border: 1px solid var(--line-accent);
         border-radius: var(--radius-lg);
         background:
             var(--frame-glow),
             var(--glass-sheen),
             linear-gradient(180deg, rgba(15, 18, 28, 0.94), rgba(10, 12, 20, 0.9));
-        box-shadow: var(--shadow-hard);
+        box-shadow: 0 0 20px rgba(97, 168, 255, 0.15), var(--shadow-hard);
         overflow: hidden;
     }
 
@@ -288,12 +289,12 @@
         min-height: 0;
         display: flex;
         flex-direction: column;
-        border: 1px solid var(--line-subtle);
+        border: 1px solid var(--line-strong);
         border-radius: var(--radius-md);
         background:
             var(--glass-sheen),
             linear-gradient(180deg, rgba(17, 19, 30, 0.9), rgba(10, 12, 20, 0.9));
-        box-shadow: var(--shadow-soft);
+        box-shadow: 0 0 15px rgba(97, 168, 255, 0.08), var(--shadow-soft);
         overflow: hidden;
         animation: panel-rise var(--motion-slow) var(--easing-standard) both;
     }
@@ -377,6 +378,7 @@
 
     .screen-noise,
     .screen-grid,
+    .screen-scanline,
     .screen-aura,
     .cursor-glow {
         position: fixed;
@@ -388,6 +390,7 @@
 
     .theme-ambient .screen-noise,
     .theme-ambient .screen-grid,
+    .theme-ambient .screen-scanline,
     .theme-ambient .screen-aura {
         opacity: 1;
     }
@@ -402,11 +405,28 @@
     .screen-grid {
         z-index: -5;
         background:
-            linear-gradient(rgba(97, 168, 255, 0.05) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(97, 168, 255, 0.05) 1px, transparent 1px);
-        background-size: 52px 52px;
-        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.4), transparent 86%);
-        opacity: 0.22;
+            linear-gradient(rgba(97, 168, 255, 0.08) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(97, 168, 255, 0.08) 1px, transparent 1px);
+        background-size: 40px 40px;
+        mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), transparent 90%);
+        opacity: 0.3;
+    }
+
+    .screen-scanline {
+        z-index: -3;
+        background: linear-gradient(
+            to bottom,
+            transparent 50%,
+            rgba(97, 168, 255, 0.04) 51%,
+            transparent 51%
+        );
+        background-size: 100% 4px;
+        animation: scanline-scroll 10s linear infinite;
+    }
+
+    @keyframes scanline-scroll {
+        0% { background-position: 0 0; }
+        100% { background-position: 0 100vh; }
     }
 
     .screen-aura {
