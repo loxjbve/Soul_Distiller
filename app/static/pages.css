@@ -379,12 +379,12 @@
     }
 
     .page-analysis .page-content {
-        grid-template-columns: minmax(0, 1.68fr) minmax(280px, 0.84fr);
-        grid-template-rows: auto minmax(0, 1.1fr) minmax(0, 0.74fr);
+        grid-template-columns: minmax(0, 1.56fr) minmax(320px, 0.88fr);
+        grid-template-rows: auto minmax(0, 1.08fr) minmax(0, 0.92fr);
         grid-template-areas:
             "pulse pulse"
-            "center rail"
-            "results diagnostics";
+            "center diagnostics"
+            "results results";
     }
 
     .analysis-pulse-grid {
@@ -395,28 +395,12 @@
         grid-area: center;
     }
 
-    .analysis-side-rail {
-        grid-area: rail;
-        min-height: 0;
-        display: grid;
-        grid-template-rows: auto minmax(0, 1fr);
-        gap: var(--space-3);
-    }
-
     .analysis-results-panel {
         grid-area: results;
     }
 
     .analysis-diagnostics-panel {
         grid-area: diagnostics;
-    }
-
-    .agent-center-stage {
-        flex: 1 1 auto;
-        min-height: 0;
-        display: grid;
-        grid-template-rows: minmax(108px, 0.58fr) minmax(0, 1.42fr);
-        gap: var(--space-3);
     }
 
     .agent-center-feed {
@@ -474,11 +458,187 @@
         grid-template-rows: minmax(0, 1fr);
     }
 
+    .page-assets .page-banner--assets-compact {
+        padding: var(--space-4) var(--space-5);
+        gap: var(--space-4);
+    }
+
+    .page-assets .page-banner--assets-compact h1 {
+        font-size: clamp(1.8rem, 2vw, 2.45rem);
+    }
+
+    .page-assets .page-banner--assets-compact p {
+        max-width: 64ch;
+    }
+
+    .page-assets .page-banner--assets-compact .page-banner__portrait {
+        width: 72px;
+        height: 72px;
+    }
+
+    .page-assets .page-banner--assets-compact .page-banner__meta {
+        align-self: center;
+    }
+
     .assets-side-column {
         min-height: 0;
         display: grid;
         grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
         gap: var(--space-3);
+    }
+
+    .asset-stream-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 12px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .asset-stream-summary__item {
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+    }
+
+    .asset-stream-summary__item strong {
+        color: var(--text);
+    }
+
+    .asset-stream-grid {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: var(--space-3);
+    }
+
+    .asset-stream-grid--split {
+        grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.95fr);
+        grid-template-areas:
+            "skill personality"
+            "skill memories";
+    }
+
+    .asset-stream-panel {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        padding: 14px;
+        border-radius: var(--radius-sm);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+    }
+
+    .asset-stream-panel--primary,
+    .asset-stream-panel[data-stream-panel="skill"] {
+        grid-area: skill;
+    }
+
+    .asset-stream-panel[data-stream-panel="personality"] {
+        grid-area: personality;
+    }
+
+    .asset-stream-panel[data-stream-panel="memories"] {
+        grid-area: memories;
+    }
+
+    .asset-stream-panel__head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--space-3);
+    }
+
+    .asset-stream-panel__meta {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 6px;
+        font-size: 0.76rem;
+        color: var(--text-secondary);
+    }
+
+    .generation-output--asset {
+        flex: 1 1 auto;
+        min-height: 220px;
+        max-height: none;
+        margin: 0;
+    }
+
+    .asset-stream-panel--primary .generation-output--asset,
+    .asset-stream-panel[data-stream-panel="skill"] .generation-output--asset {
+        min-height: 420px;
+    }
+
+    .asset-editor-shell {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+    }
+
+    .asset-editor-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .asset-editor-tab {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--text-secondary);
+        border-radius: 999px;
+        padding: 8px 12px;
+        font: 600 0.76rem/1 var(--font-mono);
+        cursor: pointer;
+        transition: border-color var(--motion-base) var(--easing-standard), color var(--motion-base) var(--easing-standard), background var(--motion-base) var(--easing-standard);
+    }
+
+    .asset-editor-tab:hover {
+        border-color: rgba(97, 168, 255, 0.28);
+        color: var(--text);
+    }
+
+    .asset-editor-tab.is-active {
+        border-color: rgba(97, 168, 255, 0.36);
+        background: rgba(97, 168, 255, 0.12);
+        color: var(--text);
+    }
+
+    .asset-editor-pages {
+        min-height: 0;
+    }
+
+    .asset-editor-page {
+        display: none;
+        flex-direction: column;
+        gap: var(--space-3);
+        min-height: 0;
+    }
+
+    .asset-editor-page.is-active {
+        display: flex;
+    }
+
+    .asset-editor-page__head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--space-3);
+    }
+
+    .asset-editor-field {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-2);
+        min-height: 0;
+    }
+
+    .asset-editor-textarea {
+        min-height: 460px;
     }
 
     .asset-doc-card.is-missing {
@@ -626,10 +786,10 @@
             grid-template-areas:
                 "pulse"
                 "center"
-                "rail"
+                "diagnostics"
                 "results"
-                "diagnostics";
-            grid-template-rows: auto minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+                "results";
+            grid-template-rows: auto minmax(0, 1.1fr) minmax(0, 0.92fr) minmax(0, 1fr);
         }
 
         .page-telegram-preprocess .page-content {
@@ -644,10 +804,18 @@
 
         .telegram-preprocess-live-grid,
         .telegram-preprocess-data-grid,
+        .asset-stream-grid--split,
         .page-preprocess .page-content,
         .page-playground .page-content,
         .page-home .page-content {
             grid-template-columns: 1fr;
+        }
+
+        .asset-stream-grid--split {
+            grid-template-areas:
+                "skill"
+                "personality"
+                "memories";
         }
 
         .persona-studio-shell .persona-stage-stack {
@@ -670,6 +838,7 @@
         .page-project .page-content,
         .telegram-preprocess-data-grid,
         .page-assets .page-content,
+        .asset-stream-grid--split,
         .page-preprocess .page-content,
         .page-playground .page-content,
         .page-settings .page-content {
@@ -695,6 +864,11 @@
 
         .page-banner__actions {
             justify-content: flex-start;
+        }
+
+        .asset-stream-panel__meta,
+        .asset-editor-page__head {
+            align-items: flex-start;
         }
     }
 }

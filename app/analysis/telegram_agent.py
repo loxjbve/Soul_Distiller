@@ -142,25 +142,14 @@ class TelegramAnalysisAgent:
         if not self.client:
             return self._heuristic_facet_result(facet, target_user, related_topics, preprocess_run_id)
 
+
         system_prompt = (
             "你正在分析已经存入 SQL 的 Telegram 群聊记录。\n"
             "这个模式绝对不能使用 embedding、chunk retrieval 或 retrieval.search。\n"
             "请严格按这个顺序工作：\n"
-            "1. 先读取目标用户画像。\n"
+            "1. 先读取目标用户。\n"
             "2. 再查询与目标用户相关的话题表。\n"
-            "3. 仅在必要时抓取少量原始消息作为证据。\n"
-            "4. 优先使用 analyze_database 保持上下文紧凑。\n"
-            "请只返回 JSON，包含 summary, bullets, confidence, evidence, conflicts, notes。\n"
-            "除 JSON 键名外，所有文字内容尽量使用简体中文。\n"
-            "每条 evidence 都必须包含 message_id, sender_name, sent_at, quote, reason。\n"
-        )
-        system_prompt = (
-            "你正在分析已经存入 SQL 的 Telegram 群聊记录。\n"
-            "这个模式绝对不能使用 embedding、chunk retrieval 或 retrieval.search。\n"
-            "请严格按这个顺序工作：\n"
-            "1. 先读取目标用户画像。\n"
-            "2. 再查询与目标用户相关的话题表。\n"
-            "3. 仅在必要时抓取少量原始消息作为证据。\n"
+            "3. 根据用户参与的话题，抓取原始消息作为证据。\n"
             "4. 优先使用 analyze_database 保持上下文紧凑。\n"
             "请只返回 JSON，包含 summary, bullets, confidence, evidence, conflicts, notes。\n"
             "除 JSON 键名外，所有可读文本都尽量使用简体中文。\n"
@@ -180,17 +169,7 @@ class TelegramAnalysisAgent:
             ensure_ascii=False,
             indent=2,
         )
-        system_prompt = (
-            "你正在分析已经存入 SQL 的 Telegram 群聊记录。\n"
-            "这个模式绝对不能使用 embedding、chunk retrieval 或 retrieval.search。\n"
-            "你必须先理解目标用户，再查询该用户是否出现在相关周话题里，先阅读话题概要，再决定是否回原始消息取证。\n"
-            "如果存在多个相关话题或跨多个 week，优先覆盖时间上分离的多个话题，不要只停留在单一短时间片。\n"
-            "只有在周话题总结不足以支撑结论时，才去抓取少量原始消息、上下文或 reply chain。\n"
-            "优先使用 analyze_database 保持上下文紧凑。\n"
-            "请只返回 JSON，包含 summary, bullets, confidence, evidence, conflicts, notes。\n"
-            "除 JSON 键名外，所有可读文本都尽量使用简体中文。\n"
-            "每条 evidence 都必须包含 message_id, sender_name, sent_at, quote, reason。"
-        )
+
         self._trace(
             "agent_started",
             agent="telegram_facet_agent",

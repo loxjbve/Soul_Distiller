@@ -64,7 +64,7 @@ def build_facet_analysis_messages(
 def build_personality_messages(
     project_name: str,
     facet_dump: str,
-    search_context: str,
+    evidence_context: str,
     *,
     target_role: str | None,
     analysis_context: str | None,
@@ -75,7 +75,9 @@ def build_personality_messages(
             "role": "system",
             "content": (
                 "你是人物模仿 Skill 的资料整理员。\n"
-                "请结合十维分析摘要与检索片段，输出一份可直接保存为 personality.md 的 Markdown 文档。\n"
+                "你要先从话题总结、证据引文、参与者观点和十维摘要里提炼可支撑判断的语料，再写出一份可直接保存为 personality.md 的 Markdown 文档。\n"
+                "你的工作不是泛泛写人设，而是抽出最稳定的身份坐标、内部张力、长期心智气候和表达时必须保留的气压。\n"
+                "所有关键判断都要尽量锚定在提供的证据语料上，证据不足时宁可保守，不要脑补经历。 \n"
                 "只输出 Markdown 正文，不要 JSON，不要解释，不要使用代码块。"
             ),
         },
@@ -87,13 +89,16 @@ def build_personality_messages(
                 "请写一份聚焦“身份+精神底色”的人格文档，结构固定为：\n"
                 "# 核心身份与精神底色\n"
                 "## 核心身份\n"
-                "## 精神底色\n\n"
+                "## 精神底色\n"
+                "## 证据锚点\n\n"
                 "要求：\n"
-                "1. 核心身份只总结最稳定的自我定位、现实处境与角色站位，不写泛泛性格评价。\n"
-                "2. 精神底色只总结长期情绪底盘、心理张力、没完全想清楚的拉扯，以及扮演时应保持的心智气候。\n"
-                "3. 每节 1 到 3 段，语言直接，可执行，可供下游 Skill 追加引用。\n"
-                "4. 不要编造具体经历，不要重复输出完整十维报告。\n\n"
-                f"检索片段：\n{search_context}\n\n"
+                "1. 必须遵循先证据、后判断的顺序：先从话题总结和语料里找 recurring pattern，再抽象成人格结论。\n"
+                "2. `## 核心身份` 只总结最稳定的自我定位、现实处境、角色站位和自我边界，不写空泛性格词堆砌。\n"
+                "3. `## 精神底色` 要写出长期情绪底盘、典型心理张力、尚未解决的内在拉扯，以及扮演时应持续保持的心智气候。\n"
+                "4. `## 证据锚点` 用 3 到 6 条项目符号列出支撑前两节的主题证据、话题摘要、原话切片或观点线索，每条都要指出它支撑了什么判断。\n"
+                "5. 每节 1 到 3 段，语言直接、可执行、可供下游 Skill 追加引用，尽量写得比普通人格概述更深一层。\n"
+                "6. 允许指出矛盾和灰区，但不要编造具体经历，不要重复输出完整十维报告。\n\n"
+                f"证据语料包：\n{_evidence_block(evidence_context)}\n\n"
                 f"十维分析摘要：\n{facet_dump}"
             ),
         },
@@ -103,7 +108,7 @@ def build_personality_messages(
 def build_memories_messages(
     project_name: str,
     facet_dump: str,
-    search_context: str,
+    evidence_context: str,
     *,
     target_role: str | None,
     analysis_context: str | None,
@@ -114,7 +119,8 @@ def build_memories_messages(
             "role": "system",
             "content": (
                 "你是人物模仿 Skill 的资料整理员。\n"
-                "请结合十维分析摘要与检索片段，输出一份可直接保存为 memories.md 的 Markdown 文档。\n"
+                "你要先从话题总结、原话证据、长期脉络线索中抽取可站得住脚的经历锚点，再输出一份可直接保存为 memories.md 的 Markdown 文档。\n"
+                "重点不是写流水账，而是找出哪些记忆和长期处境真的塑造了这个人的判断、表达和边界。\n"
                 "只输出 Markdown 正文，不要 JSON，不要解释，不要使用代码块。"
             ),
         },
@@ -126,13 +132,15 @@ def build_memories_messages(
                 "请写一份核心记忆文档，结构固定为：\n"
                 "# 核心记忆与经历\n"
                 "## 关键记忆\n"
-                "## 长期经历脉络\n\n"
+                "## 长期经历脉络\n"
+                "## 证据锚点\n\n"
                 "要求：\n"
-                "1. 优先写能支撑角色稳定人设的记忆、经历和长期背景。\n"
-                "2. 尽量保留时间、场景、关系或现实锚点；证据不足时宁可保守，不要脑补。\n"
-                "3. `## 关键记忆` 用项目符号列出 4 到 8 条。\n"
-                "4. `## 长期经历脉络` 用 1 到 3 段总结这些关键节点如何塑造角色的判断方式、表达方式和现实感。\n\n"
-                f"检索片段：\n{search_context}\n\n"
+                "1. 必须优先从话题总结和语料证据中抽取高可信的记忆、经历和长期背景，先找证据再写总结。\n"
+                "2. `## 关键记忆` 用项目符号列出 4 到 8 条，每条尽量保留时间、场景、关系、圈层或现实锚点，并写明它留下了什么影响。\n"
+                "3. `## 长期经历脉络` 用 1 到 3 段总结这些关键节点如何塑造角色的判断方式、表达方式、风险感和现实感。\n"
+                "4. `## 证据锚点` 用 3 到 6 条项目符号列出支撑这些记忆判断的话题摘要、原话切片或观点证据。\n"
+                "5. 证据不足时宁可保守，不要脑补，不要写成虚构传记。\n\n"
+                f"证据语料包：\n{_evidence_block(evidence_context)}\n\n"
                 f"十维分析摘要：\n{facet_dump}"
             ),
         },
@@ -144,6 +152,7 @@ def build_cc_skill_messages(
     project_name: str,
     facet_dump: str,
     *,
+    evidence_context: str,
     personality_markdown: str,
     memories_markdown: str,
     target_role: str | None,
@@ -157,6 +166,7 @@ def build_cc_skill_messages(
             "content": (
                 "你是 Claude Code 自定义 Skill 的编写器。\n"
                 "你只能输出一份可直接保存为 SKILL.md 的 Markdown 文档。\n"
+                "写之前先从给定的话题总结、证据语料、人格文档和记忆文档里提炼高置信行为规则，不要只把十维摘要改写一遍。\n"
                 "不要输出 JSON，不要解释，不要使用代码块。\n"
                 "文档必须以 YAML frontmatter 开头（--- 包裹），至少包含 name 和 description 字段。"
             ),
@@ -181,6 +191,7 @@ def build_cc_skill_messages(
                 "3) description：一句话说明这个 Skill 做什么、什么时候用（例如“当需要以某角色语气写作/复盘/决策时”）。\n"
                 "4) 正文写成可执行规则，至少包含：角色扮演规则、回答工作流（SOP）、高置信领域、诚实边界。\n"
                 "5) 正文中必须用相对路径提示按需阅读：references/personality.md 与 references/memories.md。\n\n"
+                f"证据语料包：\n{_evidence_block(evidence_context)}\n\n"
                 "附属文档（可引用但不要把全文照抄进正文）：\n"
                 f"[references/personality.md]\n{personality_markdown.strip()}\n\n"
                 f"[references/memories.md]\n{memories_markdown.strip()}\n\n"
@@ -195,6 +206,7 @@ def build_asset_messages(
     project_name: str,
     facet_dump: str,
     *,
+    evidence_context: str = "",
     target_role: str | None,
     analysis_context: str | None,
 ) -> list[dict[str, str]]:
@@ -205,7 +217,8 @@ def build_asset_messages(
                 "role": "system",
                 "content": (
                     "你是人物模仿 Skill 的总编写手。\n"
-                    "你只能依据十维分析摘要，生成一份可直接保存为 Skill.md 的 Markdown 文档。\n"
+                    "你要先从话题总结、证据语料和十维分析里提炼稳定模式，再生成一份可直接保存为 Skill.md 的 Markdown 文档。\n"
+                    "目标是把人物的高置信行为规则、判断路径、表达骨架和诚实边界压缩成能直接运行的系统 Prompt，而不是空泛的人设描述。\n"
                     "不要输出 JSON，不要解释，不要使用代码块。\n"
                     "这份 Skill 只负责总结十维分析中的可执行扮演规则，不要把独立的人格文档和记忆文档再重复附录进来。"
                 ),
@@ -233,15 +246,17 @@ def build_asset_messages(
                     "## 冲突备注\n\n"
                     "要求：\n"
                     "1. 全文必须可直接作为系统 Prompt 使用，强调可执行规则，不写分析腔总结。\n"
-                    "2. `## 回答工作流` 必须写成 SOP；如果当前系统未明确提供检索、记忆或联网工具，就使用条件句写成“如果系统提供...则先...”。\n"
-                    "3. `## 核心心智模型` 每条尽量包含：一句话模型、现实证据、应用场景、局限性。\n"
-                    "4. `## 决策启发式` 必须写出具体快捷规则，最好带一个微型案例或适用场景。\n"
-                    "5. `## 表达 DNA` 必须覆盖词汇、句式、节奏、确定性程度、幽默方式、引用习惯或辩论策略中的至少 5 项。\n"
-                    "6. `## 价值观与反模式` 必须同时写“追求什么”“拒绝什么”“仍没想清楚的内在张力”。\n"
-                    "7. `## 诚实边界` 必须明确高置信领域外如何承认局限，避免角色越界乱答。\n"
-                    "8. `## 调研来源` 只总结来自哪些语料维度、记忆切片或证据类型，不要伪造外部链接。\n"
-                    "9. Few-Shot 切片必须贴近原始表达，突出真实语气。\n"
-                    "10. 不要单独展开“核心身份与精神底色”或“核心记忆与经历”章节，它们会在本次生成后由系统追加到底部。\n\n"
+                    "2. 写之前先从证据语料包里归纳 recurring topic、稳定表达、决策依据、冲突与边界；没有证据支撑的判断不要写得过满。\n"
+                    "3. `## 回答工作流` 必须写成 SOP；如果当前系统未明确提供检索、记忆或联网工具，就使用条件句写成“如果系统提供...则先...”。\n"
+                    "4. `## 核心心智模型` 每条尽量包含：一句话模型、现实证据、应用场景、局限性，尽量带出背后的内部张力。\n"
+                    "5. `## 决策启发式` 必须写出具体快捷规则，最好带一个微型案例或适用场景。\n"
+                    "6. `## 表达 DNA` 必须覆盖词汇、句式、节奏、确定性程度、幽默方式、引用习惯或辩论策略中的至少 5 项，并尽量贴近原始语料。\n"
+                    "7. `## 价值观与反模式` 必须同时写“追求什么”“拒绝什么”“仍没想清楚的内在张力”。\n"
+                    "8. `## 诚实边界` 必须明确高置信领域外如何承认局限，避免角色越界乱答。\n"
+                    "9. `## 调研来源` 只总结来自哪些语料维度、记忆切片、话题总结或证据类型，不要伪造外部链接。\n"
+                    "10. Few-Shot 切片必须贴近原始表达，突出真实语气。\n"
+                    "11. 不要单独展开“核心身份与精神底色”或“核心记忆与经历”章节，它们会在本次生成后由系统追加到底部。\n\n"
+                    f"证据语料包：\n{_evidence_block(evidence_context)}\n\n"
                     f"十维分析摘要：\n{facet_dump}"
                 ),
             },
@@ -251,6 +266,7 @@ def build_asset_messages(
             "unknown",
             project_name,
             facet_dump,
+            evidence_context=evidence_context,
             personality_markdown="",
             memories_markdown="",
             target_role=target_role,
@@ -290,6 +306,13 @@ def _context_block(target_role: str | None, analysis_context: str | None) -> str
     if analysis_context:
         lines.append(f"来源语境：{analysis_context}")
     return "\n".join(lines)
+
+
+def _evidence_block(evidence_context: str) -> str:
+    text = str(evidence_context or "").strip()
+    if text:
+        return text
+    return "暂无额外话题总结或检索证据，请保守依赖十维分析摘要。"
 
 
 def _facet_focus_guidance(facet: FacetDefinition) -> str:

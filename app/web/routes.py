@@ -465,6 +465,11 @@ def assets_page(
     draft = repository.get_latest_asset_draft(session, project_id, asset_kind=asset_kind)
     versions = repository.list_asset_versions(session, project_id, asset_kind=asset_kind)
     latest_run = repository.get_latest_analysis_run(session, project_id)
+    draft_documents = (
+        _skill_documents_for_export(asset_kind, draft.json_payload, draft.markdown_text)
+        if draft and asset_kind in {"skill", "cc_skill"}
+        else {}
+    )
     return templates.TemplateResponse(
         request=request,
         name="assets.html",
@@ -479,6 +484,7 @@ def assets_page(
                 {"value": "profile_report", "label": "用户画像报告"},
             ),
             draft=draft,
+            draft_documents=draft_documents,
             versions=versions,
             latest_run=latest_run,
             draft_json_pretty=json.dumps(draft.json_payload, ensure_ascii=False, indent=2) if draft else "{}",
@@ -1328,9 +1334,10 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
 def generate_asset_stream_api(request: Request, project_id: str, payload: AssetGeneratePayload):
     from queue import Queue
     from threading import Thread
-    
+
     events: Queue[dict[str, Any] | None] = Queue()
     asset_kind = _normalize_asset_kind(payload.asset_kind)
+    default_document_key = "asset" if asset_kind == "profile_report" else "skill"
 
     def emit_status(
         phase: str,
@@ -1338,6 +1345,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
         message: str,
         *,
         status: str = "running",
+        document_key: str | None = None,
     ) -> None:
         events.put(
             {
@@ -1347,12 +1355,13 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                 "progress_percent": progress_percent,
                 "message": message,
                 "asset_kind": asset_kind,
+                "document_key": document_key,
             }
         )
-    
+
     def worker():
         try:
-            emit_status("prepare", 6, f"开始生成{_asset_label(asset_kind)}草稿")
+            emit_status("prepare", 6, f"开始生成{_asset_label(asset_kind)}草稿", document_key=default_document_key)
             with request.app.state.db.session() as session:
                 project = _ensure_project(session, project_id)
                 run = repository.get_latest_analysis_run(session, project_id)
@@ -1366,10 +1375,18 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                 chat_config = repository.get_service_config(session, "chat_service")
                 summary = run.summary_json or {}
 
-                emit_status("load", 14, "正在读取最新分析结果")
+                emit_status("load", 14, "正在读取最新分析结果", document_key=default_document_key)
 
-                def stream_callback(chunk: str):
-                    events.put({"type": "delta", "chunk": chunk})
+                def stream_callback(payload: Any):
+                    if isinstance(payload, dict):
+                        chunk = str(payload.get("chunk", "") or "")
+                        document_key = str(payload.get("document_key") or "").strip() or default_document_key
+                    else:
+                        chunk = str(payload or "")
+                        document_key = default_document_key
+                    if not chunk:
+                        return
+                    events.put({"type": "delta", "document_key": document_key, "chunk": chunk, "asset_kind": asset_kind})
 
                 def progress_callback(progress: dict[str, Any]):
                     events.put(
@@ -1380,9 +1397,10 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                             "progress_percent": int(progress.get("progress_percent", 0) or 0),
                             "message": str(progress.get("message", "") or ""),
                             "asset_kind": asset_kind,
+                            "document_key": str(progress.get("document_key") or "").strip() or None,
                         }
                     )
-                
+
                 bundle = request.app.state.asset_synthesizer.build(
                     asset_kind,
                     project,
@@ -1396,7 +1414,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     retrieval_service=request.app.state.retrieval,
                 )
 
-                emit_status("persist", 94, "正在保存草稿和导出文件")
+                emit_status("persist", 94, "正在保存草稿和导出文件", document_key=default_document_key)
                 draft = repository.create_asset_draft(
                     session,
                     project_id=project_id,
@@ -1425,22 +1443,23 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                         "message": "草稿生成完成，正在跳转。",
                         "draft_id": draft.id,
                         "asset_kind": asset_kind,
+                        "document_key": default_document_key,
                     }
                 )
         except Exception as e:
             events.put({"type": "error", "message": str(e)})
         finally:
             events.put(None)
-            
+
     Thread(target=worker, daemon=True).start()
-    
+
     def generator():
         while True:
             item = events.get()
             if item is None:
                 break
             yield f"event: {item['type']}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
-            
+
     return StreamingResponse(
         generator(),
         media_type="text/event-stream",

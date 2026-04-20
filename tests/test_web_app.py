@@ -578,6 +578,70 @@ def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
     assert "event: status" in response.text
     assert "event: delta" in response.text
     assert "event: done" in response.text
+    assert '"document_key": "asset"' in response.text
+
+
+def test_skill_asset_stream_emits_document_specific_deltas(client, app, monkeypatch):
+    project_payload = client.post("/api/projects", json={"name": "Skill Stream"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "Tester", "analysis_context": "skill stream status"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.8,
+            findings_json={"label": "Personality", "summary": "ready", "bullets": ["direct"]},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    def fake_build(asset_kind, project, facets, config, **kwargs):
+        del asset_kind, project, facets, config
+        progress_callback = kwargs.get("progress_callback")
+        stream_callback = kwargs.get("stream_callback")
+        if callable(progress_callback):
+            progress_callback(
+                {
+                    "phase": "personality_context",
+                    "progress_percent": 24,
+                    "message": "Building personality.md",
+                    "document_key": "personality",
+                }
+            )
+        if callable(stream_callback):
+            stream_callback({"document_key": "personality", "chunk": "personality chunk"})
+            stream_callback({"document_key": "memories", "chunk": "memories chunk"})
+            stream_callback({"document_key": "skill", "chunk": "skill chunk"})
+        return AssetBundle(
+            asset_kind="skill",
+            markdown_text="# Draft",
+            json_payload={
+                "documents": {
+                    "skill": {"filename": "Skill.md", "markdown": "skill chunk"},
+                    "personality": {"filename": "personality.md", "markdown": "personality chunk"},
+                    "memories": {"filename": "memories.md", "markdown": "memories chunk"},
+                    "merge": {"filename": "Skill_merge.md", "markdown": "# Draft"},
+                }
+            },
+            prompt_text="# Draft",
+        )
+
+    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+
+    response = client.post(f"/api/projects/{project_id}/assets/generate/stream", json={"asset_kind": "skill"})
+    assert response.status_code == 200
+    assert '"document_key": "personality"' in response.text
+    assert '"document_key": "memories"' in response.text
+    assert '"document_key": "skill"' in response.text
 
 
 def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypatch):
@@ -700,7 +764,13 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
     documents = payload["json_payload"]["documents"]
 
     assert len(llm_calls) == 3
-    assert retrieval_queries == ["性格特质 精神状态 自我认知 核心身份", "核心记忆 经历 过往重要事件"]
+    assert retrieval_queries == [
+        "话题总结 高频表达 决策方式 互动模式 原话 证据 语料",
+        "话题总结 性格特质 精神状态 自我认知 核心身份 内在张力 原话 证据",
+        "话题总结 核心记忆 经历 过往重要事件 长期背景 时间线 原话 证据",
+    ]
+    assert "证据语料包：" in llm_calls[0][1]["content"]
+    assert "Retrieved evidence corpus:" in llm_calls[2][1]["content"]
     assert documents["skill"]["markdown"].startswith("# System Role:")
     assert "## 回答工作流" in documents["skill"]["markdown"]
     assert "## 调研来源" in documents["skill"]["markdown"]
@@ -817,7 +887,13 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
     documents = payload["json_payload"]["documents"]
 
     assert len(llm_calls) == 3
-    assert retrieval_queries == ["性格特质 精神状态 自我认知 核心身份", "核心记忆 经历 过往重要事件"]
+    assert retrieval_queries == [
+        "话题总结 高频表达 决策方式 互动模式 原话 证据 语料",
+        "话题总结 性格特质 精神状态 自我认知 核心身份 内在张力 原话 证据",
+        "话题总结 核心记忆 经历 过往重要事件 长期背景 时间线 原话 证据",
+    ]
+    assert "证据语料包：" in llm_calls[0][1]["content"]
+    assert "Retrieved evidence corpus:" in llm_calls[2][1]["content"]
     assert documents["skill"]["filename"] == "SKILL.md"
     assert documents["skill"]["markdown"].startswith("---")
     assert "name: roleplay-alice" in documents["skill"]["markdown"]

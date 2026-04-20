@@ -17,6 +17,11 @@ SYNTHESIS_CONFLICT_TITLE_LIMIT = 80
 SYNTHESIS_CONFLICT_DETAIL_LIMIT = 180
 SYNTHESIS_SEARCH_CHUNK_LIMIT = 420
 SYNTHESIS_SEARCH_RESULT_LIMIT = 5
+SKILL_SUPPORT_QUERIES = {
+    "skill": "话题总结 高频表达 决策方式 互动模式 原话 证据 语料",
+    "personality": "话题总结 性格特质 精神状态 自我认知 核心身份 内在张力 原话 证据",
+    "memories": "话题总结 核心记忆 经历 过往重要事件 长期背景 时间线 原话 证据",
+}
 SKILL_DOCUMENT_FILENAMES = {
     "skill": "Skill.md",
     "personality": "personality.md",
@@ -254,16 +259,18 @@ class AssetSynthesizer:
         phase: str,
         progress_percent: int,
         message: str,
+        document_key: str | None = None,
     ) -> None:
         if not callable(progress_callback):
             return
-        progress_callback(
-            {
-                "phase": phase,
-                "progress_percent": progress_percent,
-                "message": message,
-            }
-        )
+        payload = {
+            "phase": phase,
+            "progress_percent": progress_percent,
+            "message": message,
+        }
+        if document_key:
+            payload["document_key"] = document_key
+        progress_callback(payload)
 
     def _build_facet_dump(self, facets: list[AnalysisFacet]) -> str:
         compact_facets = [self._compact_facet_for_prompt(facet) for facet in facets]
@@ -294,14 +301,59 @@ class AssetSynthesizer:
         }
 
     def _build_search_context(self, chunks: list[Any]) -> str:
-        lines: list[str] = []
-        for chunk in chunks[:SYNTHESIS_SEARCH_RESULT_LIMIT]:
+        lines = ["Retrieved evidence corpus:"]
+        for index, chunk in enumerate(chunks[:SYNTHESIS_SEARCH_RESULT_LIMIT], start=1):
             content = self._truncate_text(getattr(chunk, "content", ""), SYNTHESIS_SEARCH_CHUNK_LIMIT)
             if not content:
                 continue
             source = getattr(chunk, "document_title", None) or getattr(chunk, "filename", None) or "source"
-            lines.append(f"- [{source}] {content}")
+            chunk_id = str(getattr(chunk, "chunk_id", "") or "").strip()
+            lines.append(f"{index}. source: {source}")
+            if chunk_id:
+                lines.append(f"   chunk_id: {chunk_id}")
+            lines.append(f"   excerpt: {content}")
+        if len(lines) == 1:
+            lines.append("1. No retrieved evidence is available; rely conservatively on the facet dump.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _document_stream_callback(stream_callback: Any | None, document_key: str) -> Any | None:
+        if not callable(stream_callback):
+            return None
+
+        def callback(chunk: str) -> None:
+            if not chunk:
+                return
+            stream_callback({"document_key": document_key, "chunk": chunk})
+
+        flush_remaining = getattr(stream_callback, "_flush_remaining", None)
+        if callable(flush_remaining):
+            setattr(callback, "_flush_remaining", flush_remaining)
+        return callback
+
+    @staticmethod
+    def _flush_stream_callback(stream_callback: Any | None) -> None:
+        flush_remaining = getattr(stream_callback, "_flush_remaining", None)
+        if callable(flush_remaining):
+            flush_remaining()
+
+    def _build_retrieved_support_context(
+        self,
+        *,
+        session: Any,
+        retrieval_service: Any,
+        embedding_config: ServiceConfig | None,
+        project_id: str,
+        query: str,
+    ) -> str:
+        chunks, _, _ = retrieval_service.search(
+            session,
+            project_id=project_id,
+            query=query,
+            embedding_config=embedding_config,
+            limit=7,
+        )
+        return self._build_search_context(chunks)
 
     @staticmethod
     def _truncate_text(value: Any, limit: int) -> str:
@@ -331,6 +383,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
+        skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
         if session and retrieval_service and project.mode == "telegram":
@@ -340,12 +393,14 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
             )
+            skill_context = telegram_context
             personality_markdown = self._build_contextual_skill_document(
                 client,
                 config,
                 project_name=project.name,
                 facet_dump=facet_dump,
                 context=telegram_context,
+                document_key="personality",
                 phase="personality_context",
                 progress_percent=24,
                 progress_message="Building personality.md",
@@ -353,6 +408,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "personality"),
             )
             memories_markdown = self._build_contextual_skill_document(
                 client,
@@ -360,6 +416,7 @@ class AssetSynthesizer:
                 project_name=project.name,
                 facet_dump=facet_dump,
                 context=telegram_context,
+                document_key="memories",
                 phase="memory_context",
                 progress_percent=36,
                 progress_message="Building memories.md",
@@ -367,15 +424,24 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "memories"),
             )
         elif session and retrieval_service and project.mode != "telegram":
+            skill_context = self._build_retrieved_support_context(
+                session=session,
+                retrieval_service=retrieval_service,
+                embedding_config=embedding_config,
+                project_id=project.id,
+                query=SKILL_SUPPORT_QUERIES["skill"],
+            )
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
                 project.id,
                 project.name,
                 facet_dump,
-                query="性格特质 精神状态 自我认知 核心身份",
+                query=SKILL_SUPPORT_QUERIES["personality"],
+                document_key="personality",
                 phase="personality_context",
                 progress_percent=24,
                 progress_message="Building personality.md",
@@ -383,6 +449,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "personality"),
                 session=session,
                 retrieval_service=retrieval_service,
                 embedding_config=embedding_config,
@@ -393,7 +460,8 @@ class AssetSynthesizer:
                 project.id,
                 project.name,
                 facet_dump,
-                query="核心记忆 经历 过往重要事件",
+                query=SKILL_SUPPORT_QUERIES["memories"],
+                document_key="memories",
                 phase="memory_context",
                 progress_percent=36,
                 progress_message="Building memories.md",
@@ -401,6 +469,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "memories"),
                 session=session,
                 retrieval_service=retrieval_service,
                 embedding_config=embedding_config,
@@ -411,30 +480,32 @@ class AssetSynthesizer:
             phase="synthesis",
             progress_percent=52,
             message="LLM is generating Skill.md",
+            document_key="skill",
         )
         messages = build_asset_messages(
             "skill",
             project.name,
             facet_dump,
+            evidence_context=skill_context,
             target_role=target_role,
             analysis_context=analysis_context,
         )
+        skill_stream_callback = self._document_stream_callback(stream_callback, "skill")
         response = client.chat_completion_result(
             messages,
             model=config.model,
             temperature=0.2,
             max_tokens=None,
-            stream_handler=stream_callback,
+            stream_handler=skill_stream_callback,
         )
-        flush_remaining = getattr(stream_callback, "_flush_remaining", None)
-        if callable(flush_remaining):
-            flush_remaining()
+        self._flush_stream_callback(skill_stream_callback)
 
         self._emit_progress(
             progress_callback,
             phase="merge",
             progress_percent=78,
             message="Merging Skill_merge.md",
+            document_key="merge",
         )
         return self._normalize_skill_payload(
             {
@@ -468,6 +539,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
+        skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
         if session and retrieval_service and project.mode == "telegram":
@@ -477,12 +549,14 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
             )
+            skill_context = telegram_context
             personality_markdown = self._build_contextual_skill_document(
                 client,
                 config,
                 project_name=project.name,
                 facet_dump=facet_dump,
                 context=telegram_context,
+                document_key="personality",
                 phase="personality_context",
                 progress_percent=24,
                 progress_message="Building personality.md",
@@ -490,6 +564,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "personality"),
             )
             memories_markdown = self._build_contextual_skill_document(
                 client,
@@ -497,6 +572,7 @@ class AssetSynthesizer:
                 project_name=project.name,
                 facet_dump=facet_dump,
                 context=telegram_context,
+                document_key="memories",
                 phase="memory_context",
                 progress_percent=36,
                 progress_message="Building memories.md",
@@ -504,15 +580,24 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "memories"),
             )
         elif session and retrieval_service and project.mode != "telegram":
+            skill_context = self._build_retrieved_support_context(
+                session=session,
+                retrieval_service=retrieval_service,
+                embedding_config=embedding_config,
+                project_id=project.id,
+                query=SKILL_SUPPORT_QUERIES["skill"],
+            )
             personality_markdown = self._build_retrieved_skill_document(
                 client,
                 config,
                 project.id,
                 project.name,
                 facet_dump,
-                query="性格特质 精神状态 自我认知 核心身份",
+                query=SKILL_SUPPORT_QUERIES["personality"],
+                document_key="personality",
                 phase="personality_context",
                 progress_percent=24,
                 progress_message="Building personality.md",
@@ -520,6 +605,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "personality"),
                 session=session,
                 retrieval_service=retrieval_service,
                 embedding_config=embedding_config,
@@ -530,7 +616,8 @@ class AssetSynthesizer:
                 project.id,
                 project.name,
                 facet_dump,
-                query="核心记忆 经历 过往重要事件",
+                query=SKILL_SUPPORT_QUERIES["memories"],
+                document_key="memories",
                 phase="memory_context",
                 progress_percent=36,
                 progress_message="Building memories.md",
@@ -538,6 +625,7 @@ class AssetSynthesizer:
                 target_role=target_role,
                 analysis_context=analysis_context,
                 progress_callback=progress_callback,
+                stream_callback=self._document_stream_callback(stream_callback, "memories"),
                 session=session,
                 retrieval_service=retrieval_service,
                 embedding_config=embedding_config,
@@ -548,26 +636,27 @@ class AssetSynthesizer:
             phase="synthesis",
             progress_percent=52,
             message="LLM is generating SKILL.md",
+            document_key="skill",
         )
         messages = build_cc_skill_messages(
             project.id,
             project.name,
             facet_dump,
+            evidence_context=skill_context,
             personality_markdown=personality_markdown,
             memories_markdown=memories_markdown,
             target_role=target_role,
             analysis_context=analysis_context,
         )
+        skill_stream_callback = self._document_stream_callback(stream_callback, "skill")
         response = client.chat_completion_result(
             messages,
             model=config.model,
             temperature=0.2,
             max_tokens=None,
-            stream_handler=stream_callback,
+            stream_handler=skill_stream_callback,
         )
-        flush_remaining = getattr(stream_callback, "_flush_remaining", None)
-        if callable(flush_remaining):
-            flush_remaining()
+        self._flush_stream_callback(skill_stream_callback)
 
         return self._normalize_cc_skill_payload(
             {
@@ -592,6 +681,7 @@ class AssetSynthesizer:
         facet_dump: str,
         *,
         query: str,
+        document_key: str,
         phase: str,
         progress_percent: int,
         progress_message: str,
@@ -599,6 +689,7 @@ class AssetSynthesizer:
         target_role: str | None,
         analysis_context: str | None,
         progress_callback: Any | None,
+        stream_callback: Any | None,
         session: Any,
         retrieval_service: Any,
         embedding_config: ServiceConfig | None,
@@ -608,6 +699,7 @@ class AssetSynthesizer:
             phase=phase,
             progress_percent=progress_percent,
             message=progress_message,
+            document_key=document_key,
         )
         chunks, _, _ = retrieval_service.search(
             session,
@@ -624,7 +716,14 @@ class AssetSynthesizer:
             target_role=target_role,
             analysis_context=analysis_context,
         )
-        response = client.chat_completion_result(messages, model=config.model, temperature=0.2, max_tokens=None)
+        response = client.chat_completion_result(
+            messages,
+            model=config.model,
+            temperature=0.2,
+            max_tokens=None,
+            stream_handler=stream_callback,
+        )
+        self._flush_stream_callback(stream_callback)
         return str(response.content or "").strip()
 
     def _build_contextual_skill_document(
@@ -635,6 +734,7 @@ class AssetSynthesizer:
         project_name: str,
         facet_dump: str,
         context: str,
+        document_key: str,
         phase: str,
         progress_percent: int,
         progress_message: str,
@@ -642,12 +742,14 @@ class AssetSynthesizer:
         target_role: str | None,
         analysis_context: str | None,
         progress_callback: Any | None,
+        stream_callback: Any | None,
     ) -> str:
         self._emit_progress(
             progress_callback,
             phase=phase,
             progress_percent=progress_percent,
             message=progress_message,
+            document_key=document_key,
         )
         messages = message_builder(
             project_name,
@@ -656,7 +758,14 @@ class AssetSynthesizer:
             target_role=target_role,
             analysis_context=analysis_context,
         )
-        response = client.chat_completion_result(messages, model=config.model, temperature=0.2, max_tokens=None)
+        response = client.chat_completion_result(
+            messages,
+            model=config.model,
+            temperature=0.2,
+            max_tokens=None,
+            stream_handler=stream_callback,
+        )
+        self._flush_stream_callback(stream_callback)
         return str(response.content or "").strip()
 
     def _build_telegram_skill_context(
@@ -692,7 +801,17 @@ class AssetSynthesizer:
             if participant_id and any(link.participant_id == participant_id for link in participants):
                 relevant_topics.append(topic)
         if not relevant_topics:
-            relevant_topics = list(topics)[:6]
+            relevant_topics = list(topics)[:8]
+
+        active_users = (
+            repository.list_telegram_preprocess_active_users(session, source_project_id, run_id=preprocess_run_id)
+            if preprocess_run_id
+            else []
+        )
+        matched_active_user = next(
+            (item for item in active_users if participant_id and item.participant_id == participant_id),
+            None,
+        )
 
         label = (
             target_user.get("label")
@@ -702,29 +821,68 @@ class AssetSynthesizer:
             or project.name
         )
         lines = [
-            "Telegram agent context:",
+            "Telegram evidence workbook:",
             f"- target_label: {label}",
             f"- participant_id: {participant_id or 'unknown'}",
             f"- preprocess_run_id: {preprocess_run_id or 'unknown'}",
             f"- source_project_id: {source_project_id}",
             f"- analysis_context: {analysis_context or ''}",
             "",
-            "Relevant weekly topics:",
+            "Grounding order:",
+            "1. Read the weekly topic summary first.",
+            "2. Use participant viewpoints to infer stable stance, pressure, and role position.",
+            "3. Use short evidence quotes to recover wording, tone, and concrete scenes.",
+            "4. Only then abstract into personality, memories, or skill rules.",
         ]
+        if matched_active_user:
+            aliases = ", ".join(
+                str(item).strip()
+                for item in (matched_active_user.aliases_json or [])
+                if str(item).strip()
+            )
+            lines.extend(
+                [
+                    "",
+                    "Participant profile:",
+                    f"- primary_alias: {matched_active_user.primary_alias or label}",
+                    f"- username: {matched_active_user.username or 'unknown'}",
+                    f"- message_count: {int(matched_active_user.message_count or 0)}",
+                    f"- aliases: {aliases or 'n/a'}",
+                ]
+            )
+            for evidence in list(matched_active_user.evidence_json or [])[:3]:
+                if not isinstance(evidence, dict):
+                    continue
+                quote = str(evidence.get("quote") or evidence.get("text") or "").strip()
+                if quote:
+                    lines.append(f"- user_evidence: {quote}")
+        lines.extend(["", "Relevant weekly topics:"])
         if not relevant_topics:
             lines.append("- No weekly topics were available; rely on the facet dump and analysis context.")
-        for index, topic in enumerate(relevant_topics[:6], start=1):
+        for index, topic in enumerate(relevant_topics[:8], start=1):
             metadata = dict(getattr(topic, "metadata_json", None) or {})
             keywords = ", ".join(
                 str(item).strip()
                 for item in (getattr(topic, "keywords_json", None) or [])
                 if str(item).strip()
             )
+            subtopics = ", ".join(
+                str(item).strip()
+                for item in (metadata.get("subtopics") or [])
+                if str(item).strip()
+            )
+            interaction_patterns = ", ".join(
+                str(item).strip()
+                for item in (metadata.get("interaction_patterns") or [])
+                if str(item).strip()
+            )
             lines.extend(
                 [
-                    f"{index}. {getattr(topic, 'title', '') or 'Untitled topic'}",
-                    f"   summary: {str(getattr(topic, 'summary', '') or '').strip()}",
-                    f"   keywords: {keywords or 'n/a'}",
+                    f"Topic {index}: {getattr(topic, 'title', '') or 'Untitled topic'}",
+                    f"- summary: {str(getattr(topic, 'summary', '') or '').strip()}",
+                    f"- keywords: {keywords or 'n/a'}",
+                    f"- subtopics: {subtopics or 'n/a'}",
+                    f"- interaction_patterns: {interaction_patterns or 'n/a'}",
                 ]
             )
             participant_viewpoints = [
@@ -736,17 +894,31 @@ class AssetSynthesizer:
                 item
                 for item in participant_viewpoints
                 if not participant_id or str(item.get("participant_id") or "").strip() == participant_id
-            ] or participant_viewpoints[:2]
-            for viewpoint in matched_viewpoints[:2]:
+            ] or participant_viewpoints[:3]
+            for viewpoint in matched_viewpoints[:3]:
                 stance = str(viewpoint.get("stance_summary") or "").strip()
+                evidence = str(viewpoint.get("evidence") or viewpoint.get("supporting_detail") or "").strip()
+                speaker = str(
+                    viewpoint.get("display_name")
+                    or viewpoint.get("participant_label")
+                    or viewpoint.get("participant_id")
+                    or "participant"
+                ).strip()
                 if stance:
-                    lines.append(f"   viewpoint: {stance}")
-            for evidence in list(getattr(topic, "evidence_json", None) or [])[:2]:
-                if not isinstance(evidence, dict):
+                    lines.append(f"- viewpoint[{speaker}]: {stance}")
+                if evidence:
+                    lines.append(f"- viewpoint_evidence[{speaker}]: {evidence}")
+            for evidence_item in list(getattr(topic, "evidence_json", None) or [])[:3]:
+                if not isinstance(evidence_item, dict):
                     continue
-                quote = str(evidence.get("quote") or "").strip()
-                if quote:
-                    lines.append(f"   evidence: {quote}")
+                quote = str(evidence_item.get("quote") or "").strip()
+                if not quote:
+                    continue
+                reason = str(evidence_item.get("reason") or evidence_item.get("label") or "").strip()
+                if reason:
+                    lines.append(f"- evidence: {quote} | note: {reason}")
+                else:
+                    lines.append(f"- evidence: {quote}")
         return "\n".join(lines).strip()
 
     def _get_skill_merge_markdown(self, payload: dict[str, Any]) -> str:

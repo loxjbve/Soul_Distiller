@@ -1,11 +1,14 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 {% block body_class %}theme-ambient--analysis{% endblock %}
-{% block page_class %}page-analysis page-analysis-center{% endblock %}
+{% block page_class %}page-analysis page-analysis-center{% if project.mode == "telegram" %} page-analysis--telegram{% endif %}{% if project.mode == "telegram" and project.parent_id %} page-analysis--telegram-persona{% endif %}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='analysis-page.css') }}?v=20260420d">
+{% endblock %}
 {% block content %}
 {% set summary = run.summary_json or {} if run else {} %}
 <div class="page-frame">
-    <section class="page-banner">
+    <section class="page-banner page-banner--analysis-compact">
         <div class="page-banner__main">
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
@@ -21,9 +24,8 @@
                 {% endif %}
             </div>
         </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
+        <div class="page-banner__meta analysis-banner__meta">
+            <div class="page-banner__signal-row analysis-banner__board">
                 <span class="page-banner__label">{{ ui.banner_lanes_label }}</span>
                 <span class="page-banner__label">{{ ui.banner_diagnostics_label }}</span>
             </div>
@@ -41,54 +43,33 @@
         </script>
 
         <section class="page-content">
-            <section class="analysis-pulse-grid">
-                <div class="metric-grid">
-                    <article class="metric-card">
-                        <span>{{ ui.progress }}</span>
-                        <strong id="analysis-percent">{{ summary.get("progress_percent", 0) }}%</strong>
-                        <p id="analysis-stage">{{ summary.get("current_stage", ui.waiting) }}</p>
-                    </article>
-                    <article class="metric-card">
-                        <span>{{ ui.concurrency }}</span>
-                        <strong id="analysis-requested-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
-                        <p id="analysis-effective-note">{{ ui.effective_label }} {{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</p>
-                    </article>
-                    <article class="metric-card">
-                        <span>{{ ui.active_agents_label }}</span>
-                        <strong id="analysis-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
-                        <p id="analysis-slot-usage">{{ summary.get("active_facets", 0) }} / {{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</p>
-                    </article>
-                    <article class="metric-card">
-                        <span>{{ ui.current_facet }}</span>
-                        <strong id="analysis-current-facet">{{ summary.get("current_facet") or ui.waiting }}</strong>
-                        <p id="analysis-last-updated">{{ ui.last_updated }} | --</p>
-                    </article>
-                </div>
-            </section>
-
             <article class="panel-shell analysis-center-panel">
-                <div class="panel-header">
+                <div class="panel-header panel-header--slim analysis-center-panel__header">
                     <div>
                         <p class="eyebrow">{{ ui.agent_center_eyebrow }}</p>
                         <h2>{{ ui.agent_center_title }}</h2>
                     </div>
-                    <span class="analysis-live-pill" id="analysis-live-pill">{{ ui.live_connecting }}</span>
+                    <div class="analysis-center-panel__status">
+                        <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
+                        <span class="analysis-live-pill" id="analysis-live-pill">{{ ui.live_connecting }}</span>
+                    </div>
                 </div>
-                <div class="panel-body">
-                    <div class="analysis-progress-spotlight__header">
+                <div class="panel-body analysis-center-panel__body">
+                    <div class="analysis-progress-spotlight__header analysis-progress-spotlight__header--compact">
                         <div>
                             <p class="eyebrow">{{ ui.run_pulse_eyebrow }}</p>
                             <h3 id="analysis-hero-stage">{{ summary.get("current_stage", ui.waiting) }}</h3>
                             <p class="section-note" id="analysis-hero-note">{{ summary.get("current_facet") or ui.waiting }}</p>
                         </div>
-                        <div class="analysis-signal-chip-row">
+                        <div class="analysis-signal-chip-row analysis-signal-chip-row--compact">
+                            <span class="analysis-signal-chip" id="analysis-percent-chip">{{ summary.get("progress_percent", 0) }}%</span>
                             <span class="analysis-signal-chip" id="analysis-completed-count">{{ ui.completed }} {{ summary.get("completed_facets", 0) }}</span>
                             <span class="analysis-signal-chip" id="analysis-running-count">{{ ui.running }} {{ summary.get("active_facets", 0) }}</span>
                             <span class="analysis-signal-chip" id="analysis-queued-count">{{ ui.queued }} {{ summary.get("queued_facets", 0) }}</span>
                             <span class="analysis-signal-chip" id="analysis-failed-count">{{ ui.failed }} {{ summary.get("failed_facets", 0) }}</span>
                         </div>
                     </div>
-                    <div class="progress-shell">
+                    <div class="progress-shell progress-shell--slim">
                         <div class="progress-labels">
                             <strong id="analysis-progress-label">{{ summary.get("current_stage", ui.waiting) }}</strong>
                             <span id="analysis-progress-caption">{{ summary.get("completed_facets", 0) }} / {{ summary.get("total_facets", 0) }}</span>
@@ -97,56 +78,20 @@
                             <div id="analysis-progress-fill" class="progress-fill" style="width: {{ summary.get('progress_percent', 0) }}%"></div>
                         </div>
                     </div>
-                    <div class="agent-center-stage">
+                    <div class="analysis-agent-strip">
+                        <div class="analysis-agent-strip__head">
+                            <p class="eyebrow">{{ ui.banner_lanes_label }}</p>
+                            <p class="section-note">{{ ui.current_facet }}</p>
+                        </div>
                         <div class="agent-lane-strip panel-scroll" id="analysis-agent-lanes" data-lane-strip data-panel-scroll>
                             <div class="empty-panel">
                                 <strong>{{ ui.no_active_agents }}</strong>
                             </div>
                         </div>
-                        <div id="analysis-feed" class="agent-center-feed panel-scroll" data-live-feed data-panel-scroll></div>
                     </div>
+                    <div id="analysis-feed" class="agent-center-feed panel-scroll" data-live-feed data-panel-scroll></div>
                 </div>
             </article>
-
-            <aside class="analysis-side-rail">
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">{{ ui.run_state_eyebrow }}</p>
-                            <h2>{{ ui.progress }}</h2>
-                        </div>
-                        <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
-                    </div>
-                    <div class="panel-body">
-                        <div class="metric-list">
-                            <div class="metric-row">
-                                <span>{{ ui.requested_label }}</span>
-                                <strong id="analysis-concurrency">{{ summary.get("requested_concurrency", summary.get("concurrency", 1)) }}</strong>
-                            </div>
-                            <div class="metric-row">
-                                <span>{{ ui.effective_label }}</span>
-                                <strong id="analysis-effective-concurrency">{{ summary.get("effective_concurrency", summary.get("concurrency", 1)) }}</strong>
-                            </div>
-                            <div class="metric-row">
-                                <span>{{ ui.live_agents_label }}</span>
-                                <strong id="analysis-effective-active-agents">{{ summary.get("effective_active_agents", summary.get("active_agents", 0)) }}</strong>
-                            </div>
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">Queue</p>
-                            <h2>{{ ui.facet_queue }}</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="facet-status-list" class="facet-status-grid panel-scroll" data-panel-scroll></div>
-                    </div>
-                </article>
-            </aside>
 
             <article class="panel-shell analysis-results-panel">
                 <div class="panel-header panel-header--slim">
@@ -156,7 +101,10 @@
                     </div>
                 </div>
                 <div class="panel-body panel-body--tight">
-                    <div id="analysis-result-list" class="facet-stack panel-scroll" data-panel-scroll></div>
+                    <div class="analysis-results-browser">
+                        <div id="analysis-result-nav" class="analysis-result-nav panel-scroll" data-panel-scroll></div>
+                        <div id="analysis-result-list" class="analysis-result-detail panel-scroll" data-panel-scroll></div>
+                    </div>
                 </div>
             </article>
 
@@ -165,13 +113,11 @@
                     <div>
                         <p class="eyebrow">Diagnostics</p>
                         <h2>{{ ui.event_stream }}</h2>
+                        <p class="section-note">{{ ui.inspect_event_stream_summary }}</p>
                     </div>
                 </div>
                 <div class="panel-body panel-body--tight">
-                    <details class="analysis-diagnostics" open>
-                        <summary>{{ ui.inspect_event_stream_summary }}</summary>
-                        <div id="analysis-diagnostics-list" class="event-stream panel-scroll" data-panel-scroll></div>
-                    </details>
+                    <div id="analysis-diagnostics-list" class="event-stream panel-scroll analysis-event-lines" data-panel-scroll></div>
                 </div>
             </article>
         </section>
@@ -189,6 +135,6 @@
 
 {% block extra_scripts %}
 {% if run %}
-<script type="module" src="{{ request.url_for('static', path='analysis.js') }}"></script>
+<script type="module" src="{{ request.url_for('static', path='analysis.js') }}?v=20260420d"></script>
 {% endif %}
 {% endblock %}

@@ -22,6 +22,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         traceEvents: [],
         liveOutputByRequest: {},
         activeRequestKey: null,
+        selectedFacetKey: null,
         stream: null,
         pollTimer: null,
     };
@@ -42,13 +43,14 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         progressLabel: document.getElementById("analysis-progress-label"),
         progressCaption: document.getElementById("analysis-progress-caption"),
         progressFill: document.getElementById("analysis-progress-fill"),
-        facetList: document.getElementById("facet-status-list"),
         diagnosticsList: document.getElementById("analysis-diagnostics-list"),
+        resultNav: document.getElementById("analysis-result-nav"),
         resultList: document.getElementById("analysis-result-list"),
         feed: document.getElementById("analysis-feed"),
         heroStage: document.getElementById("analysis-hero-stage"),
         heroNote: document.getElementById("analysis-hero-note"),
         livePill: document.getElementById("analysis-live-pill"),
+        percentChip: document.getElementById("analysis-percent-chip"),
         completedCount: document.getElementById("analysis-completed-count"),
         runningCount: document.getElementById("analysis-running-count"),
         queuedCount: document.getElementById("analysis-queued-count"),
@@ -193,6 +195,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         updateText(elements.progressCaption, `${completed} / ${total}`);
         updateText(elements.heroStage, summary.current_stage || ui.waiting || "Waiting");
         updateText(elements.heroNote, buildHeroNote(summary, counts, facets));
+        updateText(elements.percentChip, `${percent}%`);
         updateText(elements.completedCount, `Completed ${counts.completed}`);
         updateText(elements.runningCount, `Running ${counts.running}`);
         updateText(elements.queuedCount, `Queued ${counts.queued + counts.preparing}`);
@@ -203,7 +206,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         }
         setStatusTone(elements.statusChip, payload.status, payload.status);
 
-        renderFacetQueue(facets, payload.status);
+        state.selectedFacetKey = resolveSelectedFacetKey(facets, summary);
         renderDiagnostics(events);
         renderResults(facets, payload.status);
         renderAgentLanes(payload);
@@ -217,44 +220,46 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         elements.laneStrip.innerHTML = "";
 
         const summary = payload?.summary || {};
-        const tracks = Array.isArray(summary.agent_tracks) ? summary.agent_tracks : [];
+        const facets = sortFacetsForQueue(payload?.facets || []);
         const requestedConcurrency = Number(summary.requested_concurrency || summary.concurrency || 1);
         const effectiveConcurrency = Number(summary.effective_concurrency || requestedConcurrency || 1);
 
-        if (!tracks.length) {
-            const placeholder = document.createElement("article");
-            placeholder.className = "agent-lane-card agent-lane-card--empty";
+        if (!facets.length) {
+            const placeholder = document.createElement("div");
+            placeholder.className = "agent-lamp agent-lamp--empty";
             placeholder.innerHTML = `
                 <strong>No active lanes</strong>
                 <p>Requested ${escapeHtml(String(requestedConcurrency))} · Effective ${escapeHtml(String(effectiveConcurrency))}</p>
             `;
+            const placeholderMeta = document.createElement("span");
+            placeholderMeta.textContent = `Requested ${requestedConcurrency} | Effective ${effectiveConcurrency}`;
+            placeholder.querySelector("p")?.replaceWith(placeholderMeta);
             elements.laneStrip.appendChild(placeholder);
             return;
         }
 
-        tracks.forEach((track) => {
-            const status = normalizeStatus(track.status || "queued");
-            const card = document.createElement("article");
-            card.className = `agent-lane-card status-${escapeHtml(status)}`;
-            const requestKeys = Array.isArray(track.request_keys) && track.request_keys.length
-                ? track.request_keys.join(", ")
-                : "No request keys yet";
-            card.innerHTML = `
-                <div class="agent-lane-card__head">
-                    <div>
-                        <strong>${escapeHtml(track.label || track.facet_key || "Facet")}</strong>
-                        <span>${escapeHtml(track.facet_key || "")}</span>
-                    </div>
-                    <span class="status-pill">${escapeHtml(statusLabel(status))}</span>
-                </div>
-                <div class="agent-lane-card__meta">
-                    <span>${escapeHtml(phaseLabel(track.phase || status))}</span>
-                    <span>${escapeHtml(`Tools ${Number(track.tool_call_count || 0)}`)}</span>
-                    <span>${escapeHtml(formatDateTime(track.updated_at || track.started_at))}</span>
-                </div>
-                <p class="agent-lane-card__requests">${escapeHtml(requestKeys)}</p>
+        facets.forEach((facet) => {
+            const findings = facet.findings || {};
+            const status = normalizeStatus(facet.status || "queued");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `agent-lamp status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}${summary.current_facet === facet.facet_key ? " is-current" : ""}`;
+            button.dataset.facetSelect = facet.facet_key || "";
+            button.title = [
+                findings.label || facet.facet_key || "Facet",
+                statusLabel(status),
+                phaseLabel(findings.phase || status),
+                buildAgentLampMeta(facet),
+            ].filter(Boolean).join(" | ");
+            button.setAttribute("aria-pressed", state.selectedFacetKey === facet.facet_key ? "true" : "false");
+            button.innerHTML = `
+                <span class="agent-lamp__label">${escapeHtml(findings.label || facet.facet_key || "Facet")}</span>
+                <span class="agent-lamp__dot" aria-hidden="true"></span>
             `;
-            elements.laneStrip.appendChild(card);
+            button.addEventListener("click", () => {
+                setSelectedFacet(facet.facet_key || null);
+            });
+            elements.laneStrip.appendChild(button);
         });
     }
 
@@ -305,26 +310,20 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         }
 
         events.forEach((event) => {
-            const card = document.createElement("details");
-            card.className = `event-item level-${escapeHtml((event.level || "info").toLowerCase())}`;
-            card.open = ["warning", "error"].includes((event.level || "").toLowerCase());
-            card.innerHTML = `
-                <summary class="event-item-summary">
-                    <span class="event-main">
-                        <strong>${escapeHtml(event.event_type || "event")}</strong>
-                        <small>${escapeHtml(event.message || "")}</small>
-                    </span>
-                    <span class="event-time">${escapeHtml(formatDateTime(event.created_at))}</span>
-                </summary>
-                <div class="event-item-body"></div>
+            const line = document.createElement("div");
+            const text = [
+                event.event_type || "event",
+                event.message || "",
+            ].filter(Boolean).join(" ");
+            line.className = `analysis-event-line level-${escapeHtml((event.level || "info").toLowerCase())}`;
+            line.title = event.payload && Object.keys(event.payload).length
+                ? JSON.stringify(event.payload, null, 2)
+                : "";
+            line.innerHTML = `
+                <span class="analysis-event-line__text">${escapeHtml(text)}</span>
+                <span class="analysis-event-line__time">${escapeHtml(formatDateTime(event.created_at))}</span>
             `;
-            const body = card.querySelector(".event-item-body");
-            if (event.payload && Object.keys(event.payload).length) {
-                body.appendChild(createCodeBlock("payload", JSON.stringify(event.payload, null, 2)));
-            } else {
-                body.innerHTML = `<p class="muted">No payload attached.</p>`;
-            }
-            elements.diagnosticsList.appendChild(card);
+            elements.diagnosticsList.appendChild(line);
         });
     }
 
@@ -332,136 +331,210 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (!elements.resultList) {
             return;
         }
+        if (elements.resultNav) {
+            elements.resultNav.innerHTML = "";
+        }
         elements.resultList.innerHTML = "";
 
-        facets.forEach((facet) => {
-            const findings = facet.findings || {};
-            const status = normalizeStatus(facet.status || "queued");
-            const panel = document.createElement("details");
-            panel.className = `facet-result-card status-${escapeHtml(status)}`;
-            panel.open = ["preparing", "running", "failed"].includes(status);
-            panel.innerHTML = `
-                <summary class="facet-result-card__summary">
-                    <div>
-                        <p class="eyebrow">${escapeHtml(facet.facet_key || "")}</p>
-                        <h3>${escapeHtml(findings.label || facet.facet_key)}</h3>
-                        <p class="facet-summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 180))}</p>
-                    </div>
-                    <span class="status-chip tone-${escapeHtml(statusTone(status))}">${escapeHtml(statusLabel(status))}</span>
-                </summary>
-                <div class="facet-result-card__body"></div>
-            `;
+        const orderedFacets = sortFacetsForQueue(facets);
+        if (!orderedFacets.length) {
+            const empty = `<div class="empty-panel"><strong>${escapeHtml(ui.empty || "No analysis results yet.")}</strong></div>`;
+            if (elements.resultNav) {
+                elements.resultNav.innerHTML = empty;
+            }
+            elements.resultList.innerHTML = empty;
+            return;
+        }
 
-            const body = panel.querySelector(".facet-result-card__body");
-            const summaryNode = document.createElement("div");
-            summaryNode.className = "markdown-body";
-            renderMarkdownInto(summaryNode, findings.summary || "No summary stored for this facet.");
-            body.appendChild(summaryNode);
+        state.selectedFacetKey = resolveSelectedFacetKey(orderedFacets, state.payload?.summary || {});
+        const activeIndex = Math.max(0, orderedFacets.findIndex((facet) => facet.facet_key === state.selectedFacetKey));
+        const activeFacet = orderedFacets[activeIndex] || orderedFacets[0];
 
-            if (Array.isArray(findings.bullets) && findings.bullets.length) {
-                const list = document.createElement("ul");
-                list.className = "facet-bullets";
-                findings.bullets.forEach((item) => {
-                    const li = document.createElement("li");
-                    li.textContent = item;
-                    list.appendChild(li);
+        if (elements.resultNav) {
+            orderedFacets.forEach((facet, index) => {
+                const findings = facet.findings || {};
+                const status = normalizeStatus(facet.status || "queued");
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `analysis-result-tab status-${escapeHtml(status)}${facet.facet_key === state.selectedFacetKey ? " is-active" : ""}`;
+                button.title = trimText(findings.summary || buildFacetLead(facet), 220);
+                button.innerHTML = `
+                    <span class="analysis-result-tab__head">
+                        <span class="analysis-result-tab__index">${escapeHtml(String(index + 1).padStart(2, "0"))}</span>
+                        <strong>${escapeHtml(findings.label || facet.facet_key || "Facet")}</strong>
+                    </span>
+                    <span class="analysis-result-tab__dot" aria-hidden="true"></span>
+                `;
+                button.addEventListener("click", () => {
+                    setSelectedFacet(facet.facet_key || null);
                 });
-                body.appendChild(list);
-            }
+                elements.resultNav.appendChild(button);
+            });
+        }
 
-            if (Array.isArray(facet.evidence) && facet.evidence.length) {
-                const evidenceWrap = document.createElement("div");
-                evidenceWrap.className = "facet-result-section";
-                evidenceWrap.innerHTML = "<strong>Evidence</strong>";
-                facet.evidence.slice(0, 10).forEach((item) => {
-                    const block = document.createElement("div");
-                    block.className = "evidence-block";
-                    block.innerHTML = `
-                        <strong>${escapeHtml(item.filename || item.document_title || item.sender_name || "Evidence")}</strong>
-                        <p class="muted">${escapeHtml(item.reason || "")}</p>
-                        <blockquote>${escapeHtml(item.quote || JSON.stringify(item))}</blockquote>
-                    `;
-                    evidenceWrap.appendChild(block);
-                });
-                body.appendChild(evidenceWrap);
-            }
-
-            if ((facet.conflicts && facet.conflicts.length) || facet.error_message || findings.notes) {
-                const notesWrap = document.createElement("div");
-                notesWrap.className = "facet-result-section";
-                notesWrap.innerHTML = "<strong>Notes</strong>";
-                (facet.conflicts || []).forEach((item) => {
-                    const block = document.createElement("div");
-                    block.className = "evidence-block";
-                    block.innerHTML = `
-                        <strong>${escapeHtml(item.title || "Conflict")}</strong>
-                        <p>${escapeHtml(item.detail || "")}</p>
-                    `;
-                    notesWrap.appendChild(block);
-                });
-                if (facet.error_message) {
-                    const error = document.createElement("p");
-                    error.className = "danger";
-                    error.textContent = facet.error_message;
-                    notesWrap.appendChild(error);
-                }
-                if (findings.notes) {
-                    const note = document.createElement("p");
-                    note.className = "muted";
-                    note.textContent = findings.notes;
-                    notesWrap.appendChild(note);
-                }
-                body.appendChild(notesWrap);
-            }
-
-            const toolCalls = asToolCalls(findings.retrieval_trace);
-            if (toolCalls.length || findings.retrieval_trace) {
-                const traceSection = document.createElement("details");
-                traceSection.className = "facet-trace-section";
-                traceSection.innerHTML = "<summary>Trace Snapshot</summary><div class=\"facet-trace-section__body\"></div>";
-                const traceBody = traceSection.querySelector(".facet-trace-section__body");
-                toolCalls.forEach((call) => {
-                    traceBody.appendChild(buildToolBubble({
-                        toolName: call.tool || call.name || "tool",
-                        arguments: stringifyMaybe(call.arguments),
-                        result: stringifyMaybe(call.result_preview || call.result),
-                        error: stringifyMaybe(call.error),
-                        meta: findings.label || facet.facet_key,
-                        open: false,
-                    }));
-                });
-                if (findings.retrieval_trace) {
-                    traceBody.appendChild(createCodeBlock("retrieval_trace", JSON.stringify(findings.retrieval_trace, null, 2)));
-                }
-                body.appendChild(traceSection);
-            }
-
-            const liveText = findings.llm_response_text || findings.llm_live_text || "";
-            if (liveText) {
-                const liveWrap = document.createElement("details");
-                liveWrap.className = "facet-trace-section";
-                liveWrap.innerHTML = "<summary>LLM Output</summary><div class=\"facet-trace-section__body\"></div>";
-                liveWrap.querySelector(".facet-trace-section__body").appendChild(
-                    buildAssistantBubble({
-                        label: findings.label || facet.facet_key,
-                        meta: phaseLabel(findings.phase || status),
-                        text: liveText,
-                        preferCode: looksStructured(liveText),
-                        status,
-                    })
-                );
-                body.appendChild(liveWrap);
-            }
-
-            const actions = document.createElement("div");
-            actions.className = "inline-actions top-gap";
-            actions.innerHTML = `<button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>Rerun Facet</button>`;
-            body.appendChild(actions);
-
-            elements.resultList.appendChild(panel);
-        });
+        elements.resultList.appendChild(buildResultDetail(activeFacet, runStatus, activeIndex, orderedFacets));
 
         bindFacetRerunActions();
+    }
+
+    function buildResultDetail(facet, runStatus, activeIndex, orderedFacets) {
+        const findings = facet.findings || {};
+        const status = normalizeStatus(facet.status || "queued");
+        const total = orderedFacets.length;
+        const previousFacet = activeIndex > 0 ? orderedFacets[activeIndex - 1] : null;
+        const nextFacet = activeIndex < total - 1 ? orderedFacets[activeIndex + 1] : null;
+        const panel = document.createElement("article");
+        panel.className = `facet-result-card facet-result-card--detail status-${escapeHtml(status)}`;
+        panel.innerHTML = `
+            <div class="facet-result-card__summary facet-result-card__summary--detail">
+                <div class="facet-result-card__summary-main">
+                    <div class="facet-result-card__summary-meta">
+                        <p class="eyebrow">${escapeHtml(facet.facet_key || "")}</p>
+                        <span class="analysis-result-page">${escapeHtml(`${activeIndex + 1} / ${total}`)}</span>
+                    </div>
+                    <h3>${escapeHtml(findings.label || facet.facet_key || "Facet")}</h3>
+                    <p class="facet-summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 220))}</p>
+                </div>
+                <div class="facet-result-card__status">
+                    <span class="status-chip tone-${escapeHtml(statusTone(status))}">${escapeHtml(statusLabel(status))}</span>
+                    <span class="facet-inline-tag">${escapeHtml(phaseLabel(findings.phase || status))}</span>
+                </div>
+            </div>
+            <div class="analysis-result-pager">
+                <button type="button" class="ghost-button" data-facet-page="prev" ${previousFacet ? "" : "disabled"}>上一页</button>
+                <span class="analysis-result-pager__label">${escapeHtml(`第 ${activeIndex + 1} / ${total} 页`)}</span>
+                <button type="button" class="ghost-button" data-facet-page="next" ${nextFacet ? "" : "disabled"}>下一页</button>
+            </div>
+            <div class="facet-result-card__body facet-result-card__body--detail"></div>
+        `;
+
+        panel.querySelector('[data-facet-page="prev"]')?.addEventListener("click", () => {
+            if (previousFacet?.facet_key) {
+                setSelectedFacet(previousFacet.facet_key);
+            }
+        });
+        panel.querySelector('[data-facet-page="next"]')?.addEventListener("click", () => {
+            if (nextFacet?.facet_key) {
+                setSelectedFacet(nextFacet.facet_key);
+            }
+        });
+
+        const body = panel.querySelector(".facet-result-card__body");
+        const summaryNode = document.createElement("div");
+        summaryNode.className = "markdown-body";
+        renderMarkdownInto(summaryNode, findings.summary || buildFacetLead(facet));
+        body.appendChild(summaryNode);
+
+        if (Array.isArray(findings.bullets) && findings.bullets.length) {
+            const list = document.createElement("ul");
+            list.className = "facet-bullets";
+            findings.bullets.forEach((item) => {
+                const li = document.createElement("li");
+                li.textContent = item;
+                list.appendChild(li);
+            });
+            body.appendChild(list);
+        }
+
+        if (Array.isArray(facet.evidence) && facet.evidence.length) {
+            const evidenceWrap = document.createElement("div");
+            evidenceWrap.className = "facet-result-section";
+            evidenceWrap.innerHTML = "<strong>Evidence</strong>";
+            facet.evidence.slice(0, 10).forEach((item) => {
+                const block = document.createElement("div");
+                block.className = "evidence-block";
+                block.innerHTML = `
+                    <strong>${escapeHtml(item.filename || item.document_title || item.sender_name || "Evidence")}</strong>
+                    <p class="muted">${escapeHtml(item.reason || "")}</p>
+                    <blockquote>${escapeHtml(item.quote || JSON.stringify(item))}</blockquote>
+                `;
+                evidenceWrap.appendChild(block);
+            });
+            body.appendChild(evidenceWrap);
+        }
+
+        if ((facet.conflicts && facet.conflicts.length) || facet.error_message || findings.notes) {
+            const notesWrap = document.createElement("div");
+            notesWrap.className = "facet-result-section";
+            notesWrap.innerHTML = "<strong>Notes</strong>";
+            (facet.conflicts || []).forEach((item) => {
+                const block = document.createElement("div");
+                block.className = "evidence-block";
+                block.innerHTML = `
+                    <strong>${escapeHtml(item.title || "Conflict")}</strong>
+                    <p>${escapeHtml(item.detail || "")}</p>
+                `;
+                notesWrap.appendChild(block);
+            });
+            if (facet.error_message) {
+                const error = document.createElement("p");
+                error.className = "danger";
+                error.textContent = facet.error_message;
+                notesWrap.appendChild(error);
+            }
+            if (findings.notes) {
+                const note = document.createElement("p");
+                note.className = "muted";
+                note.textContent = findings.notes;
+                notesWrap.appendChild(note);
+            }
+            body.appendChild(notesWrap);
+        }
+
+        const toolCalls = asToolCalls(findings.retrieval_trace);
+        if (toolCalls.length || findings.retrieval_trace) {
+            const traceSection = document.createElement("details");
+            traceSection.className = "facet-trace-section";
+            traceSection.innerHTML = "<summary>Trace Snapshot</summary><div class=\"facet-trace-section__body\"></div>";
+            const traceBody = traceSection.querySelector(".facet-trace-section__body");
+            toolCalls.forEach((call) => {
+                traceBody.appendChild(buildToolBubble({
+                    toolName: call.tool || call.name || "tool",
+                    arguments: stringifyMaybe(call.arguments),
+                    result: stringifyMaybe(call.result_preview || call.result),
+                    error: stringifyMaybe(call.error),
+                    meta: findings.label || facet.facet_key,
+                    open: false,
+                }));
+            });
+            if (findings.retrieval_trace) {
+                traceBody.appendChild(createCodeBlock("retrieval_trace", JSON.stringify(findings.retrieval_trace, null, 2)));
+            }
+            body.appendChild(traceSection);
+        }
+
+        const liveText = findings.llm_response_text || findings.llm_live_text || "";
+        if (liveText) {
+            const liveWrap = document.createElement("details");
+            liveWrap.className = "facet-trace-section";
+            liveWrap.innerHTML = "<summary>LLM Output</summary><div class=\"facet-trace-section__body\"></div>";
+            liveWrap.querySelector(".facet-trace-section__body").appendChild(
+                buildAssistantBubble({
+                    label: findings.label || facet.facet_key,
+                    meta: phaseLabel(findings.phase || status),
+                    text: liveText,
+                    preferCode: looksStructured(liveText),
+                    status,
+                })
+            );
+            body.appendChild(liveWrap);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "inline-actions top-gap";
+        actions.innerHTML = `<button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>Rerun Facet</button>`;
+        body.appendChild(actions);
+
+        return panel;
+    }
+
+    function setSelectedFacet(facetKey) {
+        if (!facetKey || !state.payload) {
+            return;
+        }
+        state.selectedFacetKey = facetKey;
+        renderAgentLanes(state.payload);
+        renderResults(state.payload.facets || [], state.payload.status);
     }
 
     function renderAgentCenter(payload) {
@@ -804,6 +877,37 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             counts.failed ? `Failed ${counts.failed}` : "",
             summary.requested_concurrency ? `Requested ${summary.requested_concurrency}` : "",
         ].filter(Boolean).join(" · ") || "Waiting for the next agent update.";
+    }
+
+    function buildAgentLampMeta(facet) {
+        const findings = facet.findings || {};
+        const status = normalizeStatus(facet.status || "queued");
+        if (status === "queued" && findings.queue_position) {
+            return `Queue #${findings.queue_position}`;
+        }
+        if (status === "completed") {
+            return `${Number(findings.hit_count || facet.evidence?.length || 0)} evidence`;
+        }
+        if (status === "running" || status === "preparing") {
+            return "Active";
+        }
+        return phaseLabel(findings.phase || status);
+    }
+
+    function resolveSelectedFacetKey(facets, summary) {
+        const keys = new Set(
+            facets
+                .map((facet) => facet.facet_key)
+                .filter(Boolean)
+        );
+        if (state.selectedFacetKey && keys.has(state.selectedFacetKey)) {
+            return state.selectedFacetKey;
+        }
+        if (summary.current_facet && keys.has(summary.current_facet)) {
+            return summary.current_facet;
+        }
+        const liveFacet = facets.find((facet) => ["preparing", "running"].includes(normalizeStatus(facet.status || "")));
+        return liveFacet?.facet_key || facets[0]?.facet_key || null;
     }
 
     function orderedTraceEvents() {

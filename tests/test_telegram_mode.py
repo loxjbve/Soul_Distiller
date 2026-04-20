@@ -1363,10 +1363,11 @@ def test_telegram_analysis_page_renders_agent_center_shell(client, app):
 
     response = client.get(f"/projects/{project_id}/analysis", params={"run_id": run_id})
     assert response.status_code == 200
-    assert "Agentic Analysis Center" in response.text
+    assert 'id="analysis-page-bootstrap"' in response.text
     assert 'id="analysis-feed"' in response.text
     assert 'id="analysis-diagnostics-list"' in response.text
-    assert 'id="facet-status-list"' in response.text
+    assert 'id="analysis-agent-lanes"' in response.text
+    assert 'id="analysis-result-nav"' in response.text
     assert 'id="analysis-live-pill"' in response.text
     assert 'id="analysis-completed-count"' in response.text
     assert 'analysis-live-output' not in response.text
