@@ -103,19 +103,21 @@ def test_end_to_end_project_flow(client, app):
 
     skill_response = client.post(
         f"/api/projects/{project_id}/assets/generate",
-        json={"asset_kind": "skill"},
+        json={"asset_kind": "cc_skill"},
     )
     assert skill_response.status_code == 200
     skill_draft = skill_response.json()
-    assert skill_draft["asset_kind"] == "skill"
+    assert skill_draft["asset_kind"] == "cc_skill"
+    assert skill_draft["markdown_text"].startswith("---")
     assert "System Role" in skill_draft["markdown_text"]
     assert "Alice 本人" in skill_draft["markdown_text"]
     assert "## 回答工作流" in skill_draft["markdown_text"]
     assert "## 核心心智模型" in skill_draft["markdown_text"]
     assert "## 诚实边界" in skill_draft["markdown_text"]
     assert "documents" in skill_draft["json_payload"]
-    assert "# 核心身份与精神底色" in skill_draft["markdown_text"]
-    assert "# 核心记忆与经历" in skill_draft["markdown_text"]
+    assert "references/personality.md" in skill_draft["markdown_text"]
+    assert "references/memories.md" in skill_draft["markdown_text"]
+    assert "references/analysis.md" in skill_draft["markdown_text"]
     assert skill_draft["prompt_text"] == skill_draft["markdown_text"]
 
     report_response = client.post(
@@ -125,11 +127,11 @@ def test_end_to_end_project_flow(client, app):
     assert report_response.status_code == 200
     report_draft = report_response.json()
     assert report_draft["asset_kind"] == "profile_report"
-    assert "全景侧写" in report_draft["markdown_text"]
+    assert "用户画像报告" in report_draft["markdown_text"]
 
     publish_response = client.post(f"/api/projects/{project_id}/skills/{skill_draft['id']}/publish")
     assert publish_response.status_code == 200
-    assert publish_response.json()["asset_kind"] == "skill"
+    assert publish_response.json()["asset_kind"] == "cc_skill"
     assert publish_response.json()["version_number"] == 1
 
     publish_report_response = client.post(
@@ -758,7 +760,7 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
 
     monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
 
-    response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "skill"})
+    response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"})
     assert response.status_code == 200
     payload = response.json()
     documents = payload["json_payload"]["documents"]
@@ -771,12 +773,13 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
     ]
     assert "证据语料包：" in llm_calls[0][1]["content"]
     assert "Retrieved evidence corpus:" in llm_calls[2][1]["content"]
-    assert documents["skill"]["markdown"].startswith("# System Role:")
+    assert documents["skill"]["markdown"].startswith("---")
+    assert "# System Role:" in documents["skill"]["markdown"]
     assert "## 回答工作流" in documents["skill"]["markdown"]
     assert "## 调研来源" in documents["skill"]["markdown"]
     assert documents["personality"]["markdown"].startswith("# 核心身份与精神底色")
     assert documents["memories"]["markdown"].startswith("# 核心记忆与经历")
-    assert documents["merge"]["markdown"] == payload["markdown_text"]
+    assert documents["analysis"]["markdown"].startswith("# 十维分析摘要")
     assert payload["prompt_text"] == payload["markdown_text"]
 
 
@@ -937,14 +940,14 @@ def test_skill_split_document_exports_work_for_draft_and_version(client, app):
             error_message=None,
         )
 
-    draft_payload = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "skill"}).json()
+    draft_payload = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"}).json()
     draft_id = draft_payload["id"]
 
     document_expectations = {
-        "skill": "# System Role:",
+        "skill": "---",
         "personality": "# 核心身份与精神底色",
         "memories": "# 核心记忆与经历",
-        "merge": "# 核心身份与精神底色",
+        "analysis": "# 十维分析摘要",
     }
     for key, marker in document_expectations.items():
         response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/{key}")
@@ -954,17 +957,17 @@ def test_skill_split_document_exports_work_for_draft_and_version(client, app):
     bundle_response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/bundle")
     assert bundle_response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as archive:
-        assert set(archive.namelist()) == {"Skill.md", "personality.md", "memories.md", "Skill_merge.md"}
+        assert set(archive.namelist()) == {"SKILL.md", "references/personality.md", "references/memories.md", "references/analysis.md"}
 
     publish_payload = client.post(
         f"/api/projects/{project_id}/assets/{draft_id}/publish",
-        json={"asset_kind": "skill"},
+        json={"asset_kind": "cc_skill"},
     ).json()
     version_id = publish_payload["id"]
 
-    version_response = client.get(f"/api/projects/{project_id}/asset-versions/{version_id}/exports/merge")
+    version_response = client.get(f"/api/projects/{project_id}/asset-versions/{version_id}/exports/analysis")
     assert version_response.status_code == 200
-    assert "# 核心身份与精神底色" in version_response.text
+    assert "# 十维分析摘要" in version_response.text
 
 
 def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app):
@@ -1006,7 +1009,7 @@ def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app)
     bundle_response = client.get(f"/api/projects/{project_id}/assets/{draft_id}/exports/bundle")
     assert bundle_response.status_code == 200
     with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as archive:
-        assert set(archive.namelist()) == {"SKILL.md", "references/personality.md", "references/memories.md"}
+        assert set(archive.namelist()) == {"SKILL.md", "references/personality.md", "references/memories.md", "references/analysis.md"}
 
     publish_payload = client.post(
         f"/api/projects/{project_id}/assets/{draft_id}/publish",
@@ -1283,6 +1286,111 @@ def test_custom_provider_requires_base_url(client):
         follow_redirects=False,
     )
     assert response.status_code == 400
+
+
+def test_settings_api_persists_multi_config_bundle_and_auto_discovers_models(client, app, monkeypatch):
+    def fake_list_models(self):
+        return ["gpt-4.1-mini", "gpt-4o-mini"]
+
+    monkeypatch.setattr(OpenAICompatibleClient, "list_models", fake_list_models)
+
+    response = client.post(
+        "/api/settings/chat",
+        json={
+            "active_config_id": "primary",
+            "discover_config_id": "primary",
+            "fallback_order": ["backup"],
+            "configs": [
+                {
+                    "id": "primary",
+                    "label": "Primary",
+                    "provider_kind": "openai",
+                    "base_url": "",
+                    "api_key": "sk-primary",
+                    "model": "",
+                    "api_mode": "responses",
+                    "available_models": [],
+                },
+                {
+                    "id": "backup",
+                    "label": "Backup",
+                    "provider_kind": "openai-compatible",
+                    "base_url": "https://fallback.example/v1",
+                    "api_key": "sk-backup",
+                    "model": "fallback-model",
+                    "api_mode": "chat_completions",
+                    "available_models": ["fallback-model"],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["service"] == "chat"
+    assert payload["discovered_config_id"] == "primary"
+    assert payload["discovered_models"] == ["gpt-4.1-mini", "gpt-4o-mini"]
+    assert payload["bundle"]["configs"][0]["available_models"] == ["gpt-4.1-mini", "gpt-4o-mini"]
+    assert payload["bundle"]["configs"][0]["model"] == "gpt-4.1-mini"
+
+    with app.state.db.session() as session:
+        stored_bundle = repository.get_service_setting_bundle(session, "chat_service")
+        assert stored_bundle["active_config_id"] == "primary"
+        assert stored_bundle["fallback_order"] == ["backup"]
+        config = repository.get_service_config(session, "chat_service")
+        assert config is not None
+        assert config.model == "gpt-4.1-mini"
+        assert len(config.fallbacks) == 1
+        assert config.fallbacks[0].model == "fallback-model"
+
+
+def test_asset_version_download_and_delete(client, app):
+    project_id = client.post("/api/projects", json={"name": "Asset version ops"}).json()["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={"target_role": "Asset version ops 本人", "analysis_context": "version ops"},
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.9,
+            findings_json={"label": "Personality", "summary": "边界清楚", "bullets": ["不多话"]},
+            evidence_json=[],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    draft_payload = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"}).json()
+    publish_payload = client.post(
+        f"/api/projects/{project_id}/assets/{draft_payload['id']}/publish",
+        json={"asset_kind": "cc_skill"},
+    ).json()
+    version_id = publish_payload["id"]
+
+    download_response = client.get(f"/api/projects/{project_id}/asset-versions/{version_id}/download")
+    assert download_response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download_response.content)) as archive:
+        assert set(archive.namelist()) == {"SKILL.md", "references/personality.md", "references/memories.md", "references/analysis.md"}
+
+    asset_dir = app.state.config.assets_dir / project_id / "cc_skill"
+    assert (asset_dir / "published_v1.md").exists()
+
+    delete_response = client.post(
+        f"/projects/{project_id}/asset-versions/{version_id}/delete",
+        follow_redirects=False,
+    )
+    assert delete_response.status_code == 303
+    assert delete_response.headers["location"].endswith("/projects/{}/assets?kind=cc_skill".format(project_id))
+
+    with app.state.db.session() as session:
+        assert repository.get_asset_version(session, version_id) is None
+    assert not (asset_dir / "published_v1.md").exists()
 
 
 def test_pages_render_simplified_chinese_and_lang(client):

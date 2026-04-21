@@ -143,6 +143,8 @@ def test_skill_heuristic_markdown_uses_new_persona_blueprint():
     bundle = synth.build("skill", project, facets, config=None, target_role="Demo 本人", analysis_context="私聊语料")
     markdown = bundle.markdown_text
 
+    assert bundle.asset_kind == "cc_skill"
+    assert markdown.startswith("---")
     assert "## 角色扮演规则" in markdown
     assert "## 回答工作流" in markdown
     assert "## 核心心智模型" in markdown
@@ -150,8 +152,12 @@ def test_skill_heuristic_markdown_uses_new_persona_blueprint():
     assert "## 表达 DNA" in markdown
     assert "## 诚实边界" in markdown
     assert "## 调研来源" in markdown
-    assert "# 核心身份与精神底色" in markdown
-    assert "# 核心记忆与经历" in markdown
+    assert "references/personality.md" in markdown
+    assert "references/memories.md" in markdown
+    assert "references/analysis.md" in markdown
+    assert bundle.json_payload["documents"]["personality"]["markdown"].startswith("# 核心身份与精神底色")
+    assert bundle.json_payload["documents"]["memories"]["markdown"].startswith("# 核心记忆与经历")
+    assert bundle.json_payload["documents"]["analysis"]["markdown"].startswith("# 十维分析摘要")
 
 
 def test_cc_skill_heuristic_generates_frontmatter_and_references():

@@ -1213,7 +1213,6 @@ def test_telegram_parent_persona_studio_auto_analyzes_and_redirects(client, app,
 
     parent_page = client.get(f"/projects/{project_id}")
     assert parent_page.status_code == 200
-    assert "Telegram Persona Studio" in parent_page.text
     assert 'data-telegram-persona-studio' in parent_page.text
     assert 'name="auto_analyze" value="1"' in parent_page.text
     assert 'name="concurrency"' in parent_page.text
@@ -1558,17 +1557,18 @@ def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch
 
     monkeypatch.setattr(app.state.retrieval, "search", fail_search)
 
-    response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "skill"})
+    response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "cc_skill"})
     assert response.status_code == 200
     payload = response.json()
     documents = payload["json_payload"]["documents"]
 
-    assert payload["asset_kind"] == "skill"
-    assert documents["skill"]["markdown"].startswith("# System Role:")
+    assert payload["asset_kind"] == "cc_skill"
+    assert documents["skill"]["markdown"].startswith("---")
+    assert "# System Role:" in documents["skill"]["markdown"]
     assert documents["personality"]["markdown"].strip()
     assert documents["memories"]["markdown"].strip()
+    assert documents["analysis"]["markdown"].startswith("# 十维分析摘要")
     assert "TG Persona" in payload["markdown_text"]
-    assert documents["merge"]["markdown"] == payload["markdown_text"]
     assert payload["prompt_text"] == payload["markdown_text"]
 
 
@@ -1582,7 +1582,7 @@ def test_telegram_preprocess_page_renders_intermediate_and_final_tables(client, 
     assert "Weekly Candidates" in response.text
     assert "Top Users" in response.text
     assert "Active Users" in response.text
-    assert "Subagent" in response.text
+    assert "Workers" in response.text
     assert "Telegram mode discussion" in response.text
     assert "Alice" in response.text or "Bob" in response.text
     assert "telegram_preprocess.js" in response.text

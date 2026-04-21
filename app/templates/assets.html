@@ -2,6 +2,11 @@
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 {% block body_class %}theme-ambient--assets{% endblock %}
 {% block page_class %}page-assets{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='assets-page.css') }}">
+{% endblock %}
+
 {% block content %}
 <div class="page-frame">
     <section class="page-banner page-banner--assets-compact">
@@ -22,9 +27,6 @@
             <div class="page-banner__portrait"></div>
             <div class="page-banner__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.view_analysis }}</a>
-                {% if asset_kind == "skill" %}
-                    <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.view_playground }}</a>
-                {% endif %}
             </div>
         </div>
     </section>
@@ -55,10 +57,10 @@
                     <button type="submit" class="primary-button" id="generate-btn">
                         {{ ui.regenerate if draft else ui.generate }} {{ asset_label }}
                     </button>
-                    <p class="helper-text">{{ ui.fallback_hint }}</p>
+                    <p class="helper-text">流式内容会直接进入草稿编辑区，生成完成前编辑器保持锁定。</p>
                 </form>
 
-                <div id="asset-generation-shell" hidden>
+                <div id="asset-generation-shell" class="asset-generation-shell" hidden>
                     <section class="progress-shell">
                         <div class="progress-labels">
                             <strong id="asset-current-stage">{{ ui.status_idle }}</strong>
@@ -69,62 +71,11 @@
                         </div>
                     </section>
                     <div class="asset-stream-summary">
-                        <span class="asset-stream-summary__item">
-                            <strong id="asset-generation-state">{{ ui.status_idle }}</strong>
-                        </span>
+                        <span class="asset-stream-summary__item"><strong id="asset-generation-state">{{ ui.status_idle }}</strong></span>
                         <span class="asset-stream-summary__item" id="asset-generation-message">{{ ui.stream_hint }}</span>
                         <span class="asset-stream-summary__item"><strong id="asset-chunk-count">0</strong> chunks</span>
                         <span class="asset-stream-summary__item"><strong id="asset-char-count">0</strong> chars</span>
                     </div>
-                    {% if asset_kind in ("skill", "cc_skill") %}
-                        <div class="asset-stream-grid asset-stream-grid--split">
-                            {% set stream_docs = [
-                                ("skill", draft_documents.get("skill", {}).get("filename", "Skill.md" if asset_kind == "skill" else "SKILL.md"), "Primary system prompt"),
-                                ("personality", draft_documents.get("personality", {}).get("filename", "personality.md"), "Identity and mental climate"),
-                                ("memories", draft_documents.get("memories", {}).get("filename", "memories.md"), "Memory anchors and long arc")
-                            ] %}
-                            {% for key, label, note in stream_docs %}
-                                <article class="asset-stream-panel {% if key == 'skill' %}asset-stream-panel--primary{% endif %}" data-stream-panel="{{ key }}">
-                                    <div class="asset-stream-panel__head">
-                                        <div>
-                                            <p class="eyebrow">Live</p>
-                                            <h3>{{ label }}</h3>
-                                        </div>
-                                        <div class="asset-stream-panel__meta">
-                                            <span class="status-chip tone-queued" id="asset-doc-status-{{ key }}">waiting</span>
-                                            <span id="asset-doc-count-{{ key }}">0 chars</span>
-                                        </div>
-                                    </div>
-                                    <p class="helper-text">{{ note }}</p>
-                                    <pre
-                                        id="generation-output-{{ key }}"
-                                        class="generation-output generation-output--asset panel-scroll"
-                                        data-panel-scroll
-                                        data-stream-output="{{ key }}"
-                                    ></pre>
-                                </article>
-                            {% endfor %}
-                        </div>
-                    {% else %}
-                        <article class="asset-stream-panel asset-stream-panel--single" data-stream-panel="asset">
-                            <div class="asset-stream-panel__head">
-                                <div>
-                                    <p class="eyebrow">Live</p>
-                                    <h3>{{ ui.stream_title }}</h3>
-                                </div>
-                                <div class="asset-stream-panel__meta">
-                                    <span class="status-chip tone-queued" id="asset-doc-status-asset">waiting</span>
-                                    <span id="asset-doc-count-asset">0 chars</span>
-                                </div>
-                            </div>
-                            <pre
-                                id="generation-output-asset"
-                                class="generation-output generation-output--asset panel-scroll"
-                                data-panel-scroll
-                                data-stream-output="asset"
-                            ></pre>
-                        </article>
-                    {% endif %}
                 </div>
             </div>
         </article>
@@ -135,121 +86,103 @@
                     <p class="eyebrow">Draft</p>
                     <h2>{{ ui.draft_title }}</h2>
                 </div>
+                <span class="status-chip tone-queued" id="asset-editor-lock-chip">{{ ui.status_idle }}</span>
             </div>
             <div class="panel-body">
-                {% if draft %}
-                    <div class="button-row">
-                        {% if asset_kind in ("skill", "cc_skill") %}
-                            <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/skill">{{ ui.export_skill_doc }}</a>
-                            <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/personality">{{ ui.export_personality_doc }}</a>
-                            <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/memories">{{ ui.export_memories_doc }}</a>
-                            {% if asset_kind == "skill" %}
-                                <a class="ghost-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/merge">{{ ui.export_merge_doc }}</a>
-                            {% endif %}
-                            <a class="primary-button" href="/api/projects/{{ project.id }}/assets/{{ draft.id }}/exports/bundle">{{ ui.export_bundle }}</a>
-                        {% endif %}
-                    </div>
-                    <div class="panel-scroll" data-panel-scroll>
-                        <form method="post" action="/projects/{{ project.id }}/assets/{{ draft.id }}/save" class="form-stack" id="asset-draft-form">
-                            <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
-                            {% if asset_kind in ("skill", "cc_skill") %}
-                                {% set editor_keys = ["skill", "personality", "memories"] %}
-                                {% if asset_kind == "skill" %}
-                                    {% set editor_keys = editor_keys + ["merge"] %}
-                                {% endif %}
-                                <textarea name="markdown_text" id="asset-markdown-text" hidden>{{ draft.markdown_text }}</textarea>
-                                <div class="asset-editor-shell">
-                                    <div class="asset-editor-tabs" role="tablist" aria-label="Draft pages">
-                                        {% for key in editor_keys %}
-                                            <button
-                                                type="button"
-                                                class="asset-editor-tab {% if loop.first %}is-active{% endif %}"
-                                                data-editor-tab-trigger="{{ key }}"
-                                                role="tab"
-                                                aria-selected="{{ 'true' if loop.first else 'false' }}"
-                                            >
-                                                {{ draft_documents.get(key, {}).get("filename", key) }}
-                                            </button>
-                                        {% endfor %}
-                                        <button type="button" class="asset-editor-tab" data-editor-tab-trigger="json" role="tab" aria-selected="false">{{ ui.field_json }}</button>
-                                        <button type="button" class="asset-editor-tab" data-editor-tab-trigger="prompt" role="tab" aria-selected="false">{{ ui.field_prompt }}</button>
-                                        <button type="button" class="asset-editor-tab" data-editor-tab-trigger="notes" role="tab" aria-selected="false">{{ ui.field_notes }}</button>
-                                    </div>
+                <form class="form-stack asset-draft-form" id="asset-draft-form" data-asset-kind="{{ asset_kind }}" data-draft-id="{{ draft.id if draft else '' }}">
+                    <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
+                    <input type="hidden" name="markdown_text" id="asset-markdown-text" value="{{ draft.markdown_text if draft else '' }}">
 
-                                    <div class="asset-editor-pages">
-                                        {% for key in editor_keys %}
-                                            {% set document = draft_documents.get(key, {}) %}
-                                            <section class="asset-editor-page {% if loop.first %}is-active{% endif %}" data-editor-page="{{ key }}" role="tabpanel">
-                                                <div class="asset-editor-page__head">
-                                                    <div>
-                                                        <p class="eyebrow">Document</p>
-                                                        <h3>{{ document.get("filename", key) }}</h3>
-                                                    </div>
-                                                    {% if key == "merge" %}
-                                                        <span class="helper-text">Auto-composed from the split documents.</span>
-                                                    {% endif %}
-                                                </div>
-                                                <textarea
-                                                    rows="22"
-                                                    class="asset-editor-textarea"
-                                                    data-document-editor="{{ key }}"
-                                                    {% if key == "merge" %}readonly{% endif %}
-                                                >{{ document.get("markdown", "") }}</textarea>
-                                            </section>
-                                        {% endfor %}
-
-                                        <section class="asset-editor-page" data-editor-page="json" role="tabpanel">
-                                            <label class="asset-editor-field">
-                                                <span>{{ ui.field_json }}</span>
-                                                <textarea name="json_payload" rows="22" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
-                                            </label>
-                                        </section>
-
-                                        <section class="asset-editor-page" data-editor-page="prompt" role="tabpanel">
-                                            <label class="asset-editor-field">
-                                                <span>{{ ui.field_prompt }}</span>
-                                                <textarea name="prompt_text" rows="22" id="asset-prompt-text" class="asset-editor-textarea" readonly>{{ draft.system_prompt }}</textarea>
-                                                <small class="helper-text">{{ ui.prompt_locked_hint }}</small>
-                                            </label>
-                                        </section>
-
-                                        <section class="asset-editor-page" data-editor-page="notes" role="tabpanel">
-                                            <label class="asset-editor-field">
-                                                <span>{{ ui.field_notes }}</span>
-                                                <textarea name="notes" rows="10" class="asset-editor-textarea">{{ draft.notes or "" }}</textarea>
-                                            </label>
-                                        </section>
-                                    </div>
-                                </div>
-                            {% else %}
-                                <label>
-                                    <span>{{ ui.field_markdown }}</span>
-                                    <textarea name="markdown_text" rows="16">{{ draft.markdown_text }}</textarea>
-                                </label>
-                                <label>
-                                    <span>{{ ui.field_json }}</span>
-                                    <textarea name="json_payload" rows="12" id="asset-json-payload">{{ draft_json_pretty }}</textarea>
-                                </label>
-                                <label>
-                                    <span>{{ ui.field_prompt }}</span>
-                                    <textarea name="prompt_text" rows="10">{{ draft.system_prompt }}</textarea>
-                                </label>
-                                <label>
-                                    <span>{{ ui.field_notes }}</span>
-                                    <textarea name="notes" rows="4">{{ draft.notes or "" }}</textarea>
-                                </label>
-                            {% endif %}
-                            <div class="button-row">
-                                <button type="submit" class="primary-button">{{ ui.save_draft }}</button>
-                                <button formaction="/projects/{{ project.id }}/assets/{{ draft.id }}/publish" type="submit" class="ghost-button">{{ ui.publish }}</button>
+                    {% if asset_kind == "cc_skill" %}
+                        {% set editor_keys = ["skill", "personality", "memories", "analysis"] %}
+                        <div class="asset-editor-shell">
+                            <div class="asset-editor-tabs" role="tablist" aria-label="Draft pages">
+                                {% for key in editor_keys %}
+                                    <button
+                                        type="button"
+                                        class="asset-editor-tab {% if loop.first %}is-active{% endif %}"
+                                        data-editor-tab-trigger="{{ key }}"
+                                        role="tab"
+                                        aria-selected="{{ 'true' if loop.first else 'false' }}"
+                                    >
+                                        {{ draft_documents.get(key, {}).get("filename", key) }}
+                                    </button>
+                                {% endfor %}
+                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="json" role="tab" aria-selected="false">{{ ui.field_json }}</button>
+                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="prompt" role="tab" aria-selected="false">{{ ui.field_prompt }}</button>
+                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="notes" role="tab" aria-selected="false">{{ ui.field_notes }}</button>
                             </div>
-                        </form>
-                    </div>
-                {% else %}
-                    <div class="empty-panel" data-empty-state>
+
+                            <div class="asset-editor-pages">
+                                {% for key in editor_keys %}
+                                    {% set document = draft_documents.get(key, {}) %}
+                                    <section class="asset-editor-page {% if loop.first %}is-active{% endif %}" data-editor-page="{{ key }}" role="tabpanel">
+                                        <div class="asset-editor-page__head">
+                                            <div>
+                                                <p class="eyebrow">Document</p>
+                                                <h3>{{ document.get("filename", key) }}</h3>
+                                            </div>
+                                            <span class="helper-text">生成中会直接写入这里。</span>
+                                        </div>
+                                        <textarea
+                                            rows="22"
+                                            class="asset-editor-textarea"
+                                            data-document-editor="{{ key }}"
+                                        >{{ document.get("markdown", "") }}</textarea>
+                                    </section>
+                                {% endfor %}
+
+                                <section class="asset-editor-page" data-editor-page="json" role="tabpanel">
+                                    <label class="asset-editor-field">
+                                        <span>{{ ui.field_json }}</span>
+                                        <textarea name="json_payload" rows="22" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
+                                    </label>
+                                </section>
+
+                                <section class="asset-editor-page" data-editor-page="prompt" role="tabpanel">
+                                    <label class="asset-editor-field">
+                                        <span>{{ ui.field_prompt }}</span>
+                                        <textarea name="prompt_text" rows="22" id="asset-prompt-text" class="asset-editor-textarea" readonly>{{ draft.system_prompt if draft else "" }}</textarea>
+                                        <small class="helper-text">Prompt 由文档集自动推导，生成完成前保持只读。</small>
+                                    </label>
+                                </section>
+
+                                <section class="asset-editor-page" data-editor-page="notes" role="tabpanel">
+                                    <label class="asset-editor-field">
+                                        <span>{{ ui.field_notes }}</span>
+                                        <textarea name="notes" rows="10" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
+                                    </label>
+                                </section>
+                            </div>
+                        </div>
+                    {% else %}
+                        <label>
+                            <span>{{ ui.field_markdown }}</span>
+                            <textarea name="markdown_text_display" rows="20" id="asset-single-markdown" class="asset-editor-textarea">{{ draft.markdown_text if draft else "" }}</textarea>
+                        </label>
+                        <label>
+                            <span>{{ ui.field_json }}</span>
+                            <textarea name="json_payload" rows="14" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
+                        </label>
+                        <label>
+                            <span>{{ ui.field_prompt }}</span>
+                            <textarea name="prompt_text" rows="12" id="asset-prompt-text" class="asset-editor-textarea">{{ draft.system_prompt if draft else "" }}</textarea>
+                        </label>
+                        <label>
+                            <span>{{ ui.field_notes }}</span>
+                            <textarea name="notes" rows="8" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
+                        </label>
+                    {% endif %}
+
+                    <div class="empty-panel asset-draft-placeholder" data-empty-state {% if draft %}hidden{% endif %}>
                         <strong>{{ ui.empty_draft }}</strong>
                     </div>
-                {% endif %}
+
+                    <div class="button-row">
+                        <button type="button" class="primary-button" id="asset-save-btn" {% if not draft %}disabled{% endif %}>{{ ui.save_draft }}</button>
+                        <button type="button" class="ghost-button" id="asset-publish-btn" {% if not draft %}disabled{% endif %}>{{ ui.publish }}</button>
+                    </div>
+                </form>
             </div>
         </article>
 
@@ -258,13 +191,13 @@
                 <div class="panel-header panel-header--slim">
                     <div>
                         <p class="eyebrow">Documents</p>
-                        <h2>Draft document set</h2>
+                        <h2>Reference Set</h2>
                     </div>
                 </div>
                 <div class="panel-body panel-body--tight">
                     <div id="asset-document-status" class="document-board panel-scroll" data-documents-board data-panel-scroll>
                         <div class="empty-panel">
-                            <strong>Generate or load a draft to inspect split documents.</strong>
+                            <strong>生成或加载草稿后，这里会展示当前引用文档。</strong>
                         </div>
                     </div>
                 </div>
@@ -287,17 +220,19 @@
                                         <p>{{ version.published_at.strftime('%Y-%m-%d %H:%M') if version.published_at else '--' }}</p>
                                     </div>
                                     <span class="status-chip tone-ready">{{ asset_label }}</span>
-                                    {% if asset_kind in ("skill", "cc_skill") %}
-                                        <div class="button-row">
-                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/skill">{{ ui.export_skill_doc }}</a>
-                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/personality">{{ ui.export_personality_doc }}</a>
-                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/memories">{{ ui.export_memories_doc }}</a>
-                                            {% if asset_kind == "skill" %}
-                                                <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/merge">{{ ui.export_merge_doc }}</a>
-                                            {% endif %}
+                                    <div class="button-row">
+                                        <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/download">下载版本</a>
+                                        {% if asset_kind == "cc_skill" %}
+                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/skill">SKILL.md</a>
+                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/personality">personality</a>
+                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/memories">memories</a>
+                                            <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/analysis">analysis</a>
                                             <a class="primary-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/bundle">{{ ui.export_bundle }}</a>
-                                        </div>
-                                    {% endif %}
+                                        {% endif %}
+                                        <form method="post" action="/projects/{{ project.id }}/asset-versions/{{ version.id }}/delete">
+                                            <button type="submit" class="ghost-button" data-confirm="确定删除这个资产版本吗？">删除版本</button>
+                                        </form>
+                                    </div>
                                 </article>
                             {% endfor %}
                         </div>

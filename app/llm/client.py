@@ -93,18 +93,25 @@ def normalize_api_mode(api_mode: str | None) -> str:
 
 class OpenAICompatibleClient:
     def __init__(self, config: ServiceConfig, *, log_path: str | None = None) -> None:
-        self.config = config
         self.log_path = Path(log_path) if log_path else None
+        self.config = self._clone_config(config)
+        self.configs = [self.config, *(self._clone_config(item) for item in config.fallbacks)]
 
     def list_models(self) -> list[str]:
+        return self._run_with_fallbacks(lambda client, _config: client._list_models_once())
+
+    def _list_models_once(self) -> list[str]:
         payload = self._get_json("/models", timeout=20.0)
         data = payload.get("data", [])
         return [item["id"] for item in data if item.get("id")]
 
     def resolve_model(self) -> str:
-        if self.config.model:
-            return self.config.model
-        models = self.list_models()
+        return self._run_with_fallbacks(lambda client, config: client._resolve_model_once(config))
+
+    def _resolve_model_once(self, config: ServiceConfig) -> str:
+        if config.model:
+            return config.model
+        models = self._list_models_once()
         if not models:
             raise LLMError("No models discovered from the configured service.")
         return models[0]
@@ -139,7 +146,32 @@ class OpenAICompatibleClient:
         max_tokens: int | None = 1400,
         stream_handler: Callable[[str], None] | None = None,
     ) -> ChatCompletionResult:
-        resolved_model = model or self.resolve_model()
+        return self._run_with_fallbacks(
+            lambda client, config: client._chat_completion_result_once(
+                messages,
+                resolved_model=self._resolve_request_model(
+                    client,
+                    config,
+                    requested_model=model,
+                    allow_fallback_config_model=True,
+                ),
+                temperature=temperature,
+                response_format=response_format,
+                max_tokens=max_tokens,
+                stream_handler=stream_handler,
+            )
+        )
+
+    def _chat_completion_result_once(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        resolved_model: str,
+        temperature: float,
+        response_format: dict[str, Any] | None,
+        max_tokens: int | None,
+        stream_handler: Callable[[str], None] | None,
+    ) -> ChatCompletionResult:
         if normalize_api_mode(self.config.api_mode) == "responses":
             payload: dict[str, Any] = {
                 "model": resolved_model,
@@ -233,7 +265,30 @@ class OpenAICompatibleClient:
         temperature: float = 0.2,
         max_tokens: int | None = 1400,
     ) -> ToolRoundResult:
-        resolved_model = model or self.resolve_model()
+        return self._run_with_fallbacks(
+            lambda client, config: client._tool_round_once(
+                messages,
+                tools,
+                resolved_model=self._resolve_request_model(
+                    client,
+                    config,
+                    requested_model=model,
+                    allow_fallback_config_model=True,
+                ),
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        )
+
+    def _tool_round_once(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        resolved_model: str,
+        temperature: float,
+        max_tokens: int | None,
+    ) -> ToolRoundResult:
         if normalize_api_mode(self.config.api_mode) == "responses":
             payload = {
                 "model": resolved_model,
@@ -295,7 +350,21 @@ class OpenAICompatibleClient:
         )
 
     def embeddings(self, inputs: list[str], *, model: str | None = None, timeout: float = 120.0) -> list[list[float]]:
-        payload = {"model": model or self.resolve_model(), "input": inputs}
+        return self._run_with_fallbacks(
+            lambda client, config: client._embeddings_once(
+                inputs,
+                model=self._resolve_request_model(
+                    client,
+                    config,
+                    requested_model=model,
+                    allow_fallback_config_model=False,
+                ),
+                timeout=timeout,
+            )
+        )
+
+    def _embeddings_once(self, inputs: list[str], *, model: str, timeout: float) -> list[list[float]]:
+        payload = {"model": model, "input": inputs}
         data = self._post_json("/embeddings", payload, timeout=timeout)
         try:
             ordered = sorted(data["data"], key=lambda item: item["index"])
@@ -309,6 +378,53 @@ class OpenAICompatibleClient:
             return {"ok": True, "models": models}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    @staticmethod
+    def _clone_config(config: ServiceConfig) -> ServiceConfig:
+        return ServiceConfig(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model=config.model,
+            provider_kind=config.provider_kind,
+            api_mode=config.api_mode,
+        )
+
+    def _client_for_config(self, config: ServiceConfig) -> "OpenAICompatibleClient":
+        return OpenAICompatibleClient(config, log_path=str(self.log_path) if self.log_path else None)
+
+    def _run_with_fallbacks(self, operation: Callable[["OpenAICompatibleClient", ServiceConfig], Any]) -> Any:
+        if not self.configs:
+            raise LLMError("No service configuration is available.")
+        last_error: Exception | None = None
+        for config in self.configs:
+            attempt_client = self._client_for_config(config)
+            try:
+                return operation(attempt_client, attempt_client.config)
+            except Exception as exc:
+                last_error = exc
+        if last_error:
+            raise last_error
+        raise LLMError("No service configuration is available.")
+
+    def _resolve_request_model(
+        self,
+        client: "OpenAICompatibleClient",
+        config: ServiceConfig,
+        *,
+        requested_model: str | None,
+        allow_fallback_config_model: bool,
+    ) -> str:
+        normalized_requested_model = str(requested_model or "").strip() or None
+        primary_model = str(self.config.model or "").strip() or None
+        if (
+            allow_fallback_config_model
+            and config != self.config
+            and (normalized_requested_model is None or normalized_requested_model == primary_model)
+        ):
+            return client._resolve_model_once(config)
+        if normalized_requested_model:
+            return normalized_requested_model
+        return client._resolve_model_once(config)
 
     def _messages_to_responses_input(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

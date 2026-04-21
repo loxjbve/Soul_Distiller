@@ -14,13 +14,8 @@ const bootstrap = safeParseJson(document.getElementById("assets-page-bootstrap")
 if (bootstrap?.project_id) {
     const ui = bootstrap.ui_strings || {};
     const projectId = bootstrap.project_id;
-    const assetKind = bootstrap.asset_kind || "skill";
-    const defaultStreamKey = assetKind === "profile_report" ? "asset" : "skill";
-    const splitDocumentKeys = assetKind === "skill"
-        ? ["skill", "personality", "memories", "merge"]
-        : assetKind === "cc_skill"
-            ? ["skill", "personality", "memories"]
-            : [];
+    const assetKind = bootstrap.asset_kind || "cc_skill";
+    const splitDocumentKeys = assetKind === "cc_skill" ? ["skill", "personality", "memories", "analysis"] : [];
 
     const elements = {
         form: document.getElementById("generate-form"),
@@ -34,90 +29,105 @@ if (bootstrap?.project_id) {
         message: document.getElementById("asset-generation-message"),
         chunkCount: document.getElementById("asset-chunk-count"),
         charCount: document.getElementById("asset-char-count"),
+        lockChip: document.getElementById("asset-editor-lock-chip"),
         docStatus: document.getElementById("asset-document-status"),
         jsonPayload: document.getElementById("asset-json-payload"),
         promptText: document.getElementById("asset-prompt-text"),
         markdownText: document.getElementById("asset-markdown-text"),
+        notes: document.getElementById("asset-notes"),
         draftForm: document.getElementById("asset-draft-form"),
+        draftPlaceholder: document.querySelector(".asset-draft-placeholder"),
+        saveButton: document.getElementById("asset-save-btn"),
+        publishButton: document.getElementById("asset-publish-btn"),
+        singleMarkdown: document.getElementById("asset-single-markdown"),
     };
 
-    const streamOutputs = Object.fromEntries(
-        Array.from(document.querySelectorAll("[data-stream-output]")).map((element) => [element.dataset.streamOutput, element]),
-    );
-    const streamStates = Object.fromEntries(
-        Object.keys(streamOutputs).map((key) => [key, { chunks: 0, chars: 0, status: "waiting", text: "" }]),
-    );
+    const editorTabs = Array.from(document.querySelectorAll("[data-editor-tab-trigger]"));
+    const editorPages = Array.from(document.querySelectorAll("[data-editor-page]"));
     const documentEditors = Object.fromEntries(
         Array.from(document.querySelectorAll("[data-document-editor]")).map((element) => [element.dataset.documentEditor, element]),
     );
-    const editorTabs = Array.from(document.querySelectorAll("[data-editor-tab-trigger]"));
-    const editorPages = Array.from(document.querySelectorAll("[data-editor-page]"));
 
-    let chunkCount = 0;
-    let charCount = 0;
+    const state = {
+        draftId: String(bootstrap.draft_id || ""),
+        locked: false,
+        chunkCount: 0,
+        charCount: 0,
+        documents: splitDocumentKeys.reduce((accumulator, key) => {
+            accumulator[key] = { markdown: String(documentEditors[key]?.value || "") };
+            return accumulator;
+        }, {}),
+    };
 
-    if (splitDocumentKeys.length) {
-        hydrateEditorsFromPayload(readDraftPayload());
-        bindEditorTabs();
-        bindDraftEditorSync();
-    }
-
+    bindEditorTabs();
+    bindDraftSync();
+    setEditorsLocked(false);
     renderDocumentStatus();
+    syncMarkdownArtifacts();
+    refreshDraftState();
 
     elements.form?.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (splitDocumentKeys.length) {
-            syncPayloadFromEditors();
-        }
+        await streamGenerate();
+    });
+
+    elements.saveButton?.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await saveDraft(event.currentTarget);
+    });
+
+    elements.publishButton?.addEventListener("click", async (event) => {
+        event.preventDefault();
+        await publishDraft(event.currentTarget);
+    });
+
+    async function streamGenerate() {
         setButtonBusy(elements.button, true, ui.status_running || "Generating...");
+        setEditorsLocked(true);
+        showNotice(elements.message, "", "info");
         if (elements.shell) {
             elements.shell.hidden = false;
         }
         resetStreamingState();
         try {
-            await streamGenerate();
+            const response = await fetch(`/api/projects/${projectId}/assets/generate/stream`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ asset_kind: assetKind }),
+            });
+            if (!response.ok || !response.body) {
+                throw new Error("Streaming asset generation is not available.");
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = "";
+
+            while (true) {
+                const { done, value } = await reader.read();
+                buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+                let boundary = buffer.indexOf("\n\n");
+                while (boundary >= 0) {
+                    const block = buffer.slice(0, boundary);
+                    buffer = buffer.slice(boundary + 2);
+                    handleEventBlock(block);
+                    boundary = buffer.indexOf("\n\n");
+                }
+
+                if (done) {
+                    break;
+                }
+            }
         } catch (error) {
-            await fallbackGenerate(error);
+            renderStatus({
+                status: "failed",
+                progress_percent: 0,
+                message: error.message || "生成失败。",
+            });
+            setEditorsLocked(false);
         } finally {
             setButtonBusy(elements.button, false);
-        }
-    });
-
-    elements.draftForm?.addEventListener("submit", () => {
-        if (splitDocumentKeys.length) {
-            syncPayloadFromEditors();
-        }
-    });
-
-    async function streamGenerate() {
-        const response = await fetch(`/api/projects/${projectId}/assets/generate/stream`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ asset_kind: assetKind }),
-        });
-        if (!response.ok || !response.body) {
-            throw new Error("Streaming asset generation is not available.");
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-            const { done, value } = await reader.read();
-            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-            let boundary = buffer.indexOf("\n\n");
-            while (boundary >= 0) {
-                const block = buffer.slice(0, boundary);
-                buffer = buffer.slice(boundary + 2);
-                handleEventBlock(block);
-                boundary = buffer.indexOf("\n\n");
-            }
-
-            if (done) {
-                break;
-            }
         }
     }
 
@@ -132,28 +142,26 @@ if (bootstrap?.project_id) {
             return;
         }
         if (eventType === "delta") {
-            appendStreamChunk(data.document_key || defaultStreamKey, data.chunk || "");
+            appendStreamChunk(data.document_key || (splitDocumentKeys.length ? "skill" : "asset"), data.chunk || "");
             return;
         }
         if (eventType === "done") {
+            hydrateFromDraftPayload(data.draft || null, data.draft_id || "");
             renderStatus({
                 status: "completed",
                 progress_percent: 100,
                 message: data.message || ui.status_completed || "Completed",
-                document_key: data.document_key || defaultStreamKey,
             });
-            Object.keys(streamStates).forEach((key) => {
-                if (streamStates[key].text.trim()) {
-                    setStreamPanelStatus(key, "ready");
-                }
-            });
-            window.setTimeout(() => {
-                window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}`;
-            }, 700);
+            setEditorsLocked(false);
             return;
         }
         if (eventType === "error") {
-            throw new Error(data.message || ui.status_failed || "Asset generation failed.");
+            renderStatus({
+                status: "failed",
+                progress_percent: 0,
+                message: data.message || ui.status_failed || "Generation failed",
+            });
+            setEditorsLocked(false);
         }
     }
 
@@ -167,100 +175,57 @@ if (bootstrap?.project_id) {
         if (elements.fill) {
             elements.fill.style.width = `${percent}%`;
         }
-
-        const documentKey = normalizeStreamKey(payload.document_key || defaultStreamKey);
-        if (streamStates[documentKey]) {
-            const statusLabel = normalizeStreamStatus(payload.status || payload.phase || "running");
-            setStreamPanelStatus(documentKey, statusLabel);
-        }
     }
 
     function appendStreamChunk(documentKey, chunk) {
-        const key = normalizeStreamKey(documentKey);
-        const output = streamOutputs[key];
-        if (!output || !chunk) {
+        if (!chunk) {
             return;
         }
-        output.textContent += chunk;
-        streamStates[key].text += chunk;
-        streamStates[key].chunks += 1;
-        streamStates[key].chars += chunk.length;
-        streamStates[key].status = "streaming";
-        setStreamPanelStatus(key, "streaming");
-        updateText(document.getElementById(`asset-doc-count-${key}`), `${streamStates[key].chars} chars`);
-        chunkCount += 1;
-        charCount += chunk.length;
+        if (splitDocumentKeys.length) {
+            const key = splitDocumentKeys.includes(documentKey) ? documentKey : "skill";
+            if (documentEditors[key]) {
+                documentEditors[key].value += chunk;
+                state.documents[key].markdown = documentEditors[key].value;
+            }
+        } else if (elements.singleMarkdown) {
+            elements.singleMarkdown.value += chunk;
+        }
+        state.chunkCount += 1;
+        state.charCount += chunk.length;
         updateCounts();
-    }
-
-    function normalizeStreamKey(documentKey) {
-        return streamOutputs[documentKey] ? documentKey : defaultStreamKey;
-    }
-
-    function normalizeStreamStatus(value) {
-        const normalized = String(value || "").toLowerCase();
-        if (!normalized) {
-            return "waiting";
-        }
-        if (normalized.includes("fail") || normalized.includes("error")) {
-            return "failed";
-        }
-        if (normalized.includes("done") || normalized.includes("complete") || normalized === "ready") {
-            return "ready";
-        }
-        if (normalized.includes("merge")) {
-            return "merging";
-        }
-        if (normalized.includes("context") || normalized.includes("synthesis") || normalized.includes("render") || normalized.includes("bundle")) {
-            return "streaming";
-        }
-        if (normalized.includes("load") || normalized.includes("prepare")) {
-            return "preparing";
-        }
-        return "streaming";
-    }
-
-    function setStreamPanelStatus(documentKey, status) {
-        const chip = document.getElementById(`asset-doc-status-${documentKey}`);
-        if (!chip) {
-            return;
-        }
-        streamStates[documentKey].status = status;
-        const tone = status === "ready" ? "tone-ready" : status === "failed" ? "tone-warning" : "tone-queued";
-        chip.className = `status-chip ${tone}`;
-        chip.textContent = status;
+        syncMarkdownArtifacts();
+        renderDocumentStatus();
     }
 
     function resetStreamingState() {
-        chunkCount = 0;
-        charCount = 0;
+        state.chunkCount = 0;
+        state.charCount = 0;
         updateCounts();
-        Object.entries(streamOutputs).forEach(([key, output]) => {
-            output.textContent = "";
-            streamStates[key] = { chunks: 0, chars: 0, status: "waiting", text: "" };
-            setStreamPanelStatus(key, "waiting");
-            updateText(document.getElementById(`asset-doc-count-${key}`), "0 chars");
-        });
+        if (splitDocumentKeys.length) {
+            splitDocumentKeys.forEach((key) => {
+                if (documentEditors[key]) {
+                    documentEditors[key].value = "";
+                }
+                state.documents[key] = { markdown: "" };
+            });
+        } else if (elements.singleMarkdown) {
+            elements.singleMarkdown.value = "";
+        }
+        if (elements.promptText) {
+            elements.promptText.value = "";
+        }
+        if (elements.jsonPayload) {
+            elements.jsonPayload.value = "{}";
+        }
+        if (elements.draftPlaceholder) {
+            elements.draftPlaceholder.hidden = true;
+        }
+        renderDocumentStatus();
     }
 
     function updateCounts() {
-        updateText(elements.chunkCount, chunkCount);
-        updateText(elements.charCount, charCount);
-    }
-
-    async function fallbackGenerate(error) {
-        renderStatus({
-            status: "failed",
-            progress_percent: 0,
-            message: `${error.message} Switching to non-streaming generation.`,
-            document_key: defaultStreamKey,
-        });
-        const payload = await fetchJson(`/api/projects/${projectId}/assets/generate`, {
-            method: "POST",
-            body: JSON.stringify({ asset_kind: assetKind }),
-        });
-        showNotice(elements.message, payload.message || "Draft generated.", "success");
-        window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}&draft=${encodeURIComponent(payload.id || "")}`;
+        updateText(elements.chunkCount, state.chunkCount);
+        updateText(elements.charCount, state.charCount);
     }
 
     function bindEditorTabs() {
@@ -280,175 +245,236 @@ if (bootstrap?.project_id) {
         });
     }
 
-    function bindDraftEditorSync() {
-        Object.entries(documentEditors).forEach(([key, editor]) => {
-            if (key === "merge") {
-                return;
-            }
-            editor.addEventListener("input", () => syncPayloadFromEditors());
-        });
-        elements.jsonPayload?.addEventListener("input", () => {
-            const payload = safeParseJson(elements.jsonPayload.value, null);
-            if (payload && typeof payload === "object") {
-                hydrateEditorsFromPayload(payload);
-            }
-            renderDocumentStatus();
-        });
+    function bindDraftSync() {
+        if (splitDocumentKeys.length) {
+            splitDocumentKeys.forEach((key) => {
+                documentEditors[key]?.addEventListener("input", () => {
+                    state.documents[key].markdown = documentEditors[key].value;
+                    syncMarkdownArtifacts();
+                    renderDocumentStatus();
+                });
+            });
+        } else {
+            elements.singleMarkdown?.addEventListener("input", () => syncMarkdownArtifacts());
+        }
     }
 
-    function readDraftPayload() {
-        return safeParseJson(elements.jsonPayload?.value || "{}", {});
-    }
-
-    function syncPayloadFromEditors() {
-        if (!splitDocumentKeys.length || !elements.jsonPayload) {
-            renderDocumentStatus();
+    function syncMarkdownArtifacts() {
+        if (splitDocumentKeys.length) {
+            const payload = {
+                documents: {},
+            };
+            splitDocumentKeys.forEach((key) => {
+                payload.documents[key] = {
+                    filename: resolveDocumentFilename(key),
+                    markdown: String(documentEditors[key]?.value || ""),
+                };
+            });
+            if (elements.markdownText) {
+                elements.markdownText.value = String(documentEditors.skill?.value || "");
+            }
+            if (elements.promptText) {
+                elements.promptText.value = String(documentEditors.skill?.value || "");
+            }
+            if (elements.jsonPayload) {
+                elements.jsonPayload.value = JSON.stringify(payload, null, 2);
+            }
             return;
         }
-        const payload = readDraftPayload();
-        const nextPayload = payload && typeof payload === "object" ? payload : {};
-        const documents = nextPayload.documents && typeof nextPayload.documents === "object" ? nextPayload.documents : {};
 
-        splitDocumentKeys.forEach((key) => {
-            if (key === "merge") {
-                return;
-            }
-            const fallbackFilename = getDocumentFilename(key);
-            const markdown = String(documentEditors[key]?.value || "");
-            documents[key] = {
-                ...(documents[key] && typeof documents[key] === "object" ? documents[key] : {}),
-                filename: String(documents[key]?.filename || fallbackFilename),
-                markdown,
-            };
-        });
-
-        if (assetKind === "skill") {
-            const merged = composeSkillMerge(documents);
-            documents.merge = {
-                ...(documents.merge && typeof documents.merge === "object" ? documents.merge : {}),
-                filename: String(documents.merge?.filename || getDocumentFilename("merge")),
-                markdown: merged,
-            };
-            if (documentEditors.merge) {
-                documentEditors.merge.value = merged;
-            }
-            if (elements.markdownText) {
-                elements.markdownText.value = merged;
-            }
-            if (elements.promptText) {
-                elements.promptText.value = merged;
-            }
-        } else if (assetKind === "cc_skill") {
-            const skillMarkdown = String(documents.skill?.markdown || "");
-            if (elements.markdownText) {
-                elements.markdownText.value = skillMarkdown;
-            }
-            if (elements.promptText) {
-                elements.promptText.value = skillMarkdown;
-            }
+        if (elements.markdownText && elements.singleMarkdown) {
+            elements.markdownText.value = elements.singleMarkdown.value;
         }
-
-        nextPayload.documents = documents;
-        elements.jsonPayload.value = JSON.stringify(nextPayload, null, 2);
-        renderDocumentStatusFromPayload(nextPayload);
     }
 
-    function hydrateEditorsFromPayload(payload) {
-        if (!splitDocumentKeys.length || !payload || typeof payload !== "object") {
+    function hydrateFromDraftPayload(draft, draftId) {
+        if (!draft || typeof draft !== "object") {
             return;
         }
-        const documents = payload.documents && typeof payload.documents === "object" ? payload.documents : {};
-        splitDocumentKeys.forEach((key) => {
-            const editor = documentEditors[key];
-            if (!editor) {
-                return;
-            }
-            if (key === "merge" && assetKind === "skill") {
-                const merged = String(documents.merge?.markdown || composeSkillMerge(documents));
-                editor.value = merged;
-                if (elements.markdownText) {
-                    elements.markdownText.value = merged;
+        state.draftId = String(draftId || draft.id || "");
+        if (elements.draftForm) {
+            elements.draftForm.dataset.draftId = state.draftId;
+        }
+        if (elements.promptText) {
+            elements.promptText.value = String(draft.prompt_text || draft.system_prompt || "");
+        }
+        if (elements.notes) {
+            elements.notes.value = String(draft.notes || "");
+        }
+        if (splitDocumentKeys.length) {
+            const documents = draft.json_payload?.documents || {};
+            splitDocumentKeys.forEach((key) => {
+                const markdown = String(documents[key]?.markdown || documentEditors[key]?.value || "");
+                if (documentEditors[key]) {
+                    documentEditors[key].value = markdown;
                 }
-                if (elements.promptText) {
-                    elements.promptText.value = merged;
-                }
-                return;
+                state.documents[key] = { markdown };
+            });
+            syncMarkdownArtifacts();
+        } else {
+            const markdown = String(draft.markdown_text || "");
+            if (elements.singleMarkdown) {
+                elements.singleMarkdown.value = markdown;
             }
-            editor.value = String(documents[key]?.markdown || "");
-        });
-        if (assetKind === "cc_skill") {
-            const skillMarkdown = String(documents.skill?.markdown || "");
             if (elements.markdownText) {
-                elements.markdownText.value = skillMarkdown;
+                elements.markdownText.value = markdown;
             }
-            if (elements.promptText) {
-                elements.promptText.value = skillMarkdown;
+            if (elements.jsonPayload) {
+                elements.jsonPayload.value = JSON.stringify(draft.json_payload || {}, null, 2);
             }
         }
-        renderDocumentStatusFromPayload(payload);
+        if (elements.draftPlaceholder) {
+            elements.draftPlaceholder.hidden = true;
+        }
+        refreshDraftState();
+        renderDocumentStatus();
     }
 
-    function composeSkillMerge(documents) {
-        return ["skill", "personality", "memories"]
-            .map((key) => String(documents[key]?.markdown || "").trim())
-            .filter(Boolean)
-            .join("\n\n")
-            .trim();
+    function setEditorsLocked(locked) {
+        state.locked = locked;
+        const editableTargets = [
+            ...Object.values(documentEditors),
+            elements.jsonPayload,
+            elements.notes,
+            elements.singleMarkdown,
+        ].filter(Boolean);
+        editableTargets.forEach((element) => {
+            element.readOnly = locked;
+        });
+        if (elements.lockChip) {
+            elements.lockChip.className = `status-chip ${locked ? "tone-warning" : "tone-ready"}`;
+            elements.lockChip.textContent = locked ? "LOCKED" : "READY";
+        }
+        if (elements.saveButton) {
+            elements.saveButton.disabled = locked || !state.draftId;
+        }
+        if (elements.publishButton) {
+            elements.publishButton.disabled = locked || !state.draftId;
+        }
     }
 
-    function getDocumentFilename(key) {
-        if (assetKind === "cc_skill") {
+    function refreshDraftState() {
+        const hasDraft = Boolean(state.draftId);
+        if (elements.saveButton) {
+            elements.saveButton.disabled = state.locked || !hasDraft;
+        }
+        if (elements.publishButton) {
+            elements.publishButton.disabled = state.locked || !hasDraft;
+        }
+    }
+
+    async function saveDraft(button) {
+        if (!state.draftId) {
+            return;
+        }
+        syncMarkdownArtifacts();
+        setButtonBusy(button, true, "保存中...");
+        try {
+            const payload = buildSavePayload();
+            const response = await fetchJson(`/api/projects/${projectId}/assets/${state.draftId}/save`, {
+                method: "POST",
+                body: JSON.stringify(payload),
+            });
+            hydrateFromDraftPayload(response, state.draftId);
+            showNotice(elements.message, response.message || "草稿已保存。", "success");
+        } catch (error) {
+            showNotice(elements.message, error.message || "保存失败。", "warning");
+        } finally {
+            setButtonBusy(button, false);
+        }
+    }
+
+    async function publishDraft(button) {
+        if (!state.draftId) {
+            return;
+        }
+        setButtonBusy(button, true, "发布中...");
+        try {
+            const response = await fetchJson(`/api/projects/${projectId}/assets/${state.draftId}/publish`, {
+                method: "POST",
+                body: JSON.stringify({ asset_kind: assetKind }),
+            });
+            showNotice(elements.message, response.message || "资产版本已发布。", "success");
+            window.setTimeout(() => {
+                window.location.href = `/projects/${projectId}/assets?kind=${encodeURIComponent(assetKind)}`;
+            }, 400);
+        } catch (error) {
+            showNotice(elements.message, error.message || "发布失败。", "warning");
+        } finally {
+            setButtonBusy(button, false);
+        }
+    }
+
+    function buildSavePayload() {
+        if (splitDocumentKeys.length) {
+            const documents = {};
+            splitDocumentKeys.forEach((key) => {
+                documents[key] = {
+                    filename: resolveDocumentFilename(key),
+                    markdown: String(documentEditors[key]?.value || ""),
+                };
+            });
             return {
-                skill: "SKILL.md",
-                personality: "references/personality.md",
-                memories: "references/memories.md",
-            }[key] || key;
+                asset_kind: assetKind,
+                markdown_text: String(documentEditors.skill?.value || ""),
+                json_payload: { documents },
+                prompt_text: String(elements.promptText?.value || documentEditors.skill?.value || ""),
+                notes: String(elements.notes?.value || ""),
+            };
         }
         return {
-            skill: "Skill.md",
-            personality: "personality.md",
-            memories: "memories.md",
-            merge: "Skill_merge.md",
-        }[key] || key;
+            asset_kind: assetKind,
+            markdown_text: String(elements.singleMarkdown?.value || ""),
+            json_payload: safeParseJson(elements.jsonPayload?.value || "{}", {}),
+            prompt_text: String(elements.promptText?.value || ""),
+            notes: String(elements.notes?.value || ""),
+        };
     }
 
     function renderDocumentStatus() {
-        renderDocumentStatusFromPayload(readDraftPayload());
-    }
-
-    function renderDocumentStatusFromPayload(payload) {
         if (!elements.docStatus) {
             return;
         }
-        elements.docStatus.innerHTML = "";
-
         if (!splitDocumentKeys.length) {
-            elements.docStatus.innerHTML = `<div class="empty-panel"><strong>No split documents for this asset kind.</strong></div>`;
+            elements.docStatus.innerHTML = `
+                <article class="document-card compact-card asset-doc-card ${elements.singleMarkdown?.value ? "is-ready" : "is-missing"}">
+                    <div class="document-card__head">
+                        <strong>${escapeHtml(assetKind === "profile_report" ? "profile_report.md" : "draft.md")}</strong>
+                        <span class="status-chip ${elements.singleMarkdown?.value ? "tone-ready" : "tone-warning"}">${elements.singleMarkdown?.value ? "ready" : "missing"}</span>
+                    </div>
+                    <p class="helper-text">${escapeHtml(`${(elements.singleMarkdown?.value || "").length} chars`)}</p>
+                </article>
+            `;
             return;
         }
 
-        const documents = payload?.documents && typeof payload.documents === "object" ? payload.documents : {};
-        splitDocumentKeys.forEach((key) => {
-            const documentPayload = documents[key] && typeof documents[key] === "object" ? documents[key] : {};
-            const markdown = String(documentPayload.markdown || "").trim();
-            const title = String(documentPayload.filename || getDocumentFilename(key));
-            const exists = Boolean(markdown);
-            const card = document.createElement("article");
-            card.className = `document-card compact-card asset-doc-card ${exists ? "is-ready" : "is-missing"}`;
-            card.innerHTML = `
-                <div class="document-card__head">
-                    <strong>${escapeHtml(title)}</strong>
-                    <span class="status-chip ${exists ? "tone-ready" : "tone-warning"}">${exists ? "ready" : "missing"}</span>
-                </div>
-                <p class="helper-text">${escapeHtml(`${markdown.length} chars`)}</p>
-                <p class="helper-text">${escapeHtml(markdown ? markdown.slice(0, 160) : "This document is empty in the current draft payload.")}</p>
-                ${bootstrap.draft_id && exists ? `
-                    <div class="button-row top-gap">
-                        <a class="ghost-button" href="/api/projects/${projectId}/assets/${bootstrap.draft_id}/exports/${encodeURIComponent(key)}">Export</a>
+        elements.docStatus.innerHTML = splitDocumentKeys.map((key) => {
+            const markdown = String(documentEditors[key]?.value || "");
+            const filename = resolveDocumentFilename(key);
+            return `
+                <article class="document-card compact-card asset-doc-card ${markdown.trim() ? "is-ready" : "is-missing"}">
+                    <div class="document-card__head">
+                        <strong>${escapeHtml(filename)}</strong>
+                        <span class="status-chip ${markdown.trim() ? "tone-ready" : "tone-warning"}">${markdown.trim() ? "ready" : "missing"}</span>
                     </div>
-                ` : ""}
+                    <p class="helper-text">${escapeHtml(`${markdown.length} chars`)}</p>
+                    <p class="helper-text">${escapeHtml((markdown || "当前文档为空。").slice(0, 180))}</p>
+                    ${state.draftId && markdown.trim() ? `
+                        <div class="button-row top-gap">
+                            <a class="ghost-button" href="/api/projects/${projectId}/assets/${state.draftId}/exports/${encodeURIComponent(key)}">导出</a>
+                        </div>
+                    ` : ""}
+                </article>
             `;
-            elements.docStatus.appendChild(card);
-        });
+        }).join("");
+    }
+
+    function resolveDocumentFilename(key) {
+        return {
+            skill: "SKILL.md",
+            personality: "references/personality.md",
+            memories: "references/memories.md",
+            analysis: "references/analysis.md",
+        }[key] || key;
     }
 }

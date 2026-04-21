@@ -2,10 +2,13 @@
 {% block body_class %}theme-ambient--telegram{% endblock %}
 {% block page_class %}page-telegram-preprocess{% endblock %}
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260421a">
+{% endblock %}
 
 {% block content %}
 <div class="page-frame">
-    <section class="page-banner">
+    <section class="page-banner page-banner--telegram-preprocess-compact">
         <div class="page-banner__main">
             <span class="page-banner__eyebrow">Telegram</span>
             <div class="page-banner__title-row">

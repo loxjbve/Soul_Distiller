@@ -151,9 +151,10 @@ class TelegramAnalysisAgent:
             "2. 再查询与目标用户相关的话题表。\n"
             "3. 根据用户参与的话题，抓取原始消息作为证据。\n"
             "4. 优先使用 analyze_database 保持上下文紧凑。\n"
-            "请只返回 JSON，包含 summary, bullets, confidence, evidence, conflicts, notes。\n"
+            "请只返回 JSON，包含 summary, bullets, confidence, fewshots, conflicts, notes。\n"
             "除 JSON 键名外，所有可读文本都尽量使用简体中文。\n"
-            "每条 evidence 都必须包含 message_id, sender_name, sent_at, quote, reason。"
+            "fewshots 必须优先围绕目标用户自己的消息展开，但每条都要补上前后几条上下文。\n"
+            "每条 fewshot 都必须包含 message_id, sender_name, sent_at, situation, expression, quote, context_before, context_after。"
         )
         user_prompt = json.dumps(
             {
@@ -188,7 +189,10 @@ class TelegramAnalysisAgent:
             preprocess_run_id=preprocess_run_id,
         )
         parsed = parse_json_response(str(result["content"] or ""), fallback=True)
-        evidence = self._normalize_agent_evidence(parsed.get("evidence"), fallback=result["fallback_evidence"])
+        fewshots = self._normalize_agent_fewshots(
+            parsed.get("fewshots") or parsed.get("evidence"),
+            fallback=result["fallback_fewshots"],
+        )
         payload = {
             "summary": str(parsed.get("summary") or "").strip() or f"Telegram evidence around {facet.label} remains concentrated in the selected user's related topics.",
             "bullets": [
@@ -197,7 +201,8 @@ class TelegramAnalysisAgent:
                 if str(item).strip()
             ][:8],
             "confidence": self._parse_confidence(parsed.get("confidence"), default=0.68),
-            "evidence": evidence,
+            "fewshots": fewshots,
+            "evidence": fewshots,
             "conflicts": [
                 {
                     "title": str(item.get("title") or "").strip(),
@@ -228,7 +233,7 @@ class TelegramAnalysisAgent:
         }
         retrieval_trace = {
             "mode": "telegram_agent",
-            "evidence_kind": "telegram_messages",
+            "evidence_kind": "telegram_fewshots",
             "tool_calls": result["tool_trace"],
             "preprocess_run_id": preprocess_run_id,
             "target_user": target_user,
@@ -248,7 +253,7 @@ class TelegramAnalysisAgent:
         return TelegramFacetAnalysisResult(
             payload=payload,
             retrieval_trace=retrieval_trace,
-            hit_count=len(evidence),
+            hit_count=len(fewshots),
         )
 
     def _run_tool_loop(
@@ -276,7 +281,7 @@ class TelegramAnalysisAgent:
         used_topic_ids: set[str] = set()
         used_week_keys: set[str] = set()
         queried_message_ids: set[int] = set()
-        fallback_evidence: list[dict[str, Any]] = []
+        fallback_fewshots: list[dict[str, Any]] = []
         model_name = self.llm_config.model if self.llm_config else None
         has_topic_overview = False
 
@@ -325,7 +330,7 @@ class TelegramAnalysisAgent:
                     "used_topic_ids": used_topic_ids,
                     "used_week_keys": used_week_keys,
                     "queried_message_ids": queried_message_ids,
-                    "fallback_evidence": fallback_evidence,
+                    "fallback_fewshots": fallback_fewshots,
                     "iterations": iteration,
                     "model": model_name,
                 }
@@ -375,7 +380,10 @@ class TelegramAnalysisAgent:
                 for key in usage:
                     usage[key] += int((state.get("usage") or {}).get(key, 0) or 0)
                 if state.get("messages"):
-                    fallback_evidence = self._messages_to_evidence(state.get("messages", []))[:8]
+                    fallback_fewshots = self._messages_to_fewshots(
+                        state.get("messages", []),
+                        participant_id=str(target_user.get("participant_id") or "").strip() or None,
+                    )[:8]
                 tool_entry = {
                     "tool": call.name,
                     "arguments": call.arguments,
@@ -617,32 +625,36 @@ class TelegramAnalysisAgent:
                         )
                     )
             if not messages:
-                return {"analysis": {"summary": "No messages matched the requested slice.", "evidence": []}}, {
+                return {"analysis": {"summary": "No messages matched the requested slice.", "fewshots": []}}, {
                     "topic_ids": set(topic_ids),
                 }
+            expanded_messages = self._expand_with_message_context(messages)
             if not self.client:
                 analysis = {
                     "summary": prompt,
-                    "evidence": self._messages_to_evidence(messages)[:5],
+                    "fewshots": self._messages_to_fewshots(
+                        expanded_messages,
+                        participant_id=str(target_user.get("participant_id") or "").strip() or None,
+                    )[:5],
                 }
                 return {"analysis": analysis}, {
                     "topic_ids": set(topic_ids),
-                    "message_ids": {int(item.telegram_message_id) for item in messages if item.telegram_message_id is not None},
-                    "messages": messages,
+                    "message_ids": {int(item.telegram_message_id) for item in expanded_messages if item.telegram_message_id is not None},
+                    "messages": expanded_messages,
                 }
             compact_slice = "\n".join(
                 f"[{item.telegram_message_id}] {item.sender_name or 'unknown'}: {' '.join((item.text_normalized or '').split())[:240]}"
-                for item in messages[:TELEGRAM_TOOL_MAX_MESSAGES]
+                for item in expanded_messages[:TELEGRAM_TOOL_MAX_MESSAGES]
             )
             response = self.client.chat_completion_result(
                 [
                     {
                         "role": "system",
-                        "content": "分析一小段精确的 Telegram 原始消息切片，只返回 JSON，包含 summary 和 evidence。除键名外，正文尽量使用简体中文。",
+                        "content": "分析一小段精确的 Telegram 原始消息切片，只返回 JSON，包含 summary 和 fewshots。fewshots 需要标注情境、表达方式、原话以及前后文。除键名外，正文尽量使用简体中文。",
                     },
                     {
                         "role": "user",
-                        "content": f"分析任务：{prompt}\n\n消息切片：\n{compact_slice}",
+                        "content": f"分析任务：{prompt}\n\n请围绕目标用户自己的消息整理 fewshots，并补上前后几条上下文。\n\n消息切片：\n{compact_slice}",
                     },
                 ],
                 model=self.llm_config.model if self.llm_config else None,
@@ -652,8 +664,8 @@ class TelegramAnalysisAgent:
             parsed = parse_json_response(response.content, fallback=True)
             return {"analysis": parsed}, {
                 "topic_ids": set(topic_ids),
-                "message_ids": {int(item.telegram_message_id) for item in messages if item.telegram_message_id is not None},
-                "messages": messages,
+                "message_ids": {int(item.telegram_message_id) for item in expanded_messages if item.telegram_message_id is not None},
+                "messages": expanded_messages,
                 "usage": response.usage,
             }
 
@@ -791,9 +803,10 @@ class TelegramAnalysisAgent:
     ) -> TelegramFacetAnalysisResult:
         selected_topics = topics[:3]
         bullets = [f"{item.title}: {item.summary}" for item in selected_topics if item.summary][:8]
-        evidence: list[dict[str, Any]] = []
+        fewshots: list[dict[str, Any]] = []
         for topic in selected_topics:
-            evidence.extend((topic.evidence_json or [])[:2])
+            fewshots.extend((topic.evidence_json or [])[:2])
+        normalized_fewshots = self._normalize_agent_fewshots(fewshots, fallback=fewshots)
         payload = {
             "summary": (
                 f"Telegram analysis for {target_user.get('label') or target_user.get('display_name') or target_user['participant_id']} "
@@ -801,7 +814,8 @@ class TelegramAnalysisAgent:
             ),
             "bullets": bullets,
             "confidence": 0.52,
-            "evidence": self._normalize_agent_evidence(evidence, fallback=evidence),
+            "fewshots": normalized_fewshots,
+            "evidence": normalized_fewshots,
             "conflicts": [],
             "notes": "Chat LLM is not configured; Telegram facet analysis used preprocess-topic heuristics only.",
             "_meta": {
@@ -825,11 +839,11 @@ class TelegramAnalysisAgent:
                 "topic_ids": [item.id for item in selected_topics],
                 "topic_count_used": len(selected_topics),
             },
-            hit_count=len(payload["evidence"]),
+            hit_count=len(payload["fewshots"]),
         )
 
     @staticmethod
-    def _normalize_agent_evidence(raw_items: Any, *, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _normalize_agent_fewshots(raw_items: Any, *, fallback: list[dict[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
         for item in raw_items or []:
             if not isinstance(item, dict):
@@ -842,13 +856,21 @@ class TelegramAnalysisAgent:
                 message_id = int(message_id)
             except (TypeError, ValueError):
                 continue
+            situation = str(item.get("situation") or item.get("reason") or "").strip() or "目标用户在当前话题中的直接回应"
+            expression = str(item.get("expression") or "").strip() or "直接回应"
+            context_before = str(item.get("context_before") or "").strip()
+            context_after = str(item.get("context_after") or "").strip()
             normalized.append(
                 {
                     "message_id": message_id,
                     "sender_name": str(item.get("sender_name") or "").strip() or None,
                     "sent_at": str(item.get("sent_at") or "").strip() or None,
+                    "situation": situation,
+                    "expression": expression,
                     "quote": quote,
-                    "reason": str(item.get("reason") or "").strip() or "Direct Telegram evidence",
+                    "context_before": context_before or None,
+                    "context_after": context_after or None,
+                    "reason": str(item.get("reason") or "").strip() or situation,
                 }
             )
         return normalized[:20] or fallback[:20]
@@ -860,24 +882,122 @@ class TelegramAnalysisAgent:
         except (TypeError, ValueError):
             return default
 
-    def _messages_to_evidence(self, messages: list[TelegramMessage]) -> list[dict[str, Any]]:
-        evidence: list[dict[str, Any]] = []
-        for item in messages:
-            if item.telegram_message_id is None:
+    def _messages_to_fewshots(
+        self,
+        messages: list[TelegramMessage],
+        *,
+        participant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_messages = [
+            item
+            for item in messages
+            if item.telegram_message_id is not None
+            and " ".join((item.text_normalized or "").split()).strip()
+            and (not participant_id or item.participant_id == participant_id)
+        ]
+        if not target_messages:
+            target_messages = [
+                item
+                for item in messages
+                if item.telegram_message_id is not None and " ".join((item.text_normalized or "").split()).strip()
+            ]
+
+        fewshots: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        for item in sorted(target_messages, key=lambda row: int(row.telegram_message_id or 0)):
+            message_id = int(item.telegram_message_id or 0)
+            if not message_id or message_id in seen_ids:
                 continue
-            text = " ".join((item.text_normalized or "").split()).strip()
-            if not text:
-                continue
-            evidence.append(
+            seen_ids.add(message_id)
+            window = repository.get_telegram_message_context(
+                self.session,
+                self.project.id,
+                message_id,
+                before=2,
+                after=2,
+            )
+            before_lines: list[str] = []
+            after_lines: list[str] = []
+            for row in window:
+                row_id = int(row.telegram_message_id or 0)
+                text = " ".join((row.text_normalized or "").split()).strip()
+                if not row_id or not text or row_id == message_id:
+                    continue
+                line = f"{row.sender_name or 'unknown'}: {text[:90]}"
+                if row_id < message_id:
+                    before_lines.append(line)
+                else:
+                    after_lines.append(line)
+            quote = " ".join((item.text_normalized or "").split()).strip()[:220]
+            fewshots.append(
                 {
-                    "message_id": int(item.telegram_message_id),
+                    "message_id": message_id,
                     "sender_name": item.sender_name,
                     "sent_at": item.sent_at.isoformat() if item.sent_at else None,
-                    "quote": text[:220],
-                    "reason": "Direct Telegram evidence",
+                    "situation": self._describe_message_situation(before_lines, after_lines),
+                    "expression": self._describe_expression_style(quote),
+                    "quote": quote,
+                    "context_before": " | ".join(before_lines[:2]) or None,
+                    "context_after": " | ".join(after_lines[:2]) or None,
+                    "reason": "Target-user few-shot with local Telegram context",
                 }
             )
-        return evidence
+            if len(fewshots) >= 12:
+                break
+        return fewshots
+
+    @staticmethod
+    def _describe_message_situation(before_lines: list[str], after_lines: list[str]) -> str:
+        if before_lines and after_lines:
+            return f"前文在讨论 {before_lines[-1]}，目标用户给出回应后，后续继续延展到 {after_lines[0]}"
+        if before_lines:
+            return f"前文语境为 {before_lines[-1]}，目标用户在此基础上直接回应"
+        if after_lines:
+            return f"目标用户先抛出回应，随后话题继续延展到 {after_lines[0]}"
+        return "目标用户在当前话题中的直接表达"
+
+    @staticmethod
+    def _describe_expression_style(text: str) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return "直接回应"
+        if "?" in normalized or "？" in normalized:
+            return "追问或反问式表达"
+        if len(normalized) <= 24:
+            return "短句直给式表达"
+        if len(normalized) >= 90:
+            return "展开解释式表达"
+        if any(token in normalized for token in ("但是", "不过", "其实", "只是")):
+            return "带转折保留的克制表达"
+        return "判断先行的陈述式表达"
+
+    def _expand_with_message_context(
+        self,
+        messages: list[TelegramMessage],
+        *,
+        before: int = 2,
+        after: int = 2,
+    ) -> list[TelegramMessage]:
+        expanded: list[TelegramMessage] = []
+        seen_ids: set[int] = set()
+        for item in sorted(messages, key=lambda row: int(row.telegram_message_id or 0)):
+            message_id = int(item.telegram_message_id or 0)
+            if not message_id:
+                continue
+            window = repository.get_telegram_message_context(
+                self.session,
+                self.project.id,
+                message_id,
+                before=before,
+                after=after,
+            )
+            for row in window:
+                row_id = int(row.telegram_message_id or 0)
+                if not row_id or row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+                expanded.append(row)
+        return sorted(expanded, key=lambda row: int(row.telegram_message_id or 0))
 
     def _top_user_snapshot(self, top_user, preprocess_run_id: str) -> dict[str, Any]:
         return {
@@ -1380,23 +1500,27 @@ class TelegramAnalysisAgent:
                     limit=TELEGRAM_TOOL_MAX_MESSAGES,
                 )
             if not messages:
-                return {"analysis": {"summary": "No messages matched the requested slice.", "evidence": []}}, {
+                return {"analysis": {"summary": "No messages matched the requested slice.", "fewshots": []}}, {
                     "topic_ids": set(topic_ids),
                 }
+            expanded_messages = self._expand_with_message_context(messages)
             if not self.client:
                 analysis = {
                     "summary": prompt,
-                    "evidence": self._messages_to_evidence(messages)[:5],
+                    "fewshots": self._messages_to_fewshots(
+                        expanded_messages,
+                        participant_id=str(target_user.get("participant_id") or "").strip() or None,
+                    )[:5],
                 }
                 return {"analysis": analysis}, {
                     "topic_ids": set(topic_ids),
                     "week_keys": {self._topic_week_key(topic) for topic in scoped_topics if self._topic_week_key(topic)},
-                    "message_ids": {int(item.telegram_message_id) for item in messages if item.telegram_message_id is not None},
-                    "messages": messages,
+                    "message_ids": {int(item.telegram_message_id) for item in expanded_messages if item.telegram_message_id is not None},
+                    "messages": expanded_messages,
                 }
             compact_slice = "\n".join(
                 f"[{item.telegram_message_id}] {item.sender_name or 'unknown'}: {' '.join((item.text_normalized or '').split())[:240]}"
-                for item in messages[:TELEGRAM_TOOL_MAX_MESSAGES]
+                for item in expanded_messages[:TELEGRAM_TOOL_MAX_MESSAGES]
             )
             request_key = f"telegram-analysis-db-{target_user['participant_id']}-{len(topic_ids)}-{len(message_ids)}"
             stream_handler = self._build_stream_trace_callback(
@@ -1418,11 +1542,11 @@ class TelegramAnalysisAgent:
                 [
                     {
                         "role": "system",
-                        "content": "分析一小段精确的 Telegram 原始消息切片，只返回 JSON，包含 summary 和 evidence。除键名外，正文尽量使用简体中文。",
+                        "content": "分析一小段精确的 Telegram 原始消息切片，只返回 JSON，包含 summary 和 fewshots。fewshots 需要标注情境、表达方式、原话以及前后文。除键名外，正文尽量使用简体中文。",
                     },
                     {
                         "role": "user",
-                        "content": f"分析任务：{prompt}\n\n消息切片：\n{compact_slice}",
+                        "content": f"分析任务：{prompt}\n\n请围绕目标用户自己的消息整理 fewshots，并补上前后几条上下文。\n\n消息切片：\n{compact_slice}",
                     },
                 ],
                 model=self.llm_config.model if self.llm_config else None,
@@ -1448,8 +1572,8 @@ class TelegramAnalysisAgent:
             return {"analysis": parsed}, {
                 "topic_ids": set(topic_ids),
                 "week_keys": {self._topic_week_key(topic) for topic in scoped_topics if self._topic_week_key(topic)},
-                "message_ids": {int(item.telegram_message_id) for item in messages if item.telegram_message_id is not None},
-                "messages": messages,
+                "message_ids": {int(item.telegram_message_id) for item in expanded_messages if item.telegram_message_id is not None},
+                "messages": expanded_messages,
                 "usage": response.usage,
             }
 

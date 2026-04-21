@@ -202,3 +202,54 @@ def test_analyze_with_llm_disables_token_limit(monkeypatch):
 
     assert payload["summary"] == "ok"
     assert captured["kwargs"]["max_tokens"] is None
+
+
+def test_chat_completion_result_falls_back_to_secondary_service_config(monkeypatch):
+    calls: list[tuple[str | None, str | None]] = []
+
+    def fake_chat_completion_once(
+        self,
+        messages,
+        *,
+        resolved_model,
+        temperature,
+        response_format=None,
+        max_tokens=None,
+        stream_handler=None,
+    ):
+        del messages, temperature, response_format, max_tokens, stream_handler
+        calls.append((self.config.base_url, resolved_model))
+        if self.config.base_url == "https://primary.example/v1":
+            raise RuntimeError("primary unavailable")
+        return ChatCompletionResult(
+            content='{"summary":"ok","bullets":[],"confidence":0.8,"fewshots":[],"conflicts":[],"notes":""}',
+            model=resolved_model or self.config.model,
+            usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_chat_completion_result_once", fake_chat_completion_once)
+
+    client = OpenAICompatibleClient(
+        ServiceConfig(
+            base_url="https://primary.example/v1",
+            api_key="sk-primary",
+            model="primary-model",
+            api_mode="responses",
+            fallbacks=[
+                ServiceConfig(
+                    base_url="https://fallback.example/v1",
+                    api_key="sk-fallback",
+                    model="fallback-model",
+                    api_mode="responses",
+                )
+            ],
+        )
+    )
+
+    result = client.chat_completion_result([{"role": "user", "content": "hello"}], model="primary-model")
+
+    assert result.model == "fallback-model"
+    assert calls == [
+        ("https://primary.example/v1", "primary-model"),
+        ("https://fallback.example/v1", "fallback-model"),
+    ]

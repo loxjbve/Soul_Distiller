@@ -2,6 +2,11 @@
 {% block body_class %}theme-ambient--settings{% endblock %}
 {% block page_class %}page-settings{% endblock %}
 {% block title %}{{ ui.title }}{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='settings-page.css') }}">
+{% endblock %}
+
 {% block content %}
 <div class="page-frame">
     <section class="page-banner">
@@ -9,21 +14,26 @@
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
                 <h1>{{ ui.hero_title }}</h1>
-                <span class="page-banner__label">Control Consoles</span>
+                <span class="page-banner__label">Config Matrix</span>
             </div>
             <p>{{ ui.hero_note }}</p>
         </div>
         <div class="page-banner__meta">
             <div class="page-banner__portrait"></div>
             <div class="page-banner__signal-row">
-                <span class="page-banner__label">Chat LLM</span>
+                <span class="page-banner__label">Chat</span>
                 <span class="page-banner__label">Embedding</span>
             </div>
         </div>
     </section>
 
     <script type="application/json" id="settings-bootstrap">
-        {{ {"ui_strings": ui} | tojson | safe }}
+        {{ {
+            "ui_strings": ui,
+            "provider_options": settings_bootstrap.provider_options,
+            "api_mode_options": settings_bootstrap.api_mode_options,
+            "services": settings_bootstrap.services
+        } | tojson | safe }}
     </script>
 
     <section class="page-content">
@@ -34,43 +44,8 @@
                     <h2>{{ ui.chat_panel }}</h2>
                 </div>
             </div>
-            <div class="panel-body">
-                <form method="post" action="/settings/chat" class="form-stack panel-scroll" data-provider-form data-service="chat" data-panel-scroll>
-                    <label>
-                        <span>{{ ui.provider }}</span>
-                        <select name="provider_kind" data-provider-select>
-                            {% for option in provider_options %}
-                                <option value="{{ option.value }}" {% if chat_setting.get('provider_kind') == option.value %}selected{% endif %}>{{ option.label }}</option>
-                            {% endfor %}
-                        </select>
-                    </label>
-                    <label>
-                        <span>{{ ui.api_mode }}</span>
-                        <select name="api_mode">
-                            {% for option in api_mode_options %}
-                                <option value="{{ option.value }}" {% if chat_setting.get('api_mode') == option.value %}selected{% endif %}>{{ option.label }}</option>
-                            {% endfor %}
-                        </select>
-                    </label>
-                    <label>
-                        <span>{{ ui.base_url }}</span>
-                        <input type="text" name="base_url" value="{{ chat_setting.get('base_url', '') }}" data-base-url>
-                        <small class="helper-text" data-base-hint></small>
-                    </label>
-                    <label>
-                        <span>{{ ui.api_key }}</span>
-                        <input type="password" name="api_key" value="{{ chat_setting.get('api_key', '') }}" required>
-                    </label>
-                    <label>
-                        <span>{{ ui.model }}</span>
-                        <input type="text" name="model" value="{{ chat_setting.get('model', '') }}" data-model-input placeholder="{{ ui.model_placeholder }}">
-                    </label>
-                    <div class="button-row">
-                        <button type="submit" class="primary-button">{{ ui.save_chat }}</button>
-                        <button type="button" class="ghost-button" data-discover-models>{{ ui.discover_models }}</button>
-                    </div>
-                    <pre class="trace-box panel-scroll" data-model-output data-panel-scroll>{{ ui.discover_result }}</pre>
-                </form>
+            <div class="panel-body panel-body--tight">
+                <div class="settings-service" data-settings-service="chat"></div>
             </div>
         </article>
 
@@ -81,35 +56,8 @@
                     <h2>{{ ui.embedding_panel }}</h2>
                 </div>
             </div>
-            <div class="panel-body">
-                <form method="post" action="/settings/embedding" class="form-stack panel-scroll" data-provider-form data-service="embedding" data-panel-scroll>
-                    <label>
-                        <span>{{ ui.provider }}</span>
-                        <select name="provider_kind" data-provider-select>
-                            {% for option in provider_options %}
-                                <option value="{{ option.value }}" {% if embedding_setting.get('provider_kind') == option.value %}selected{% endif %}>{{ option.label }}</option>
-                            {% endfor %}
-                        </select>
-                    </label>
-                    <label>
-                        <span>{{ ui.base_url }}</span>
-                        <input type="text" name="base_url" value="{{ embedding_setting.get('base_url', '') }}" data-base-url>
-                        <small class="helper-text" data-base-hint></small>
-                    </label>
-                    <label>
-                        <span>{{ ui.api_key }}</span>
-                        <input type="password" name="api_key" value="{{ embedding_setting.get('api_key', '') }}" required>
-                    </label>
-                    <label>
-                        <span>{{ ui.model }}</span>
-                        <input type="text" name="model" value="{{ embedding_setting.get('model', '') }}" data-model-input placeholder="{{ ui.model_placeholder }}">
-                    </label>
-                    <div class="button-row">
-                        <button type="submit" class="primary-button">{{ ui.save_embedding }}</button>
-                        <button type="button" class="ghost-button" data-discover-models>{{ ui.discover_models }}</button>
-                    </div>
-                    <pre class="trace-box panel-scroll" data-model-output data-panel-scroll>{{ ui.discover_result }}</pre>
-                </form>
+            <div class="panel-body panel-body--tight">
+                <div class="settings-service" data-settings-service="embedding"></div>
             </div>
         </article>
     </section>

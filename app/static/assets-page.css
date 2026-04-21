@@ -1,0 +1,57 @@
+.page-assets .page-content {
+    grid-template-columns: minmax(240px, 0.56fr) minmax(0, 1.56fr) minmax(280px, 0.88fr);
+}
+
+.assets-card--generate,
+.assets-card--draft,
+.assets-card--documents,
+.assets-card--versions,
+.assets-side-column {
+    min-height: 0;
+}
+
+.assets-card--draft .panel-body,
+.assets-card--generate .panel-body,
+.assets-card--documents .panel-body,
+.assets-card--versions .panel-body {
+    min-height: 0;
+}
+
+.asset-generation-shell {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.asset-draft-form {
+    min-height: 0;
+}
+
+.asset-draft-form .button-row {
+    margin-top: auto;
+}
+
+.asset-editor-shell,
+.asset-editor-pages,
+.asset-editor-page,
+.asset-editor-field {
+    min-height: 0;
+}
+
+.asset-editor-textarea {
+    min-height: 520px;
+}
+
+.asset-draft-placeholder {
+    margin-top: 12px;
+}
+
+.version-card form {
+    margin: 0;
+}
+
+@media (max-width: 1280px) {
+    .page-assets .page-content {
+        grid-template-columns: 1fr;
+    }
+}

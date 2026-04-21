@@ -71,7 +71,7 @@ API_MODE_OPTIONS = (
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
-    {"value": "profile_report", "label": "用户剖析报告"},
+    {"value": "profile_report", "label": "用户画像报告"},
 )
 
 
@@ -99,11 +99,12 @@ SKILL_DOCUMENT_FILENAMES = {
     "memories": "memories.md",
     "merge": "Skill_merge.md",
 }
-CC_SKILL_DOCUMENT_ORDER = ("skill", "personality", "memories")
+CC_SKILL_DOCUMENT_ORDER = ("skill", "personality", "memories", "analysis")
 CC_SKILL_DOCUMENT_FILENAMES = {
     "skill": "SKILL.md",
     "personality": "references/personality.md",
     "memories": "references/memories.md",
+    "analysis": "references/analysis.md",
 }
 
 
@@ -149,15 +150,33 @@ class TelegramPreprocessRunCreatePayload(BaseModel):
 
 
 class AssetGeneratePayload(BaseModel):
-    asset_kind: str = "skill"
+    asset_kind: str = "cc_skill"
 
 
 class AssetSavePayload(BaseModel):
-    asset_kind: str = "skill"
+    asset_kind: str = "cc_skill"
     markdown_text: str
     json_payload: dict[str, Any]
     prompt_text: str
     notes: str | None = None
+
+
+class ServiceSettingConfigPayload(BaseModel):
+    id: str | None = None
+    label: str | None = None
+    provider_kind: str = "openai"
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    api_mode: str | None = None
+    available_models: list[str] = Field(default_factory=list)
+
+
+class ServiceSettingsBundlePayload(BaseModel):
+    active_config_id: str | None = None
+    discover_config_id: str | None = None
+    fallback_order: list[str] = Field(default_factory=list)
+    configs: list[ServiceSettingConfigPayload] = Field(default_factory=list)
 
 
 def get_session(request: Request):
@@ -458,7 +477,7 @@ def assets_page(
     request: Request,
     project_id: str,
     session: SessionDep,
-    kind: str = Query(default="skill"),
+    kind: str = Query(default="cc_skill"),
 ):
     project = _ensure_project(session, project_id)
     asset_kind = _normalize_asset_kind(kind)
@@ -479,7 +498,6 @@ def assets_page(
             asset_kind=asset_kind,
             asset_label=_asset_label(asset_kind),
             asset_options=(
-                {"value": "skill", "label": "Skill"},
                 {"value": "cc_skill", "label": "Claude Code Skill"},
                 {"value": "profile_report", "label": "用户画像报告"},
             ),
@@ -554,10 +572,39 @@ def download_asset_version_bundle_api(project_id: str, version_id: str, session:
     return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
 
 
+@router.get("/api/projects/{project_id}/asset-versions/{version_id}/download")
+def download_asset_version_api(project_id: str, version_id: str, session: SessionDep):
+    version = repository.get_asset_version(session, version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Asset version not found.")
+    if version.asset_kind == "cc_skill":
+        filename, payload = _build_skill_export_zip(
+            version.asset_kind,
+            version.json_payload,
+            version.markdown_text,
+            base_name=f"cc_skill_v{version.version_number}",
+        )
+        return StreamingResponse(iter([payload]), media_type="application/zip", headers=_download_headers(filename))
+    filename = f"{version.asset_kind}_v{version.version_number}.md"
+    return _markdown_download_response(filename, version.markdown_text)
+
+
+@router.post("/projects/{project_id}/asset-versions/{version_id}/delete")
+def delete_asset_version_form(request: Request, project_id: str, version_id: str, session: SessionDep):
+    version = repository.get_asset_version(session, version_id)
+    if not version or version.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Asset version not found.")
+    asset_kind = version.asset_kind
+    version_number = version.version_number
+    repository.delete_asset_version(session, version)
+    _delete_asset_files(request, project_id, asset_kind, f"published_v{version_number}")
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind={asset_kind}", status_code=303)
+
+
 @router.get("/projects/{project_id}/skill", response_class=HTMLResponse)
 def skill_page(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
-    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill", status_code=303)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=cc_skill", status_code=303)
 
 
 @router.post("/projects/{project_id}/assets/generate")
@@ -565,7 +612,7 @@ def generate_asset_form(
     request: Request,
     project_id: str,
     session: SessionDep,
-    asset_kind: Annotated[str, Form()] = "skill",
+    asset_kind: Annotated[str, Form()] = "cc_skill",
 ):
     normalized_kind = _normalize_asset_kind(asset_kind)
     draft = _generate_asset_draft(request, session, project_id, asset_kind=normalized_kind)
@@ -578,7 +625,7 @@ def save_asset_draft_form(
     project_id: str,
     draft_id: str,
     session: SessionDep,
-    asset_kind: Annotated[str, Form()] = "skill",
+    asset_kind: Annotated[str, Form()] = "cc_skill",
     markdown_text: Annotated[str, Form(...)] = "",
     json_payload: Annotated[str, Form(...)] = "{}",
     prompt_text: Annotated[str | None, Form()] = None,
@@ -617,7 +664,7 @@ def publish_asset_form(
     project_id: str,
     draft_id: str,
     session: SessionDep,
-    asset_kind: Annotated[str, Form()] = "skill",
+    asset_kind: Annotated[str, Form()] = "cc_skill",
 ):
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
     if not draft or draft.project_id != project_id:
@@ -632,15 +679,13 @@ def publish_asset_form(
         version.json_payload,
         version.system_prompt,
     )
-    if version.asset_kind == "skill":
-        return RedirectResponse(url=f"/projects/{project_id}/playground", status_code=303)
     return RedirectResponse(url=f"/projects/{project_id}/assets?kind={version.asset_kind}", status_code=303)
 
 
 @router.post("/projects/{project_id}/skills/generate")
 def generate_skill_form(request: Request, project_id: str, session: SessionDep):
-    draft = _generate_asset_draft(request, session, project_id, asset_kind="skill")
-    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill&draft={draft.id}", status_code=303)
+    draft = _generate_asset_draft(request, session, project_id, asset_kind="cc_skill")
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=cc_skill&draft={draft.id}", status_code=303)
 
 
 @router.post("/projects/{project_id}/skills/{draft_id}/save")
@@ -654,11 +699,11 @@ def save_skill_draft_form(
     system_prompt: Annotated[str, Form(...)],
     notes: Annotated[str | None, Form()] = None,
 ):
-    draft = repository.get_skill_draft(session, draft_id)
+    draft = repository.get_asset_draft(session, draft_id, asset_kind="cc_skill")
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
     normalized_payload, normalized_prompt = _normalize_saved_asset_content(
-        "skill",
+        "cc_skill",
         json.loads(json_payload),
         markdown_text,
         system_prompt,
@@ -667,26 +712,26 @@ def save_skill_draft_form(
     draft.json_payload = normalized_payload
     draft.system_prompt = normalized_prompt
     draft.notes = notes
-    _persist_asset_files(request, project_id, "skill", f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
-    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=skill", status_code=303)
+    _persist_asset_files(request, project_id, "cc_skill", f"draft_{draft.id}", draft.markdown_text, draft.json_payload, draft.system_prompt)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=cc_skill", status_code=303)
 
 
 @router.post("/projects/{project_id}/skills/{draft_id}/publish")
 def publish_skill_form(request: Request, project_id: str, draft_id: str, session: SessionDep):
-    draft = repository.get_skill_draft(session, draft_id)
+    draft = repository.get_asset_draft(session, draft_id, asset_kind="cc_skill")
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
     version = repository.publish_skill_draft(session, project_id, draft)
     _persist_asset_files(
         request,
         project_id,
-        "skill",
+        "cc_skill",
         f"published_v{version.version_number}",
         version.markdown_text,
         version.json_payload,
         version.system_prompt,
     )
-    return RedirectResponse(url=f"/projects/{project_id}/playground", status_code=303)
+    return RedirectResponse(url=f"/projects/{project_id}/assets?kind=cc_skill", status_code=303)
 
 
 @router.get("/projects/{project_id}/playground", response_class=HTMLResponse)
@@ -793,19 +838,32 @@ def start_telegram_preprocess_form(
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, session: SessionDep):
-    chat_setting = repository.get_setting(session, "chat_service")
-    embedding_setting = repository.get_setting(session, "embedding_service")
+    settings_bootstrap = {
+        "provider_options": PROVIDER_OPTIONS,
+        "api_mode_options": API_MODE_OPTIONS,
+        "services": {
+            "chat": repository.get_service_setting_bundle(
+                session,
+                "chat_service",
+                default_provider="openai",
+                default_api_mode="responses",
+            ),
+            "embedding": repository.get_service_setting_bundle(
+                session,
+                "embedding_service",
+                default_provider="openai",
+                default_api_mode="responses",
+            ),
+        },
+    }
     return templates.TemplateResponse(
         request=request,
         name="settings.html",
         context=_page_context(
             request, "settings",
-            chat_setting=_settings_payload(chat_setting.value_json if chat_setting else {}, default_provider="openai"),
-            embedding_setting=_settings_payload(
-                embedding_setting.value_json if embedding_setting else {},
-                default_provider="openai",
-            ),
-            provider_options=(
+            settings_bootstrap=settings_bootstrap,
+            provider_options=PROVIDER_OPTIONS,
+            legacy_provider_options=(
                 {"value": "openai", "label": "OpenAI 官方"},
                 {"value": "xai", "label": "xAI 官方"},
                 {"value": "gemini", "label": "Gemini 官方"},
@@ -828,22 +886,92 @@ def save_service_settings(
 ):
     if service_name not in {"chat", "embedding"}:
         raise HTTPException(status_code=404, detail="未知服务类型。")
-    normalized_provider = normalize_provider_kind(provider_kind)
-    normalized_base_url = (base_url or "").strip()
-    if normalized_provider == "openai-compatible" and not normalized_base_url:
-        raise HTTPException(status_code=400, detail="自定义 OpenAI Compatible 服务必须填写 Base URL。")
-    repository.upsert_setting(
+    config_payload = _normalize_service_setting_config_payload(
+        {
+            "label": "Default",
+            "provider_kind": provider_kind,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "api_mode": api_mode if service_name == "chat" else "responses",
+            "available_models": [],
+        },
+        service_name=service_name,
+        fallback_label="Default",
+    )
+    repository.upsert_service_setting_bundle(
         session,
         f"{service_name}_service",
         {
-            "base_url": normalized_base_url,
-            "api_key": api_key.strip(),
-            "model": (model or "").strip(),
-            "provider_kind": normalized_provider,
-            "api_mode": normalize_api_mode(api_mode if service_name == "chat" else "responses"),
+            "active_config_id": config_payload["id"],
+            "fallback_order": [],
+            "configs": [config_payload],
         },
+        default_provider="openai",
+        default_api_mode="responses",
     )
     return RedirectResponse(url="/settings", status_code=303)
+
+
+@router.post("/api/settings/{service_name}")
+def save_service_settings_api(
+    request: Request,
+    service_name: str,
+    payload: ServiceSettingsBundlePayload,
+    session: SessionDep,
+):
+    if service_name not in {"chat", "embedding"}:
+        raise HTTPException(status_code=404, detail="未知服务类型。")
+    normalized_bundle = _normalize_service_setting_bundle_payload(payload, service_name=service_name)
+    repository.upsert_service_setting_bundle(
+        session,
+        f"{service_name}_service",
+        normalized_bundle,
+        default_provider="openai",
+        default_api_mode="responses",
+    )
+
+    discovered_models: list[str] = []
+    discover_error: str | None = None
+    discover_config_id = str(payload.discover_config_id or "").strip()
+    target_config = next((item for item in normalized_bundle["configs"] if item["id"] == discover_config_id), None)
+    if target_config and _is_service_setting_config_usable(target_config):
+        try:
+            discover_client = OpenAICompatibleClient(
+                ServiceConfig(
+                    base_url=str(target_config.get("base_url") or "").strip() or None,
+                    api_key=str(target_config.get("api_key") or "").strip(),
+                    model=str(target_config.get("model") or "").strip() or None,
+                    provider_kind=str(target_config.get("provider_kind") or "openai"),
+                    api_mode=str(target_config.get("api_mode") or "responses"),
+                ),
+                log_path=str(request.app.state.config.llm_log_path),
+            )
+            discovered_models = discover_client.list_models()
+        except Exception as exc:
+            discover_error = str(exc)
+
+    if target_config is not None:
+        if discovered_models or not discover_error:
+            target_config["available_models"] = discovered_models
+        if discovered_models and not str(target_config.get("model") or "").strip():
+            target_config["model"] = discovered_models[0]
+        repository.upsert_service_setting_bundle(
+            session,
+            f"{service_name}_service",
+            normalized_bundle,
+            default_provider="openai",
+            default_api_mode="responses",
+        )
+
+    return _ok_response(
+        "服务配置已保存。",
+        service=service_name,
+        bundle=normalized_bundle,
+        discovered_config_id=discover_config_id or None,
+        discovered_models=discovered_models,
+        discover_error=discover_error,
+    )
 
 
 @router.post("/api/projects")
@@ -1440,8 +1568,9 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                         "status": "completed",
                         "phase": "done",
                         "progress_percent": 100,
-                        "message": "草稿生成完成，正在跳转。",
+                        "message": "草稿生成完成，已同步到编辑区。",
                         "draft_id": draft.id,
+                        "draft": _serialize_draft(draft),
                         "asset_kind": asset_kind,
                         "document_key": default_document_key,
                     }
@@ -1539,20 +1668,20 @@ def publish_asset_api(
 
 @router.post("/api/projects/{project_id}/skills/generate")
 def generate_skill_api(request: Request, project_id: str, session: SessionDep):
-    draft = _generate_asset_draft(request, session, project_id, asset_kind="skill")
-    return {**_serialize_draft(draft), "request_status": "ok", "message": "Skill 草稿已生成。"}
+    draft = _generate_asset_draft(request, session, project_id, asset_kind="cc_skill")
+    return {**_serialize_draft(draft), "request_status": "ok", "message": "Claude Code Skill 草稿已生成。"}
 
 
 @router.post("/api/projects/{project_id}/skills/{draft_id}/publish")
 def publish_skill_api(request: Request, project_id: str, draft_id: str, session: SessionDep):
-    draft = repository.get_skill_draft(session, draft_id)
+    draft = repository.get_asset_draft(session, draft_id, asset_kind="cc_skill")
     if not draft:
-        raise HTTPException(status_code=404, detail="未找到 Skill 草稿。")
+        raise HTTPException(status_code=404, detail="未找到 Claude Code Skill 草稿。")
     version = repository.publish_skill_draft(session, project_id, draft)
     _persist_asset_files(
         request,
         project_id,
-        "skill",
+        "cc_skill",
         f"published_v{version.version_number}",
         version.markdown_text,
         version.json_payload,
@@ -1564,7 +1693,7 @@ def publish_skill_api(request: Request, project_id: str, draft_id: str, session:
         "version_number": version.version_number,
         "published_at": version.published_at.isoformat(),
         "request_status": "ok",
-        "message": "Skill 版本已发布。",
+        "message": "Claude Code Skill 版本已发布。",
     }
 
 
@@ -1671,10 +1800,29 @@ def list_models_api(
     request: Request,
     service: Annotated[str, Query(pattern="^(chat|embedding)$")],
     session: SessionDep,
+    config_id: str | None = Query(default=None),
 ):
-    config = repository.get_service_config(session, f"{service}_service")
-    if not config:
-        raise HTTPException(status_code=400, detail=f"{service} 服务尚未配置。")
+    if config_id:
+        payload = repository.get_service_setting_config(
+            session,
+            f"{service}_service",
+            config_id,
+            default_provider="openai",
+            default_api_mode="responses",
+        )
+        if not payload or not _is_service_setting_config_usable(payload):
+            raise HTTPException(status_code=400, detail=f"{service} 服务尚未配置。")
+        config = ServiceConfig(
+            base_url=str(payload.get("base_url") or "").strip() or None,
+            api_key=str(payload.get("api_key") or "").strip(),
+            model=str(payload.get("model") or "").strip() or None,
+            provider_kind=str(payload.get("provider_kind") or "openai"),
+            api_mode=str(payload.get("api_mode") or "responses"),
+        )
+    else:
+        config = repository.get_service_config(session, f"{service}_service")
+        if not config:
+            raise HTTPException(status_code=400, detail=f"{service} 服务尚未配置。")
     client = OpenAICompatibleClient(config, log_path=str(request.app.state.config.llm_log_path))
     try:
         return _ok_response("已返回模型列表。", service=service, models=client.list_models())
@@ -2223,6 +2371,28 @@ def _persist_asset_files(
             doc_path.write_text(content, encoding="utf-8")
 
 
+def _delete_asset_files(
+    request: Request,
+    project_id: str,
+    asset_kind: str,
+    base_name: str,
+) -> None:
+    asset_dir = request.app.state.config.assets_dir / project_id / asset_kind
+    targets = [
+        asset_dir / f"{base_name}.md",
+        asset_dir / f"{base_name}.json",
+        asset_dir / f"{base_name}.prompt.txt",
+    ]
+    for path in targets:
+        if path.exists() and path.is_file():
+            path.unlink()
+    if asset_kind in {"skill", "cc_skill"}:
+        for filename in _skill_documents_for_export(asset_kind, {}, "").values():
+            doc_path = asset_dir / f"{base_name}.{filename['filename']}"
+            if doc_path.exists() and doc_path.is_file():
+                doc_path.unlink()
+
+
 def _download_headers(filename: str, *, fallback_name: str | None = None) -> dict[str, str]:
     ascii_name = _safe_ascii_filename(fallback_name or filename)
     return {
@@ -2307,6 +2477,7 @@ def _skill_documents_for_export(
     if not memories:
         memories_lines.insert(3, "- 旧版 Skill 未保存可拆分的记忆条目。")
     merge_markdown = str(markdown_text or "").strip()
+    analysis_markdown = _build_analysis_reference_markdown(payload)
     legacy_docs = {
         "skill": {
             "filename": filename_map["skill"],
@@ -2321,12 +2492,33 @@ def _skill_documents_for_export(
             "markdown": "\n".join(memories_lines).strip(),
         },
     }
+    if asset_kind == "cc_skill":
+        legacy_docs["analysis"] = {
+            "filename": filename_map["analysis"],
+            "markdown": analysis_markdown,
+        }
     if asset_kind == "skill":
         legacy_docs["merge"] = {
             "filename": filename_map["merge"],
             "markdown": merge_markdown,
         }
     return legacy_docs
+
+
+def _build_analysis_reference_markdown(payload: dict[str, Any]) -> str:
+    stored_markdown = str(payload.get("analysis_markdown") or payload.get("analysis_reference_markdown") or "").strip()
+    if stored_markdown:
+        return stored_markdown
+    summary = payload.get("analysis_summary") if isinstance(payload.get("analysis_summary"), dict) else {}
+    if not summary:
+        return "# 十维分析摘要\n\n当前版本没有可用的十维分析文本。"
+    lines = ["# 十维分析摘要", ""]
+    for key, value in summary.items():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        lines.extend([f"## {key}", text, ""])
+    return "\n".join(lines).strip() or "# 十维分析摘要\n\n当前版本没有可用的十维分析文本。"
 
 
 def _resolve_skill_export_document(
@@ -2780,7 +2972,7 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
 def _serialize_draft(draft) -> dict[str, Any]:
     return {
         "id": draft.id,
-        "asset_kind": getattr(draft, "asset_kind", "skill"),
+        "asset_kind": getattr(draft, "asset_kind", "cc_skill"),
         "status": draft.status,
         "markdown_text": draft.markdown_text,
         "json_payload": draft.json_payload,
@@ -2997,30 +3189,107 @@ def _format_sse(event_type: str, payload: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _settings_payload(payload: dict[str, Any], *, default_provider: str) -> dict[str, Any]:
-    normalized = dict(payload)
-    provider_kind = normalize_provider_kind(
-        normalized.get("provider_kind") or ("openai-compatible" if normalized.get("base_url") else default_provider)
+def _normalize_service_setting_bundle_payload(
+    payload: ServiceSettingsBundlePayload,
+    *,
+    service_name: str,
+) -> dict[str, Any]:
+    normalized_configs = [
+        _normalize_service_setting_config_payload(
+            item.model_dump(),
+            service_name=service_name,
+            fallback_label=f"{'Chat' if service_name == 'chat' else 'Embedding'} {index}",
+        )
+        for index, item in enumerate(payload.configs, start=1)
+    ]
+    if not normalized_configs:
+        normalized_configs.append(
+            _normalize_service_setting_config_payload(
+                {"label": f"{'Chat' if service_name == 'chat' else 'Embedding'} 1"},
+                service_name=service_name,
+                fallback_label=f"{'Chat' if service_name == 'chat' else 'Embedding'} 1",
+            )
+        )
+
+    config_ids = [item["id"] for item in normalized_configs]
+    active_config_id = str(payload.active_config_id or "").strip()
+    if active_config_id not in config_ids:
+        active_config_id = config_ids[0]
+
+    fallback_order: list[str] = []
+    seen_ids = {active_config_id}
+    for item in payload.fallback_order:
+        config_id = str(item or "").strip()
+        if config_id and config_id in config_ids and config_id not in seen_ids:
+            fallback_order.append(config_id)
+            seen_ids.add(config_id)
+    for config_id in config_ids:
+        if config_id not in seen_ids:
+            fallback_order.append(config_id)
+            seen_ids.add(config_id)
+
+    return {
+        "active_config_id": active_config_id,
+        "fallback_order": fallback_order,
+        "configs": normalized_configs,
+    }
+
+
+def _normalize_service_setting_config_payload(
+    payload: dict[str, Any],
+    *,
+    service_name: str,
+    fallback_label: str,
+) -> dict[str, Any]:
+    normalized_base_url = str(payload.get("base_url") or "").strip()
+    normalized_provider = normalize_provider_kind(
+        payload.get("provider_kind") or ("openai-compatible" if normalized_base_url else "openai")
     )
-    normalized["provider_kind"] = provider_kind
-    normalized["base_url"] = normalized.get("base_url", "")
-    normalized["api_key"] = normalized.get("api_key", "")
-    normalized["model"] = normalized.get("model", "")
-    normalized["api_mode"] = normalize_api_mode(normalized.get("api_mode"))
-    return normalized
+    if normalized_provider == "openai-compatible" and not normalized_base_url:
+        raise HTTPException(status_code=400, detail="自定义 OpenAI Compatible 服务必须填写 Base URL。")
+
+    available_models: list[str] = []
+    seen_models: set[str] = set()
+    for item in payload.get("available_models") or []:
+        model_name = str(item or "").strip()
+        if model_name and model_name not in seen_models:
+            available_models.append(model_name)
+            seen_models.add(model_name)
+
+    return {
+        "id": str(payload.get("id") or "").strip() or re.sub(r"[^a-z0-9]+", "-", f"{service_name}-{time.time_ns()}").strip("-"),
+        "label": str(payload.get("label") or "").strip() or fallback_label,
+        "provider_kind": normalized_provider,
+        "base_url": normalized_base_url,
+        "api_key": str(payload.get("api_key") or "").strip(),
+        "model": str(payload.get("model") or "").strip(),
+        "api_mode": normalize_api_mode(payload.get("api_mode") if service_name == "chat" else "responses"),
+        "available_models": available_models,
+    }
+
+
+def _is_service_setting_config_usable(payload: dict[str, Any]) -> bool:
+    api_key = str(payload.get("api_key") or "").strip()
+    provider_kind = normalize_provider_kind(payload.get("provider_kind"))
+    base_url = str(payload.get("base_url") or "").strip()
+    if not api_key:
+        return False
+    if provider_kind == "openai-compatible" and not base_url:
+        return False
+    return True
 
 
 def _normalize_asset_kind(value: str | None) -> str:
-    candidate = (value or "skill").strip().lower()
-    return candidate if candidate in ASSET_KINDS else "skill"
+    candidate = (value or "cc_skill").strip().lower()
+    if candidate == "skill":
+        return "cc_skill"
+    return candidate if candidate in ASSET_KINDS else "cc_skill"
 
 
 def _asset_label(asset_kind: str) -> str:
     if asset_kind == "profile_report":
-        return "用户剖析报告"
-    if asset_kind == "cc_skill":
-        return "Claude Code Skill"
-    return "Skill"
+        return "用户画像报告"
+    return "Claude Code Skill"
 
 
 def _enqueue_analysis(
@@ -3267,9 +3536,7 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
 def _asset_label(asset_kind: str) -> str:
     if asset_kind == "profile_report":
         return "用户画像报告"
-    if asset_kind == "cc_skill":
-        return "Claude Code Skill"
-    return "Skill"
+    return "Claude Code Skill"
 
 
 @router.websocket("/api/projects/{project_id}/documents/ws")

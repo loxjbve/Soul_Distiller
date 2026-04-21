@@ -32,6 +32,7 @@ CC_SKILL_DOCUMENT_FILENAMES = {
     "skill": "SKILL.md",
     "personality": "references/personality.md",
     "memories": "references/memories.md",
+    "analysis": "references/analysis.md",
 }
 
 
@@ -53,7 +54,7 @@ class AssetSynthesizer:
         session: Any | None = None,
         retrieval_service: Any | None = None,
     ) -> AssetBundle:
-        normalized_kind = asset_kind if asset_kind in ASSET_KINDS else "skill"
+        normalized_kind = "cc_skill" if asset_kind == "skill" else (asset_kind if asset_kind in ASSET_KINDS else "cc_skill")
         self._emit_progress(
             progress_callback,
             phase="prepare",
@@ -279,6 +280,20 @@ class AssetSynthesizer:
     def _compact_facet_for_prompt(self, facet: AnalysisFacet) -> dict[str, Any]:
         findings = dict(facet.findings_json or {})
         conflicts = list(facet.conflicts_json or [])
+        fewshots: list[dict[str, str]] = []
+        for item in list(facet.evidence_json or [])[:3]:
+            if not isinstance(item, dict):
+                continue
+            quote = self._truncate_text(item.get("quote"), 160)
+            if not quote:
+                continue
+            fewshots.append(
+                {
+                    "situation": self._truncate_text(item.get("situation") or item.get("reason"), 120),
+                    "expression": self._truncate_text(item.get("expression"), 80),
+                    "quote": quote,
+                }
+            )
         return {
             "facet_key": facet.facet_key,
             "label": str(findings.get("label") or facet.facet_key),
@@ -298,6 +313,7 @@ class AssetSynthesizer:
                 for item in conflicts[:SYNTHESIS_CONFLICT_LIMIT]
                 if isinstance(item, dict)
             ],
+            "fewshots": fewshots,
         }
 
     def _build_search_context(self, chunks: list[Any]) -> str:
@@ -308,7 +324,7 @@ class AssetSynthesizer:
                 continue
             source = getattr(chunk, "document_title", None) or getattr(chunk, "filename", None) or "source"
             chunk_id = str(getattr(chunk, "chunk_id", "") or "").strip()
-            lines.append(f"{index}. source: {source}")
+            lines.append(f"{index}. [{source}]")
             if chunk_id:
                 lines.append(f"   chunk_id: {chunk_id}")
             lines.append(f"   excerpt: {content}")
@@ -383,6 +399,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
+        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -539,6 +556,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
+        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -633,6 +651,18 @@ class AssetSynthesizer:
 
         self._emit_progress(
             progress_callback,
+            phase="analysis_reference",
+            progress_percent=44,
+            message="Building analysis.md",
+            document_key="analysis",
+        )
+        analysis_stream_callback = self._document_stream_callback(stream_callback, "analysis")
+        if callable(analysis_stream_callback):
+            analysis_stream_callback(analysis_markdown)
+            self._flush_stream_callback(analysis_stream_callback)
+
+        self._emit_progress(
+            progress_callback,
             phase="synthesis",
             progress_percent=52,
             message="LLM is generating SKILL.md",
@@ -645,6 +675,7 @@ class AssetSynthesizer:
             evidence_context=skill_context,
             personality_markdown=personality_markdown,
             memories_markdown=memories_markdown,
+            analysis_markdown=analysis_markdown,
             target_role=target_role,
             analysis_context=analysis_context,
         )
@@ -665,6 +696,7 @@ class AssetSynthesizer:
                 "skill_markdown": response.content,
                 "personality_markdown": personality_markdown,
                 "memories_markdown": memories_markdown,
+                "analysis_markdown": analysis_markdown,
             },
             project_name=project.name,
             project_id=project.id,
@@ -1034,29 +1066,21 @@ class AssetSynthesizer:
                         [str(item) for item in skill_payload["memories"]],
                         fallback_summary=str(summary_by_key.get("life_timeline", {}).get("summary", "")),
                     ),
+                    "analysis_markdown": self._render_analysis_reference_markdown(self._build_facet_dump(facets)),
                 },
                 project_name=project.name,
                 project_id=project.id,
                 target_role=target_role,
                 analysis_context=analysis_context,
             )
-        return {
-            "headline": summary_by_key.get("personality", {}).get("summary", f"{project.name} 的人物剖析"),
-            "executive_summary": summary_by_key.get("personality", {}).get("summary", ""),
-            "reality_anchor": summary_by_key.get("physical_anchor", {}).get("summary", ""),
-            "social_dynamics": summary_by_key.get("social_niche", {}).get("summary", "")
-            or summary_by_key.get("relationship_network", {}).get("summary", ""),
-            "interpersonal_mechanics": summary_by_key.get("interpersonal_mechanics", {}).get("summary", ""),
-            "subculture_refuge": summary_by_key.get("subculture_refuge", {}).get("summary", ""),
-            "core_values_and_triggers": summary_by_key.get("values_preferences", {}).get("summary", ""),
-            "linguistic_signature": summary_by_key.get("language_style", {}).get("summary", ""),
-            "psychological_profile": summary_by_key.get("personality", {}).get("summary", ""),
-            "contradictions": [_stringify_conflict(conflict) for conflict in conflict_notes[:8]],
-            "observer_conclusion": summary_by_key.get("life_timeline", {}).get("summary", "")
-            or summary_by_key.get("narrative_boundaries", {}).get("summary", ""),
-            "target_role": target_role or project.name,
-            "source_context": analysis_context or "",
-        }
+        return _build_profile_report_payload_from_facets(
+            project_name=project.name,
+            target_role=target_role or project.name,
+            analysis_context=analysis_context or "",
+            summary_by_key=summary_by_key,
+            evidence_by_key=evidence_by_key,
+            conflict_notes=conflict_notes,
+        )
 
     def _normalize_skill_payload(
         self,
@@ -1132,6 +1156,43 @@ class AssetSynthesizer:
             ]
         ).strip()
 
+    def _render_analysis_reference_markdown(self, facet_dump: str) -> str:
+        facets = json.loads(facet_dump or "[]")
+        if not isinstance(facets, list):
+            return "# 十维分析摘要\n\n当前没有可用的十维分析文本。"
+        lines = [
+            "# 十维分析摘要",
+            "",
+            "以下内容汇总自当前十维分析结果，供 SKILL.md 在写规则、few-shot 和边界时引用。",
+            "",
+        ]
+        for facet in facets:
+            if not isinstance(facet, dict):
+                continue
+            label = str(facet.get("label") or facet.get("facet_key") or "Facet").strip()
+            summary = str(facet.get("summary") or "").strip()
+            bullets = [str(item).strip() for item in (facet.get("bullets") or []) if str(item).strip()]
+            fewshots = [item for item in (facet.get("fewshots") or []) if isinstance(item, dict)]
+            lines.append(f"## {label}")
+            if summary:
+                lines.extend([summary, ""])
+            if bullets:
+                lines.extend(f"- {item}" for item in bullets[:6])
+                lines.append("")
+            if fewshots:
+                lines.append("### Few-Shot 片段")
+                for index, item in enumerate(fewshots[:3], start=1):
+                    situation = str(item.get("situation") or "").strip()
+                    expression = str(item.get("expression") or "").strip()
+                    quote = str(item.get("quote") or "").strip()
+                    lines.append(f"{index}. 情境：{situation or '未标注'}")
+                    if expression:
+                        lines.append(f"   表达方式：{expression}")
+                    if quote:
+                        lines.append(f"   原话：{quote}")
+                lines.append("")
+        return "\n".join(lines).strip() or "# 十维分析摘要\n\n当前没有可用的十维分析文本。"
+
     def _normalize_cc_skill_payload(
         self,
         payload: dict[str, Any],
@@ -1145,6 +1206,7 @@ class AssetSynthesizer:
         resolved_source_context = str(payload.get("source_context", analysis_context or ""))
         personality_markdown = str(payload.get("personality_markdown", "") or "").strip()
         memories_markdown = str(payload.get("memories_markdown", "") or "").strip()
+        analysis_markdown = str(payload.get("analysis_markdown", "") or "").strip()
         raw_skill_markdown = str(payload.get("skill_markdown", "") or "").strip()
 
         expected_name = self._build_cc_skill_name(
@@ -1179,6 +1241,8 @@ class AssetSynthesizer:
             resolved_body = f"{resolved_body.strip()}\n\n更多人格底色见 references/personality.md。".strip()
         if "references/memories.md" not in resolved_body:
             resolved_body = f"{resolved_body.strip()}\n\n更多记忆与经历见 references/memories.md。".strip()
+        if "references/analysis.md" not in resolved_body:
+            resolved_body = f"{resolved_body.strip()}\n\n更多十维分析摘要见 references/analysis.md。".strip()
 
         name_candidate = frontmatter_name.strip() if frontmatter_name else expected_name
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name_candidate or ""):
@@ -1214,7 +1278,12 @@ class AssetSynthesizer:
                     "filename": CC_SKILL_DOCUMENT_FILENAMES["memories"],
                     "markdown": memories_markdown,
                 },
+                "analysis": {
+                    "filename": CC_SKILL_DOCUMENT_FILENAMES["analysis"],
+                    "markdown": analysis_markdown,
+                },
             },
+            "analysis_markdown": analysis_markdown,
         }
 
     def _normalize_profile_report_payload(
@@ -1226,17 +1295,45 @@ class AssetSynthesizer:
         analysis_context: str | None,
     ) -> dict[str, Any]:
         return {
-            "headline": str(payload.get("headline", f"{project_name} 的人物剖析")),
-            "executive_summary": str(payload.get("executive_summary", "")),
-            "reality_anchor": str(payload.get("reality_anchor", "")),
-            "social_dynamics": str(payload.get("social_dynamics", "")),
-            "interpersonal_mechanics": str(payload.get("interpersonal_mechanics", "")),
-            "subculture_refuge": str(payload.get("subculture_refuge", "")),
-            "core_values_and_triggers": str(payload.get("core_values_and_triggers", "")),
-            "linguistic_signature": str(payload.get("linguistic_signature", "")),
-            "psychological_profile": str(payload.get("psychological_profile", "")),
+            "headline": str(payload.get("headline") or f"{project_name} 用户画像报告"),
+            "executive_summary": str(payload.get("executive_summary") or payload.get("summary") or ""),
+            "core_identity_and_drives": str(
+                payload.get("core_identity_and_drives")
+                or payload.get("psychological_profile")
+                or payload.get("reality_anchor")
+                or ""
+            ),
+            "emotional_baseline": str(payload.get("emotional_baseline") or payload.get("reality_anchor") or ""),
+            "attachment_and_boundaries": str(
+                payload.get("attachment_and_boundaries")
+                or payload.get("interpersonal_mechanics")
+                or ""
+            ),
+            "defense_and_coping": str(
+                payload.get("defense_and_coping")
+                or payload.get("psychological_profile")
+                or ""
+            ),
+            "social_role_and_relationships": str(
+                payload.get("social_role_and_relationships")
+                or payload.get("social_dynamics")
+                or payload.get("subculture_refuge")
+                or ""
+            ),
+            "four_type_personality": str(payload.get("four_type_personality") or ""),
+            "stress_response_and_risk": str(
+                payload.get("stress_response_and_risk")
+                or payload.get("core_values_and_triggers")
+                or ""
+            ),
+            "linguistic_markers": str(payload.get("linguistic_markers") or payload.get("linguistic_signature") or ""),
             "contradictions": [str(item) for item in payload.get("contradictions", [])[:8]],
-            "observer_conclusion": str(payload.get("observer_conclusion", "")),
+            "growth_and_prediction": str(payload.get("growth_and_prediction") or payload.get("observer_conclusion") or ""),
+            "observer_conclusion": str(
+                payload.get("observer_conclusion")
+                or payload.get("growth_and_prediction")
+                or ""
+            ),
             "target_role": str(payload.get("target_role", target_role or project_name)),
             "source_context": str(payload.get("source_context", analysis_context or "")),
         }
@@ -1328,36 +1425,45 @@ class AssetSynthesizer:
 
     def _render_profile_report_markdown(self, project_name: str, payload: dict[str, Any]) -> str:
         sections = [
-            f"# 档案编号：{payload.get('target_role') or project_name} 全景侧写",
+            f"# {payload.get('target_role') or project_name} 用户画像报告",
             "",
-            "## 卷首语：人物判词",
+            "## 一、卷首判词",
             payload["headline"],
             "",
-            "## 第一章：现实映射与生存锚点",
-            payload["reality_anchor"],
+            "## 二、执行摘要",
+            payload["executive_summary"],
             "",
-            "## 第二章：群体生态位与社会动力",
-            payload["social_dynamics"],
+            "## 三、核心驱力与身份叙事",
+            payload["core_identity_and_drives"],
             "",
-            "## 第三章：待人接物与人际力学",
-            payload["interpersonal_mechanics"],
+            "## 四、情绪底色与心理基线",
+            payload["emotional_baseline"],
             "",
-            "## 第四章：亚文化偏好与精神避难所",
-            payload["subculture_refuge"],
+            "## 五、依恋方式与边界策略",
+            payload["attachment_and_boundaries"],
             "",
-            "## 第五章：核心价值与触发点",
-            payload["core_values_and_triggers"],
+            "## 六、防御机制与应对模式",
+            payload["defense_and_coping"],
             "",
-            "## 第六章：语言指纹",
-            payload["linguistic_signature"],
+            "## 七、社会角色与关系动力",
+            payload["social_role_and_relationships"],
             "",
-            "## 第七章：心理剖面",
-            payload["psychological_profile"],
+            "## 八、四类型人格划分",
+            payload["four_type_personality"],
             "",
-            "## 第八章：矛盾与裂缝",
+            "## 九、压力响应与风险点",
+            payload["stress_response_and_risk"],
+            "",
+            "## 十、语言与表达指纹",
+            payload["linguistic_markers"],
+            "",
+            "## 十一、矛盾与裂缝",
             *[f"- {item}" for item in payload["contradictions"]],
             "",
-            "## 第九章：观察者结论",
+            "## 十二、成长路径与走势预测",
+            payload["growth_and_prediction"],
+            "",
+            "## 十三、观察者结论",
             payload["observer_conclusion"],
         ]
         if payload["source_context"]:
@@ -1368,18 +1474,20 @@ class AssetSynthesizer:
         contradictions = "\n".join(f"- {item}" for item in payload["contradictions"])
         source_context = f"语料说明：{payload['source_context']}\n\n" if payload["source_context"] else ""
         return (
-            f"以下是 {payload.get('target_role') or project_name} 的用户剖析报告摘要。\n\n"
+            f"以下是 {payload.get('target_role') or project_name} 的用户画像报告摘要。\n\n"
             f"{source_context}"
-            f"人物判词：{payload['headline']}\n\n"
+            f"卷首判词：{payload['headline']}\n\n"
             f"执行摘要：{payload['executive_summary']}\n\n"
-            f"现实锚点：{payload['reality_anchor']}\n\n"
-            f"社会动力：{payload['social_dynamics']}\n\n"
-            f"人际机制：{payload['interpersonal_mechanics']}\n\n"
-            f"精神避难所：{payload['subculture_refuge']}\n\n"
-            f"核心价值与触发点：{payload['core_values_and_triggers']}\n\n"
-            f"语言指纹：{payload['linguistic_signature']}\n\n"
-            f"心理剖面：{payload['psychological_profile']}\n\n"
+            f"核心驱力与身份叙事：{payload['core_identity_and_drives']}\n\n"
+            f"情绪底色与心理基线：{payload['emotional_baseline']}\n\n"
+            f"依恋方式与边界策略：{payload['attachment_and_boundaries']}\n\n"
+            f"防御机制与应对模式：{payload['defense_and_coping']}\n\n"
+            f"社会角色与关系动力：{payload['social_role_and_relationships']}\n\n"
+            f"四类型人格划分：{payload['four_type_personality']}\n\n"
+            f"压力响应与风险点：{payload['stress_response_and_risk']}\n\n"
+            f"语言与表达指纹：{payload['linguistic_markers']}\n\n"
             f"主要矛盾：\n{contradictions}\n\n"
+            f"成长路径与走势预测：{payload['growth_and_prediction']}\n\n"
             f"观察者结论：{payload['observer_conclusion']}"
         )
 
@@ -1552,6 +1660,161 @@ def _build_skill_payload_from_facets(
     }
 
 
+def _build_profile_report_payload_from_facets(
+    *,
+    project_name: str,
+    target_role: str,
+    analysis_context: str,
+    summary_by_key: dict[str, dict[str, Any]],
+    evidence_by_key: dict[str, list[dict[str, Any]]],
+    conflict_notes: list[Any],
+) -> dict[str, Any]:
+    personality_summary = _facet_summary(summary_by_key, "personality")
+    physical_summary = _facet_summary(summary_by_key, "physical_anchor")
+    values_summary = _facet_summary(summary_by_key, "values_preferences")
+    timeline_summary = _facet_summary(summary_by_key, "life_timeline")
+    social_summary = _first_nonempty(
+        _facet_summary(summary_by_key, "social_niche"),
+        _facet_summary(summary_by_key, "relationship_network"),
+    )
+    relationship_summary = _facet_summary(summary_by_key, "relationship_network")
+    language_summary = _facet_summary(summary_by_key, "language_style")
+    boundary_summary = _facet_summary(summary_by_key, "narrative_boundaries")
+    interpersonal_summary = _facet_summary(summary_by_key, "interpersonal_mechanics")
+    subculture_summary = _facet_summary(summary_by_key, "subculture_refuge")
+
+    personality_bullets = _facet_bullets(summary_by_key, "personality", limit=4)
+    physical_bullets = _facet_bullets(summary_by_key, "physical_anchor", limit=4)
+    values_bullets = _facet_bullets(summary_by_key, "values_preferences", limit=4)
+    boundary_bullets = _facet_bullets(summary_by_key, "narrative_boundaries", limit=4)
+    social_bullets = _merge_bullets(
+        _facet_bullets(summary_by_key, "social_niche", limit=3),
+        _facet_bullets(summary_by_key, "relationship_network", limit=3),
+        limit=4,
+    )
+    interpersonal_bullets = _facet_bullets(summary_by_key, "interpersonal_mechanics", limit=4)
+    language_bullets = _facet_bullets(summary_by_key, "language_style", limit=5)
+    timeline_bullets = _facet_bullets(summary_by_key, "life_timeline", limit=4)
+    subculture_bullets = _facet_bullets(summary_by_key, "subculture_refuge", limit=4)
+
+    contradictions = [
+        _stringify_conflict(conflict)
+        for conflict in conflict_notes[:8]
+        if _stringify_conflict(conflict)
+    ]
+
+    headline = _first_nonempty(
+        personality_summary,
+        values_summary,
+        f"{target_role} 的人物画像仍以强边界和高现实感为核心。",
+    )
+    executive_summary = _compose_profile_section(
+        personality_summary,
+        values_summary,
+        social_summary,
+        bullets=_merge_bullets(personality_bullets[:2], values_bullets[:2], limit=3),
+    )
+    core_identity_and_drives = _compose_profile_section(
+        personality_summary,
+        values_summary,
+        timeline_summary,
+        bullets=_merge_bullets(personality_bullets, values_bullets, limit=4),
+    )
+    emotional_baseline = _compose_profile_section(
+        physical_summary,
+        _first_nonempty(personality_summary, values_summary),
+        bullets=physical_bullets[:4],
+    )
+    attachment_and_boundaries = _compose_profile_section(
+        boundary_summary,
+        interpersonal_summary,
+        relationship_summary,
+        bullets=_merge_bullets(boundary_bullets, interpersonal_bullets, limit=4),
+    )
+    defense_and_coping = _compose_profile_section(
+        _first_nonempty(
+            interpersonal_summary,
+            "在高压或关系不确定时，会先回收信息、压缩表达，再确认自己的站位和成本。",
+        ),
+        _first_nonempty(
+            boundary_summary,
+            physical_summary,
+            "当语境不安全时，优先保边界、保现实锚点，而不是追求表面上的顺滑。",
+        ),
+        bullets=_merge_bullets(boundary_bullets[:2], physical_bullets[:2], limit=4),
+    )
+    social_role_and_relationships = _compose_profile_section(
+        social_summary,
+        relationship_summary,
+        subculture_summary,
+        bullets=_merge_bullets(social_bullets, subculture_bullets, limit=4),
+    )
+    four_type_personality = "\n".join(
+        [
+            f"1. 驱动型人格面：{_first_nonempty(values_summary, personality_summary, '以现实代价、长期收益和自我一致性作为主要驱动。')}",
+            f"2. 防御型人格面：{_first_nonempty(boundary_summary, physical_summary, '面对不确定或越界刺激时，先缩边界、降暴露、控风险。')}",
+            f"3. 关系型人格面：{_first_nonempty(social_summary, relationship_summary, '对关系的判断明显依赖熟悉度、圈层语境与信任积累。')}",
+            f"4. 表达型人格面：{_first_nonempty(language_summary, '表达倾向短句、压缩、带锋利判断，先给态度再给理由。')}",
+        ]
+    ).strip()
+    stress_response_and_risk = _compose_profile_section(
+        _first_nonempty(
+            physical_summary,
+            "压力升高时，这个人会明显增强现实校准、边界感和对关系成本的盘算。",
+        ),
+        _first_nonempty(
+            contradictions[0] if contradictions else "",
+            boundary_summary,
+            "真正的风险不在情绪爆发本身，而在长期压缩、回避和迟迟不把真实诉求说透。",
+        ),
+        bullets=_merge_bullets(boundary_bullets[:2], physical_bullets[:2], limit=4),
+    )
+    linguistic_markers = _compose_profile_section(
+        language_summary,
+        bullets=language_bullets[:5],
+    )
+    growth_and_prediction = _compose_profile_section(
+        timeline_summary,
+        values_summary,
+        _first_nonempty(
+            subculture_summary,
+            "如果外部环境允许，它会继续朝更清晰的自我边界、更稳定的圈层定位和更少自我消耗的表达方式收缩。",
+        ),
+        bullets=_merge_bullets(timeline_bullets[:2], values_bullets[:2], limit=4),
+    )
+    observer_conclusion = _compose_profile_section(
+        f"整体来看，{target_role} 更像一个先看代价、再谈情感、最后才决定暴露程度的人。",
+        _first_nonempty(
+            personality_summary,
+            values_summary,
+            social_summary,
+        ),
+        _first_nonempty(
+            boundary_summary,
+            "他的稳定性来自高边界感，脆弱点也同样埋在高边界感里。",
+        ),
+    )
+
+    return {
+        "headline": headline,
+        "executive_summary": executive_summary,
+        "core_identity_and_drives": core_identity_and_drives,
+        "emotional_baseline": emotional_baseline,
+        "attachment_and_boundaries": attachment_and_boundaries,
+        "defense_and_coping": defense_and_coping,
+        "social_role_and_relationships": social_role_and_relationships,
+        "four_type_personality": four_type_personality,
+        "stress_response_and_risk": stress_response_and_risk,
+        "linguistic_markers": linguistic_markers,
+        "contradictions": contradictions,
+        "growth_and_prediction": growth_and_prediction,
+        "observer_conclusion": observer_conclusion,
+        "target_role": target_role,
+        "source_context": analysis_context,
+        "reference_fewshots": _build_few_shots(evidence_by_key),
+    }
+
+
 def _build_few_shots(evidence_by_key: dict[str, list[dict[str, Any]]]) -> list[dict[str, str]]:
     few_shots: list[dict[str, str]] = []
     seen_quotes: set[str] = set()
@@ -1566,10 +1829,22 @@ def _build_few_shots(evidence_by_key: dict[str, list[dict[str, Any]]]) -> list[d
             if not quote or quote in seen_quotes:
                 continue
             seen_quotes.add(quote)
+            context_parts = [
+                str(item.get("situation") or item.get("reason") or item.get("filename") or facet_key).strip(),
+            ]
+            expression = str(item.get("expression") or "").strip()
+            context_before = str(item.get("context_before") or "").strip()
+            context_after = str(item.get("context_after") or "").strip()
+            if expression:
+                context_parts.append(f"表达方式：{expression}")
+            if context_before:
+                context_parts.append(f"前文：{context_before}")
+            if context_after:
+                context_parts.append(f"后文：{context_after}")
             few_shots.append(
                 {
                     "scene": f"{scene_prefix} {len(few_shots) + 1}",
-                    "context": str(item.get("reason") or item.get("filename") or facet_key),
+                    "context": "；".join(part for part in context_parts if part),
                     "reply": quote,
                 }
             )
@@ -1636,3 +1911,15 @@ def _first_nonempty(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _compose_profile_section(*parts: Any, bullets: list[str] | None = None) -> str:
+    blocks: list[str] = []
+    for value in parts:
+        text = str(value or "").strip()
+        if text and text not in blocks:
+            blocks.append(text)
+    bullet_lines = [str(item).strip() for item in (bullets or []) if str(item).strip()]
+    if bullet_lines:
+        blocks.append("观察锚点：\n" + "\n".join(f"- {item}" for item in bullet_lines[:5]))
+    return "\n\n".join(blocks).strip()

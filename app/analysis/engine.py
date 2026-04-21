@@ -641,7 +641,7 @@ class AnalysisEngine:
             confidence=_parse_confidence(normalized_payload.get("confidence"), 0.65),
             summary=str(normalized_payload.get("summary") or ""),
             bullets=list(normalized_payload.get("bullets") or []),
-            evidence=list(normalized_payload.get("evidence") or []),
+            evidence=list(normalized_payload.get("evidence") or normalized_payload.get("fewshots") or []),
             conflicts=list(normalized_payload.get("conflicts") or []),
             notes=normalized_payload.get("notes"),
             raw_payload=normalized_payload,
@@ -2199,11 +2199,13 @@ def _analyze_heuristically(
         bullets.append(f"{next(label_cycle, profile.bullet_labels[-1])}：{preview}")
     bullets, _ = _normalize_facet_bullets(bullets, facet)
     summary_focus = "、".join(terms[:4]) or profile.focus.split("、", 1)[0]
-    evidence = [
+    fewshots = [
         {
             "chunk_id": chunk["chunk_id"],
-            "reason": f"{facet.label} 的代表片段",
+            "situation": f"{facet.label} 相关片段",
+            "expression": "原始文本直述",
             "quote": chunk["content"][:160],
+            "reason": f"{facet.label} 的代表片段",
             "document_title": chunk["document_title"],
             "filename": chunk["filename"],
             "page_number": chunk["page_number"],
@@ -2217,7 +2219,8 @@ def _analyze_heuristically(
         ),
         "bullets": bullets[:FACET_BULLET_LIMIT],
         "confidence": min(0.45 + (len(chunks) * 0.07), 0.78),
-        "evidence": evidence,
+        "fewshots": fewshots,
+        "evidence": fewshots,
         "conflicts": [],
         "notes": "LLM 未配置，结果来自启发式降级分析。",
         "_meta": {
@@ -2239,16 +2242,22 @@ def _normalize_facet_payload(
 ) -> dict[str, Any]:
     chunk_map = {chunk["chunk_id"]: chunk for chunk in chunks}
     evidence: list[dict[str, Any]] = []
-    for item in payload.get("evidence", [])[:FACET_EVIDENCE_LIMIT]:
+    raw_fewshots = payload.get("fewshots") or payload.get("evidence") or []
+    for item in raw_fewshots[:FACET_EVIDENCE_LIMIT]:
         chunk_id = item.get("chunk_id")
         if not chunk_id or chunk_id not in chunk_map:
             continue
         source = chunk_map[chunk_id]
+        quote = _collapse_whitespace(item.get("quote")) or source["content"][:160]
+        situation = _collapse_whitespace(item.get("situation") or item.get("reason")) or f"{facet.label} 相关片段"
+        expression = _collapse_whitespace(item.get("expression")) or "原始文本直述"
         evidence.append(
             {
                 "chunk_id": chunk_id,
-                "reason": item.get("reason", ""),
-                "quote": item.get("quote", source["content"][:160]),
+                "situation": situation,
+                "expression": expression,
+                "reason": _collapse_whitespace(item.get("reason")) or situation,
+                "quote": quote,
                 "document_title": source["document_title"],
                 "filename": source["filename"],
                 "page_number": source["page_number"],
@@ -2263,7 +2272,9 @@ def _normalize_facet_payload(
         evidence.append(
             {
                 "chunk_id": chunk["chunk_id"],
-                "reason": "Retrieved evidence candidate",
+                "situation": f"{facet.label} 相关片段",
+                "expression": "原始文本直述",
+                "reason": "Retrieved few-shot candidate",
                 "quote": chunk["content"][:160],
                 "document_title": chunk["document_title"],
                 "filename": chunk["filename"],
@@ -2287,6 +2298,7 @@ def _normalize_facet_payload(
         "summary": summary,
         "bullets": bullets,
         "confidence": _parse_confidence(payload.get("confidence"), 0.65),
+        "fewshots": evidence,
         "evidence": evidence,
         "conflicts": [
             {

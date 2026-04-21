@@ -16,6 +16,17 @@ class ServiceConfig:
     model: str | None = None
     provider_kind: str = "openai-compatible"
     api_mode: str = "responses"
+    fallbacks: list["ServiceConfig"] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        normalized_fallbacks: list[ServiceConfig] = []
+        for item in self.fallbacks:
+            if isinstance(item, ServiceConfig):
+                normalized_fallbacks.append(item)
+                continue
+            if isinstance(item, dict):
+                normalized_fallbacks.append(ServiceConfig(**item))
+        self.fallbacks = normalized_fallbacks
 
 
 @dataclass(slots=True)

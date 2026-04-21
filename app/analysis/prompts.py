@@ -7,7 +7,7 @@ from app.analysis.facets import FacetDefinition, get_facet_prompt_profile
 ASSET_KIND_LABELS = {
     "skill": "角色技能",
     "cc_skill": "Claude Code Skill",
-    "profile_report": "用户剖析报告",
+    "profile_report": "用户画像报告",
 }
 
 
@@ -32,10 +32,11 @@ def build_facet_analysis_messages(
                 "避免空泛夸奖、套话式总结或模糊的人格评语。\n"
                 "每一条重要判断都必须严格锚定到提供的 chunk_id。\n"
                 "只返回 JSON。\n"
-                "必须包含这些键：summary, bullets, confidence, evidence, conflicts, notes。\n"
-                "evidence 必须是对象列表，每个对象包含 chunk_id、reason、quote。\n"
+                "必须包含这些键：summary, bullets, confidence, fewshots, conflicts, notes。\n"
+                "fewshots 必须是对象列表，每个对象包含 chunk_id、situation、expression、quote。\n"
                 "conflicts 必须是对象列表，每个对象包含 title、detail。\n"
                 "chunk_id 必须与输入完全一致。quote 优先使用简短直接引语或接近原话的转述。\n"
+                "situation 要说明这个人当时在面对什么情况；expression 要概括他用了什么表达方式。\n"
                 "summary 必须只总结当前维度，写成一段详细、可引用的中文摘要，不要扩写成人物全貌。\n"
                 "bullets 必须是当前维度下的细节观察，优先使用这个维度自己的小标签，不要机械复用通用人格卡栏目名。\n"
                 "如果某条证据更适合别的维度，只能在 notes 里简短提示，不要写进 summary 或 bullets。\n"
@@ -53,6 +54,7 @@ def build_facet_analysis_messages(
                 "如果证据不足，就明确写不足，不要用其他维度内容来凑数。\n"
                 "重点抓具体行为、触发条件、稳定模式、例外情况和内部张力，避免只有一句泛化判断。\n"
                 "bullets 必须写得足够具体，能够直接用于实现，不要写成抽象标签或简洁总述。\n"
+                "fewshots 至少给 3 条，优先挑最能体现当前维度的片段；每条都要写出情境、表达方式、原文片段。\n"
                 f"本维度的额外抽取提醒：{focus_guidance}\n\n"
                 f"本维度的输出结构要求：{output_contract}\n\n"
                 f"证据摘录：\n{excerpt_text}"
@@ -155,6 +157,7 @@ def build_cc_skill_messages(
     evidence_context: str,
     personality_markdown: str,
     memories_markdown: str,
+    analysis_markdown: str,
     target_role: str | None,
     analysis_context: str | None,
 ) -> list[dict[str, str]]:
@@ -166,9 +169,10 @@ def build_cc_skill_messages(
             "content": (
                 "你是 Claude Code 自定义 Skill 的编写器。\n"
                 "你只能输出一份可直接保存为 SKILL.md 的 Markdown 文档。\n"
-                "写之前先从给定的话题总结、证据语料、人格文档和记忆文档里提炼高置信行为规则，不要只把十维摘要改写一遍。\n"
+                "写之前先从给定的话题总结、证据语料、人格文档、记忆文档和十维分析参考里提炼高置信行为规则，不要只把摘要改写一遍。\n"
                 "不要输出 JSON，不要解释，不要使用代码块。\n"
-                "文档必须以 YAML frontmatter 开头（--- 包裹），至少包含 name 和 description 字段。"
+                "文档必须以 YAML frontmatter 开头（--- 包裹），至少包含 name 和 description 字段。\n"
+                "SKILL.md 正文必须偏向可执行的角色模拟手册，而不是空泛的人设介绍。"
             ),
         },
         {
@@ -189,12 +193,16 @@ def build_cc_skill_messages(
                 "- 不得包含保留词：claude、anthropic（大小写不敏感）。\n"
                 f"- 若无法可靠生成合法 name（例如中文为主），使用兜底：{fallback_slug}\n"
                 "3) description：一句话说明这个 Skill 做什么、什么时候用（例如“当需要以某角色语气写作/复盘/决策时”）。\n"
-                "4) 正文写成可执行规则，至少包含：角色扮演规则、回答工作流（SOP）、高置信领域、诚实边界。\n"
-                "5) 正文中必须用相对路径提示按需阅读：references/personality.md 与 references/memories.md。\n\n"
+                "4) 正文写成可执行规则，至少包含：角色扮演规则、回答工作流（SOP）、语气与断句规则、关系判断与回应优先级、few-shot 使用策略、检索/回忆策略、诚实边界。\n"
+                "5) 规则必须写细，至少覆盖：在什么情境下应该更锋利、克制、敷衍、展开、追问、回避、站队、安抚、反讽或留白。\n"
+                "6) 不要只写原则，要写触发条件、语言信号、默认优先级和例外条件。\n"
+                "7) 正文中必须用相对路径提示按需阅读：references/personality.md、references/memories.md、references/analysis.md。\n"
+                "8) 允许引用 few-shot 归纳，但不要整段照抄参考文件。\n\n"
                 f"证据语料包：\n{_evidence_block(evidence_context)}\n\n"
                 "附属文档（可引用但不要把全文照抄进正文）：\n"
                 f"[references/personality.md]\n{personality_markdown.strip()}\n\n"
                 f"[references/memories.md]\n{memories_markdown.strip()}\n\n"
+                f"[references/analysis.md]\n{analysis_markdown.strip()}\n\n"
                 f"十维分析摘要：\n{facet_dump}"
             ),
         },
@@ -269,6 +277,7 @@ def build_asset_messages(
             evidence_context=evidence_context,
             personality_markdown="",
             memories_markdown="",
+            analysis_markdown="",
             target_role=target_role,
             analysis_context=analysis_context,
         )
@@ -277,8 +286,9 @@ def build_asset_messages(
             "role": "system",
             "content": (
                 "你是一名赛博人类学家和用户画像分析专家。\n"
-                "请撰写一份鲜明、具体、但始终有证据支撑的用户剖析报告。\n"
-                "语气要犀利、具体、有人味，避免空话。\n"
+                "请撰写一份鲜明、具体、但始终有证据支撑的中文用户画像报告。\n"
+                "整份报告要明显偏向心理剖析、人格结构、压力反应和关系动力分析，避免空话。\n"
+                "报告允许锋利，但不允许脱离证据臆测具体人生事件。\n"
                 "只返回 JSON。"
             ),
         },
@@ -288,11 +298,23 @@ def build_asset_messages(
                 f"项目：{project_name}\n"
                 f"{context_block}\n"
                 "请生成一个 JSON 对象，必须包含这些键：\n"
-                "headline, executive_summary, reality_anchor, social_dynamics, interpersonal_mechanics,\n"
-                "subculture_refuge, core_values_and_triggers, linguistic_signature,\n"
-                "psychological_profile, contradictions, observer_conclusion。\n"
+                "headline, executive_summary, core_identity_and_drives, emotional_baseline,\n"
+                "attachment_and_boundaries, defense_and_coping, social_role_and_relationships,\n"
+                "four_type_personality, stress_response_and_risk, linguistic_markers,\n"
+                "contradictions, growth_and_prediction, observer_conclusion。\n"
                 "contradictions 必须是简短字符串列表。\n"
-                "每个字段都要把分析结论整理成可阅读、章节级的总结。\n\n"
+                "每个字段都要写成章节级中文总结，而不是短标签。\n"
+                "重点要求：\n"
+                "1. `core_identity_and_drives` 要写清这个人的内在驱动力、自我叙事和长期站位。\n"
+                "2. `emotional_baseline` 要写情绪底色、长期心理基线和常见内耗来源。\n"
+                "3. `attachment_and_boundaries` 要写依恋方式、亲密/防御距离感和边界策略。\n"
+                "4. `defense_and_coping` 要写典型防御机制、遇压后的自保动作和应对模式。\n"
+                "5. `social_role_and_relationships` 要写他在圈层、关系和互动中的角色位置。\n"
+                "6. `four_type_personality` 要给出四类型人格划分，按“驱动型 / 防御型 / 关系型 / 表达型”四个面向分别分析。\n"
+                "7. `stress_response_and_risk` 要写触发点、失衡风险、冲突升级方式和潜在代价。\n"
+                "8. `linguistic_markers` 要写语言习惯、句式、节奏、攻击性/克制感、用词审美。\n"
+                "9. `growth_and_prediction` 要写后续可能的收缩、成长或关系演化方向。\n"
+                "10. 全文必须使用中文输出。\n\n"
                 f"维度输入：\n{facet_dump}"
             ),
         },
