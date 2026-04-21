@@ -29,7 +29,7 @@
                 {% if latest_run and not telegram_is_parent_workspace %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.common.back_to_analysis }}</a>
                 {% endif %}
-                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.open_assets }}</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=cc_skill">{{ ui.open_assets }}</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
                 <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
                 <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
@@ -277,7 +277,7 @@
                                             <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
                                         {% endif %}
                                         {% if profile.latest_skill %}
-                                            <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=skill">{{ ui.profile_view_asset }}</a>
+                                            <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=cc_skill">{{ ui.profile_view_asset }}</a>
                                         {% endif %}
                                     </div>
                                 </article>
@@ -572,7 +572,7 @@
                                             {% endif %}
                                             <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_open }}</a>
                                             {% if profile.latest_skill %}
-                                                <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=skill">{{ ui.profile_view_asset }}</a>
+                                                <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=cc_skill">{{ ui.profile_view_asset }}</a>
                                             {% endif %}
                                             <form method="post" action="/projects/{{ profile.id }}/delete">
                                                 <button type="submit" class="danger-button" data-confirm="{{ ui.profile_delete_confirm }}">{{ ui.common.delete }}</button>

@@ -319,6 +319,11 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                 "progress_percent": 100,
                 "top_user_count": 2,
                 "weekly_candidate_count": 1,
+                "completed_week_count": 1,
+                "remaining_week_count": 0,
+                "current_topic_index": 1,
+                "current_topic_total": 1,
+                "current_topic_label": "Telegram mode discussion",
                 "trace_event_count": 2,
                 "trace_events": [
                     {
@@ -1354,7 +1359,18 @@ def test_telegram_analysis_page_renders_agent_center_shell(client, app):
                 "llm_response_text": "Final markdown response",
                 "retrieval_trace": {"tool_calls": [{"tool": "list_related_topics"}]},
             },
-            evidence_json=[],
+            evidence_json=[
+                {
+                    "message_id": 12,
+                    "sender_name": "TG Persona",
+                    "sent_at": "2025-01-01T12:00:00",
+                    "situation": "回应他人关于 Telegram 模式优先级的讨论",
+                    "expression": "先给明确判断，再补一条执行偏好",
+                    "quote": "我还是觉得 Telegram mode 要先做，后面再补别的。",
+                    "context_before": "Alice: 我们是不是应该先把 Telegram 群聊链路跑通？",
+                    "context_after": "Carol: 那就先把 SQL 和 agent 证据链收紧。",
+                }
+            ],
             conflicts_json=[],
             error_message=None,
         )
@@ -1411,7 +1427,18 @@ def test_telegram_analysis_summary_includes_concurrency_and_agent_tracks(client,
                     ]
                 },
             },
-            evidence_json=[],
+            evidence_json=[
+                {
+                    "message_id": 12,
+                    "sender_name": "TG Persona",
+                    "sent_at": "2025-01-01T12:00:00",
+                    "situation": "回应他人关于 Telegram 模式优先级的讨论",
+                    "expression": "先给明确判断，再补一条执行偏好",
+                    "quote": "我还是觉得 Telegram mode 要先做，后面再补别的。",
+                    "context_before": "Alice: 我们是不是应该先把 Telegram 群聊链路跑通？",
+                    "context_after": "Carol: 那就先把 SQL 和 agent 证据链收紧。",
+                }
+            ],
             conflicts_json=[],
             error_message=None,
         )
@@ -1546,7 +1573,18 @@ def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch
             status="completed",
             confidence=0.9,
             findings_json={"label": "Personality", "summary": "Calm and direct", "bullets": ["Uses concise replies"]},
-            evidence_json=[],
+            evidence_json=[
+                {
+                    "message_id": 12,
+                    "sender_name": "TG Persona",
+                    "sent_at": "2025-01-01T12:00:00",
+                    "situation": "回应他人关于 Telegram 模式优先级的讨论",
+                    "expression": "先给明确判断，再补一条执行偏好",
+                    "quote": "我还是觉得 Telegram mode 要先做，后面再补别的。",
+                    "context_before": "Alice: 我们是不是应该先把 Telegram 群聊链路跑通？",
+                    "context_after": "Carol: 那就先把 SQL 和 agent 证据链收紧。",
+                }
+            ],
             conflicts_json=[],
             error_message=None,
         )
@@ -1568,26 +1606,32 @@ def test_telegram_asset_generation_only_consumes_facets(client, app, monkeypatch
     assert documents["personality"]["markdown"].strip()
     assert documents["memories"]["markdown"].strip()
     assert documents["analysis"]["markdown"].startswith("# 十维分析摘要")
+    assert "上文：" in documents["analysis"]["markdown"]
+    assert "目标用户的表达方式：" in documents["analysis"]["markdown"]
+    assert "目标用户原话：" in documents["analysis"]["markdown"]
+    assert "下文：" in documents["analysis"]["markdown"]
     assert "TG Persona" in payload["markdown_text"]
     assert payload["prompt_text"] == payload["markdown_text"]
 
 
-def test_telegram_preprocess_page_renders_intermediate_and_final_tables(client, app, monkeypatch):
+def test_telegram_preprocess_page_renders_compact_hub(client, app, monkeypatch):
     project_id = _create_ingested_telegram_project(client, app, monkeypatch)
     run_id = _seed_preprocess_tables(app, project_id)
 
     response = client.get(f"/projects/{project_id}/preprocess", params={"run_id": run_id})
 
     assert response.status_code == 200
-    assert "Weekly Candidates" in response.text
-    assert "Top Users" in response.text
-    assert "Active Users" in response.text
-    assert "Workers" in response.text
+    assert "Topic Indicators" in response.text
+    assert "Input Tokens" in response.text
+    assert "Output Tokens" in response.text
     assert "Telegram mode discussion" in response.text
-    assert "Alice" in response.text or "Bob" in response.text
     assert "telegram_preprocess.js" in response.text
     assert 'id="telegram-preprocess-live-pill"' in response.text
-    assert 'id="telegram-preprocess-active-users"' in response.text
+    assert 'id="telegram-preprocess-topic-lamps"' in response.text
+    assert "Weekly Candidates" not in response.text
+    assert "Top Users" not in response.text
+    assert "Active Users" not in response.text
+    assert "Workers" not in response.text
 
 
 def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(client, app, monkeypatch):
@@ -1612,6 +1656,9 @@ def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(c
     assert "requested_weekly_concurrency" in payload
     assert "completed_week_count" in payload
     assert "remaining_week_count" in payload
+    assert payload["current_topic_index"] == 1
+    assert payload["current_topic_total"] == 1
+    assert payload["current_topic_label"] == "Telegram mode discussion"
 
 
 def test_telegram_preprocess_top_users_excludes_bot_accounts(client, app, monkeypatch):

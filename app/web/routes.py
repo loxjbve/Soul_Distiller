@@ -3031,6 +3031,11 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
     completed_week_count = int(summary.get("completed_week_count") or summary.get("topic_count") or run.topic_count or 0)
     total_week_count = int(summary.get("weekly_candidate_count") or summary.get("window_count") or run.window_count or 0)
     remaining_week_count = max(int(summary.get("remaining_week_count") or (total_week_count - completed_week_count)), 0)
+    current_topic_total = int(summary.get("current_topic_total") or total_week_count or 0)
+    current_topic_index = int(
+        summary.get("current_topic_index")
+        or (current_topic_total if str(run.status or "").lower() == "completed" and current_topic_total else 0)
+    )
     return {
         "id": run.id,
         "status": run.status,
@@ -3052,6 +3057,9 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
         "active_agents": int(summary.get("active_agents") or 0),
         "completed_week_count": completed_week_count,
         "remaining_week_count": remaining_week_count,
+        "current_topic_index": max(current_topic_index, 0),
+        "current_topic_total": max(current_topic_total, 0),
+        "current_topic_label": str(summary.get("current_topic_label") or "").strip(),
         "resume_available": bool(summary.get("resume_available")),
         "resume_count": int(summary.get("resume_count") or 0),
         "error_message": run.error_message,

@@ -18,7 +18,7 @@
             <p>{{ ui.hero_note }}</p>
             <div class="page-banner__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
-                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=skill">{{ ui.open_assets }}</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=cc_skill">{{ ui.open_assets }}</a>
                 {% if run and run.status in ["completed", "partial_failed"] %}
                     <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">{{ ui.export_zip }}</a>
                 {% endif %}

@@ -181,6 +181,7 @@ class TelegramPreprocessWorker:
                 "window_count": 0,
                 "top_user_count": 0,
                 "weekly_candidate_count": 0,
+                **self._empty_topic_progress(),
             },
         )
 
@@ -221,6 +222,7 @@ class TelegramPreprocessWorker:
                 "window_count": len(weekly_candidates),
                 "top_user_count": len(top_users),
                 "weekly_candidate_count": len(weekly_candidates),
+                **self._topic_progress_payload(weekly_candidates, []),
             },
         )
 
@@ -240,6 +242,7 @@ class TelegramPreprocessWorker:
                 "weekly_candidate_count": len(weekly_candidates),
                 "weekly_summary_concurrency": self.weekly_summary_concurrency,
                 "usage": dict(self.usage_totals),
+                **self._topic_progress_payload(weekly_candidates, topics, completed=True),
             },
         )
 
@@ -251,6 +254,7 @@ class TelegramPreprocessWorker:
             "topic_count": len(topics),
             "topics": topics,
             "usage": dict(self.usage_totals),
+            **self._topic_progress_payload(weekly_candidates, topics, completed=True),
         }
 
     def _restore_usage_totals(self, run: TelegramPreprocessRun) -> None:
@@ -314,6 +318,71 @@ class TelegramPreprocessWorker:
         if week_key:
             return week_key
         return str(payload.get("topic_index") or "")
+
+    @staticmethod
+    def _empty_topic_progress() -> dict[str, Any]:
+        return {
+            "current_topic_index": 0,
+            "current_topic_total": 0,
+            "current_topic_label": "",
+        }
+
+    def _topic_progress_payload(
+        self,
+        candidates: list[TelegramPreprocessWeeklyTopicCandidate],
+        completed_topics: list[dict[str, Any]],
+        *,
+        current_candidate: TelegramPreprocessWeeklyTopicCandidate | None = None,
+        completed: bool = False,
+    ) -> dict[str, Any]:
+        total = len(candidates)
+        if total <= 0:
+            return self._empty_topic_progress()
+
+        if completed:
+            last_topic = completed_topics[-1] if completed_topics else {}
+            return {
+                "current_topic_index": total,
+                "current_topic_total": total,
+                "current_topic_label": str(last_topic.get("title") or "").strip(),
+            }
+
+        completed_keys = {self._topic_checkpoint_key(item) for item in completed_topics}
+        topic_index_by_candidate = {
+            candidate.id: index
+            for index, candidate in enumerate(candidates, start=1)
+        }
+
+        next_candidate = current_candidate
+        if next_candidate and (
+            next_candidate.id in completed_keys
+            or next_candidate.week_key in completed_keys
+        ):
+            next_candidate = None
+
+        if not next_candidate:
+            for candidate in candidates:
+                if candidate.id in completed_keys or candidate.week_key in completed_keys:
+                    continue
+                next_candidate = candidate
+                break
+
+        if not next_candidate:
+            return {
+                "current_topic_index": total,
+                "current_topic_total": total,
+                "current_topic_label": str((completed_topics[-1] if completed_topics else {}).get("title") or "").strip(),
+            }
+
+        current_index = topic_index_by_candidate.get(
+            next_candidate.id,
+            min(len(completed_topics) + 1, total),
+        )
+        return {
+            "current_topic_index": int(current_index),
+            "current_topic_total": total,
+            "current_topic_label": str(next_candidate.week_key or "").strip() or f"Topic {current_index}",
+        }
 
     def _upsert_topic_payload(
         self,
@@ -714,6 +783,7 @@ class TelegramPreprocessWorker:
                     "remaining_week_count": len(remaining_candidates),
                     "weekly_candidate_count": len(candidates),
                     "usage": dict(self.usage_totals),
+                    **self._topic_progress_payload(candidates, existing_topics),
                 },
             )
         if not remaining_candidates:
@@ -782,6 +852,11 @@ class TelegramPreprocessWorker:
                     "weekly_summary_concurrency": self.weekly_summary_concurrency,
                     "active_agents": min(len(remaining_candidates), self.weekly_summary_concurrency),
                     "usage": dict(self.usage_totals),
+                    **self._topic_progress_payload(
+                        candidates,
+                        topics,
+                        current_candidate=remaining_candidates[0] if remaining_candidates else None,
+                    ),
                 },
             )
             for future in as_completed(future_map):
@@ -822,6 +897,7 @@ class TelegramPreprocessWorker:
                             self.weekly_summary_concurrency,
                         ),
                         "usage": dict(self.usage_totals),
+                        **self._topic_progress_payload(candidates, topics),
                     },
                 )
         self._trace(
@@ -2943,6 +3019,9 @@ class TelegramPreprocessManager:
                         "top_user_count": 0,
                         "weekly_candidate_count": 0,
                         "topic_count": 0,
+                        "current_topic_index": 0,
+                        "current_topic_total": 0,
+                        "current_topic_label": "",
                         "weekly_summary_concurrency": normalized_concurrency,
                         "active_agents": 0,
                         "completed_week_count": 0,
@@ -3123,6 +3202,9 @@ class TelegramPreprocessManager:
                         "bootstrap": result.get("bootstrap") or {},
                         "usage": usage,
                         "resume_available": False,
+                        "current_topic_index": int(result.get("current_topic_index") or 0),
+                        "current_topic_total": int(result.get("current_topic_total") or 0),
+                        "current_topic_label": str(result.get("current_topic_label") or "").strip(),
                     }
                     live_run.summary_json = self._touch_summary(live_run.summary_json or {})
                     session.commit()

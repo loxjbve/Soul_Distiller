@@ -46,8 +46,8 @@
     }
 
     .page-project--telegram-parent .page-content {
-        grid-template-columns: minmax(270px, 0.72fr) minmax(0, 1.54fr) minmax(280px, 0.78fr);
-        grid-template-rows: minmax(0, 1.26fr) minmax(180px, 0.74fr);
+        grid-template-columns: minmax(220px, 0.54fr) minmax(0, 1.82fr) minmax(220px, 0.68fr);
+        grid-template-rows: minmax(0, 1.42fr) minmax(150px, 0.58fr);
         grid-template-areas:
             "primary primary rail"
             "upload documents rail";
@@ -68,15 +68,16 @@
 
     .page-project--telegram-parent .persona-studio-shell,
     .page-project--telegram-child .telegram-bind-needed-form {
-        grid-template-columns: minmax(0, 1.6fr) minmax(320px, 0.84fr);
+        grid-template-columns: minmax(0, 1.62fr) minmax(320px, 0.92fr);
         grid-auto-rows: minmax(0, auto);
     }
 
     .page-project--telegram-parent .persona-studio-shell {
         grid-template-areas:
+            "target summary"
             "target context"
             "target launch";
-        grid-template-rows: minmax(200px, 1fr) auto;
+        grid-template-rows: auto minmax(0, 1fr) auto;
     }
 
     .page-project--telegram-child .telegram-bind-needed-form {
@@ -96,7 +97,7 @@
     }
 
     .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child {
-        display: none;
+        grid-area: summary;
     }
 
     .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :last-child {
@@ -144,12 +145,12 @@
         flex: 1 1 auto;
         min-height: 0;
         display: grid;
-        grid-template-columns: minmax(0, 1.38fr) minmax(320px, 0.92fr);
+        grid-template-columns: minmax(0, 1.36fr) minmax(320px, 0.94fr);
         grid-template-rows: minmax(0, 1fr) auto;
         grid-template-areas:
             "target context"
             "target launch";
-        gap: var(--space-4);
+        gap: 12px;
         overflow: hidden;
     }
 
@@ -165,16 +166,16 @@
     .persona-stage-card {
         position: relative;
         min-height: 0;
-        padding: 20px;
-        border-radius: var(--radius-md);
+        padding: 14px;
+        border-radius: 18px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
             rgba(11, 14, 24, 0.84);
         display: grid;
         align-content: start;
-        gap: var(--space-3);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 38px rgba(3, 8, 20, 0.24);
+        gap: 10px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 28px rgba(3, 8, 20, 0.18);
         overflow: hidden;
     }
 
@@ -215,8 +216,8 @@
     .page-project--telegram-parent .persona-stage-card--launch,
     .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context,
     .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--launch {
-        padding: 16px 18px;
-        gap: var(--space-2);
+        padding: 14px;
+        gap: 8px;
         overflow: auto;
         overscroll-behavior: contain;
     }
@@ -234,7 +235,6 @@
     }
 
     .page-project--telegram-parent .persona-stage-card--launch .section-note,
-    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child p,
     .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child p {
         display: none;
     }
@@ -246,13 +246,13 @@
 
     .page-project--telegram-parent .persona-stage-card--context textarea,
     .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context textarea {
-        min-height: 76px;
+        min-height: 112px;
     }
 
     .persona-step__head {
         display: flex;
         align-items: flex-start;
-        gap: var(--space-3);
+        gap: 10px;
     }
 
     .persona-step__head > div:last-child {
@@ -270,22 +270,22 @@
     .persona-step__index {
         display: grid;
         place-items: center;
-        width: 36px;
-        height: 36px;
-        border-radius: 12px;
+        width: 28px;
+        height: 28px;
+        border-radius: 10px;
         border: 1px solid rgba(97, 168, 255, 0.28);
         background:
             linear-gradient(180deg, rgba(97, 168, 255, 0.22), rgba(97, 168, 255, 0.08)),
             rgba(255, 255, 255, 0.04);
         color: var(--text-strong);
-        font: 700 0.8rem/1 var(--font-mono);
-        box-shadow: 0 0 16px rgba(97, 168, 255, 0.12);
+        font: 700 0.72rem/1 var(--font-mono);
+        box-shadow: none;
     }
 
     .persona-top-user-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: var(--space-3);
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 8px;
         align-content: start;
     }
 
@@ -293,35 +293,43 @@
         position: relative;
         display: flex;
         flex-direction: column;
-        gap: var(--space-2);
+        gap: 4px;
         align-items: flex-start;
-        justify-content: space-between;
+        justify-content: flex-start;
         text-align: left;
         width: 100%;
-        min-height: 132px;
-        padding: 18px;
-        border-radius: var(--radius-sm);
+        min-height: 78px;
+        padding: 10px 12px;
+        border-radius: 14px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
             rgba(14, 18, 30, 0.82);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+        box-shadow: none;
     }
 
     .persona-top-user-card:hover {
-        transform: translateY(-2px);
         border-color: rgba(97, 168, 255, 0.22);
-        box-shadow: 0 14px 28px rgba(7, 11, 22, 0.28), 0 0 0 1px rgba(97, 168, 255, 0.08);
+        background: rgba(97, 168, 255, 0.08);
     }
 
     .persona-top-user-card strong {
-        font-size: 1rem;
+        width: 100%;
+        font-size: 0.9rem;
         color: var(--text-strong);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .persona-top-user-card small {
         color: var(--text-secondary);
-        line-height: 1.55;
+        width: 100%;
+        font-size: 0.76rem;
+        line-height: 1.3;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .persona-top-user-card.is-selected {
@@ -329,10 +337,7 @@
         background:
             linear-gradient(135deg, rgba(97, 168, 255, 0.18), rgba(141, 107, 255, 0.12)),
             rgba(16, 20, 34, 0.88);
-        box-shadow:
-            inset 0 0 0 1px rgba(97, 168, 255, 0.14),
-            0 18px 34px rgba(12, 18, 36, 0.3),
-            0 0 24px rgba(97, 168, 255, 0.18);
+        box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.14);
     }
 
     .persona-top-user-card__rank {
@@ -345,15 +350,15 @@
     .telegram-binding-card,
     .persona-rail-card {
         position: relative;
-        padding: 18px;
-        border-radius: var(--radius-md);
+        padding: 14px;
+        border-radius: 18px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
             rgba(11, 14, 24, 0.82);
         display: flex;
         flex-direction: column;
-        gap: var(--space-2);
+        gap: 8px;
         overflow: hidden;
     }
 
@@ -370,6 +375,62 @@
     .persona-rail-status {
         display: grid;
         gap: var(--space-3);
+    }
+
+    .page-project--telegram-parent .project-panel--primary .panel-header,
+    .page-project--telegram-child .project-panel--primary .panel-header {
+        padding-bottom: 10px;
+    }
+
+    .page-project--telegram-parent .project-panel--primary .panel-body,
+    .page-project--telegram-child .project-panel--primary .panel-body {
+        padding: 12px 14px 14px;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--target,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target {
+        padding: 14px;
+        gap: 10px;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--target .panel-scroll,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target .panel-scroll {
+        padding-right: 4px;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--target > label,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target > label {
+        display: grid;
+        grid-template-columns: 120px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--context > label,
+    .page-project--telegram-parent .persona-stage-card--launch > label,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--context > label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    .page-project--telegram-parent .persona-stage-card--launch .button-row,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--launch .button-row {
+        margin-top: auto;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child p,
+    .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child p {
+        display: block;
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.8rem;
+        line-height: 1.4;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child strong,
+    .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child strong {
+        font-size: 0.96rem;
     }
 
     .persona-profile-list {
@@ -758,8 +819,8 @@
         }
 
         .page-project--telegram-parent .page-content {
-            grid-template-columns: minmax(240px, 0.62fr) minmax(0, 1.48fr) minmax(260px, 0.74fr);
-            grid-template-rows: minmax(0, 1.22fr) minmax(180px, 0.78fr);
+            grid-template-columns: minmax(220px, 0.54fr) minmax(0, 1.56fr) minmax(240px, 0.7fr);
+            grid-template-rows: minmax(0, 1.34fr) minmax(160px, 0.66fr);
             grid-template-areas:
                 "primary primary rail"
                 "upload documents rail";
@@ -827,6 +888,22 @@
                 "launch";
             overflow: auto;
             padding-right: 6px;
+        }
+
+        .page-project--telegram-parent .persona-studio-shell,
+        .page-project--telegram-child .telegram-bind-needed-form {
+            grid-template-columns: 1fr;
+            grid-template-areas:
+                "summary"
+                "target"
+                "context"
+                "launch";
+            grid-template-rows: auto minmax(300px, 1fr) auto auto;
+        }
+
+        .page-project--telegram-parent .persona-stage-card--target > label,
+        .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target > label {
+            grid-template-columns: 1fr;
         }
 
         .persona-stage-card--launch {

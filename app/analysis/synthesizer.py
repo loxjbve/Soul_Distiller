@@ -292,6 +292,11 @@ class AssetSynthesizer:
                     "situation": self._truncate_text(item.get("situation") or item.get("reason"), 120),
                     "expression": self._truncate_text(item.get("expression"), 80),
                     "quote": quote,
+                    "context_before": self._truncate_text(item.get("context_before"), 220),
+                    "context_after": self._truncate_text(item.get("context_after"), 220),
+                    "sender_name": self._truncate_text(item.get("sender_name"), 60),
+                    "sent_at": self._truncate_text(item.get("sent_at"), 60),
+                    "message_id": item.get("message_id"),
                 }
             )
         return {
@@ -399,7 +404,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
-        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
+        analysis_markdown = self._render_analysis_reference_markdown_v2(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -556,7 +561,7 @@ class AssetSynthesizer:
 
         personality_markdown = ""
         memories_markdown = ""
-        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
+        analysis_markdown = self._render_analysis_reference_markdown_v2(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -1066,7 +1071,7 @@ class AssetSynthesizer:
                         [str(item) for item in skill_payload["memories"]],
                         fallback_summary=str(summary_by_key.get("life_timeline", {}).get("summary", "")),
                     ),
-                    "analysis_markdown": self._render_analysis_reference_markdown(self._build_facet_dump(facets)),
+                    "analysis_markdown": self._render_analysis_reference_markdown_v2(self._build_facet_dump(facets)),
                 },
                 project_name=project.name,
                 project_id=project.id,
@@ -1155,6 +1160,61 @@ class AssetSynthesizer:
                 safe_body,
             ]
         ).strip()
+
+    def _render_analysis_reference_markdown_v2(self, facet_dump: str) -> str:
+        facets = json.loads(facet_dump or "[]")
+        if not isinstance(facets, list):
+            return "# 十维分析摘要\n\n当前没有可用的十维分析文本。"
+        lines = [
+            "# 十维分析摘要",
+            "",
+            "以下内容汇总自当前十维分析结果，供 SKILL.md 在写规则、few-shot 和边界时引用。",
+            "",
+        ]
+        for facet in facets:
+            if not isinstance(facet, dict):
+                continue
+            label = str(facet.get("label") or facet.get("facet_key") or "Facet").strip()
+            summary = str(facet.get("summary") or "").strip()
+            bullets = [str(item).strip() for item in (facet.get("bullets") or []) if str(item).strip()]
+            fewshots = [item for item in (facet.get("fewshots") or []) if isinstance(item, dict)]
+            lines.append(f"## {label}")
+            if summary:
+                lines.extend([summary, ""])
+            if bullets:
+                lines.extend(f"- {item}" for item in bullets[:6])
+                lines.append("")
+            if fewshots:
+                lines.append("### Few-Shot 片段")
+                for index, item in enumerate(fewshots[:3], start=1):
+                    situation = str(item.get("situation") or "").strip()
+                    expression = str(item.get("expression") or "").strip()
+                    quote = str(item.get("quote") or "").strip()
+                    context_before = str(item.get("context_before") or "").strip()
+                    context_after = str(item.get("context_after") or "").strip()
+                    sender_name = str(item.get("sender_name") or "").strip()
+                    sent_at = str(item.get("sent_at") or "").strip()
+                    message_id = str(item.get("message_id") or "").strip()
+                    lines.append(f"{index}. 情境：{situation or '未标注'}")
+                    if context_before:
+                        lines.append(f"   上文：{context_before}")
+                    if expression:
+                        lines.append(f"   目标用户的表达方式：{expression}")
+                    if quote:
+                        lines.append(f"   目标用户原话：{quote}")
+                    if context_after:
+                        lines.append(f"   下文：{context_after}")
+                    meta_parts = []
+                    if sender_name:
+                        meta_parts.append(f"发送者：{sender_name}")
+                    if sent_at:
+                        meta_parts.append(f"时间：{sent_at}")
+                    if message_id:
+                        meta_parts.append(f"message_id：{message_id}")
+                    if meta_parts:
+                        lines.append(f"   标注：{'；'.join(meta_parts)}")
+                    lines.append("")
+        return "\n".join(lines).strip() or "# 十维分析摘要\n\n当前没有可用的十维分析文本。"
 
     def _render_analysis_reference_markdown(self, facet_dump: str) -> str:
         facets = json.loads(facet_dump or "[]")

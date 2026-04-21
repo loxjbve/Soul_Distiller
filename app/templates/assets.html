@@ -57,7 +57,7 @@
                     <button type="submit" class="primary-button" id="generate-btn">
                         {{ ui.regenerate if draft else ui.generate }} {{ asset_label }}
                     </button>
-                    <p class="helper-text">流式内容会直接进入草稿编辑区，生成完成前编辑器保持锁定。</p>
+                    <p class="helper-text">Streaming content writes directly into the draft editor, and editing stays locked until generation completes.</p>
                 </form>
 
                 <div id="asset-generation-shell" class="asset-generation-shell" hidden>
@@ -93,92 +93,94 @@
                     <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
                     <input type="hidden" name="markdown_text" id="asset-markdown-text" value="{{ draft.markdown_text if draft else '' }}">
 
-                    {% if asset_kind == "cc_skill" %}
-                        {% set editor_keys = ["skill", "personality", "memories", "analysis"] %}
-                        <div class="asset-editor-shell">
-                            <div class="asset-editor-tabs" role="tablist" aria-label="Draft pages">
-                                {% for key in editor_keys %}
-                                    <button
-                                        type="button"
-                                        class="asset-editor-tab {% if loop.first %}is-active{% endif %}"
-                                        data-editor-tab-trigger="{{ key }}"
-                                        role="tab"
-                                        aria-selected="{{ 'true' if loop.first else 'false' }}"
-                                    >
-                                        {{ draft_documents.get(key, {}).get("filename", key) }}
-                                    </button>
-                                {% endfor %}
-                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="json" role="tab" aria-selected="false">{{ ui.field_json }}</button>
-                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="prompt" role="tab" aria-selected="false">{{ ui.field_prompt }}</button>
-                                <button type="button" class="asset-editor-tab" data-editor-tab-trigger="notes" role="tab" aria-selected="false">{{ ui.field_notes }}</button>
-                            </div>
+                    <div class="asset-draft-scroll panel-scroll" data-panel-scroll>
+                        {% if asset_kind == "cc_skill" %}
+                            {% set editor_keys = ["skill", "personality", "memories", "analysis"] %}
+                            <div class="asset-editor-shell">
+                                <div class="asset-editor-tabs" role="tablist" aria-label="Draft pages">
+                                    {% for key in editor_keys %}
+                                        <button
+                                            type="button"
+                                            class="asset-editor-tab {% if loop.first %}is-active{% endif %}"
+                                            data-editor-tab-trigger="{{ key }}"
+                                            role="tab"
+                                            aria-selected="{{ 'true' if loop.first else 'false' }}"
+                                        >
+                                            {{ draft_documents.get(key, {}).get("filename", key) }}
+                                        </button>
+                                    {% endfor %}
+                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="json" role="tab" aria-selected="false">{{ ui.field_json }}</button>
+                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="prompt" role="tab" aria-selected="false">{{ ui.field_prompt }}</button>
+                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="notes" role="tab" aria-selected="false">{{ ui.field_notes }}</button>
+                                </div>
 
-                            <div class="asset-editor-pages">
-                                {% for key in editor_keys %}
-                                    {% set document = draft_documents.get(key, {}) %}
-                                    <section class="asset-editor-page {% if loop.first %}is-active{% endif %}" data-editor-page="{{ key }}" role="tabpanel">
-                                        <div class="asset-editor-page__head">
-                                            <div>
-                                                <p class="eyebrow">Document</p>
-                                                <h3>{{ document.get("filename", key) }}</h3>
+                                <div class="asset-editor-pages">
+                                    {% for key in editor_keys %}
+                                        {% set document = draft_documents.get(key, {}) %}
+                                        <section class="asset-editor-page {% if loop.first %}is-active{% endif %}" data-editor-page="{{ key }}" role="tabpanel">
+                                            <div class="asset-editor-page__head">
+                                                <div>
+                                                    <p class="eyebrow">Document</p>
+                                                    <h3>{{ document.get("filename", key) }}</h3>
+                                                </div>
+                                                <span class="helper-text">Streaming output lands here first.</span>
                                             </div>
-                                            <span class="helper-text">生成中会直接写入这里。</span>
-                                        </div>
-                                        <textarea
-                                            rows="22"
-                                            class="asset-editor-textarea"
-                                            data-document-editor="{{ key }}"
-                                        >{{ document.get("markdown", "") }}</textarea>
+                                            <textarea
+                                                rows="22"
+                                                class="asset-editor-textarea"
+                                                data-document-editor="{{ key }}"
+                                            >{{ document.get("markdown", "") }}</textarea>
+                                        </section>
+                                    {% endfor %}
+
+                                    <section class="asset-editor-page" data-editor-page="json" role="tabpanel">
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_json }}</span>
+                                            <textarea name="json_payload" rows="22" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
+                                        </label>
                                     </section>
-                                {% endfor %}
 
-                                <section class="asset-editor-page" data-editor-page="json" role="tabpanel">
-                                    <label class="asset-editor-field">
-                                        <span>{{ ui.field_json }}</span>
-                                        <textarea name="json_payload" rows="22" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
-                                    </label>
-                                </section>
+                                    <section class="asset-editor-page" data-editor-page="prompt" role="tabpanel">
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_prompt }}</span>
+                                            <textarea name="prompt_text" rows="22" id="asset-prompt-text" class="asset-editor-textarea" readonly>{{ draft.system_prompt if draft else "" }}</textarea>
+                                            <small class="helper-text">Prompt stays read-only until generation finishes.</small>
+                                        </label>
+                                    </section>
 
-                                <section class="asset-editor-page" data-editor-page="prompt" role="tabpanel">
-                                    <label class="asset-editor-field">
-                                        <span>{{ ui.field_prompt }}</span>
-                                        <textarea name="prompt_text" rows="22" id="asset-prompt-text" class="asset-editor-textarea" readonly>{{ draft.system_prompt if draft else "" }}</textarea>
-                                        <small class="helper-text">Prompt 由文档集自动推导，生成完成前保持只读。</small>
-                                    </label>
-                                </section>
-
-                                <section class="asset-editor-page" data-editor-page="notes" role="tabpanel">
-                                    <label class="asset-editor-field">
-                                        <span>{{ ui.field_notes }}</span>
-                                        <textarea name="notes" rows="10" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
-                                    </label>
-                                </section>
+                                    <section class="asset-editor-page" data-editor-page="notes" role="tabpanel">
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_notes }}</span>
+                                            <textarea name="notes" rows="10" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
+                                        </label>
+                                    </section>
+                                </div>
                             </div>
-                        </div>
-                    {% else %}
-                        <label>
-                            <span>{{ ui.field_markdown }}</span>
-                            <textarea name="markdown_text_display" rows="20" id="asset-single-markdown" class="asset-editor-textarea">{{ draft.markdown_text if draft else "" }}</textarea>
-                        </label>
-                        <label>
-                            <span>{{ ui.field_json }}</span>
-                            <textarea name="json_payload" rows="14" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
-                        </label>
-                        <label>
-                            <span>{{ ui.field_prompt }}</span>
-                            <textarea name="prompt_text" rows="12" id="asset-prompt-text" class="asset-editor-textarea">{{ draft.system_prompt if draft else "" }}</textarea>
-                        </label>
-                        <label>
-                            <span>{{ ui.field_notes }}</span>
-                            <textarea name="notes" rows="8" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
-                        </label>
-                    {% endif %}
+                        {% else %}
+                            <label class="asset-editor-field">
+                                <span>{{ ui.field_markdown }}</span>
+                                <textarea name="markdown_text_display" rows="20" id="asset-single-markdown" class="asset-editor-textarea">{{ draft.markdown_text if draft else "" }}</textarea>
+                            </label>
+                            <label class="asset-editor-field">
+                                <span>{{ ui.field_json }}</span>
+                                <textarea name="json_payload" rows="14" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
+                            </label>
+                            <label class="asset-editor-field">
+                                <span>{{ ui.field_prompt }}</span>
+                                <textarea name="prompt_text" rows="12" id="asset-prompt-text" class="asset-editor-textarea">{{ draft.system_prompt if draft else "" }}</textarea>
+                            </label>
+                            <label class="asset-editor-field">
+                                <span>{{ ui.field_notes }}</span>
+                                <textarea name="notes" rows="8" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
+                            </label>
+                        {% endif %}
 
-                    <div class="empty-panel asset-draft-placeholder" data-empty-state {% if draft %}hidden{% endif %}>
-                        <strong>{{ ui.empty_draft }}</strong>
+                        <div class="empty-panel asset-draft-placeholder" data-empty-state {% if draft %}hidden{% endif %}>
+                            <strong>{{ ui.empty_draft }}</strong>
+                        </div>
                     </div>
 
-                    <div class="button-row">
+                    <div class="asset-draft-actions">
                         <button type="button" class="primary-button" id="asset-save-btn" {% if not draft %}disabled{% endif %}>{{ ui.save_draft }}</button>
                         <button type="button" class="ghost-button" id="asset-publish-btn" {% if not draft %}disabled{% endif %}>{{ ui.publish }}</button>
                     </div>
@@ -197,7 +199,7 @@
                 <div class="panel-body panel-body--tight">
                     <div id="asset-document-status" class="document-board panel-scroll" data-documents-board data-panel-scroll>
                         <div class="empty-panel">
-                            <strong>生成或加载草稿后，这里会展示当前引用文档。</strong>
+                            <strong>Reference documents for the current draft appear here after generation or load.</strong>
                         </div>
                     </div>
                 </div>
@@ -221,7 +223,7 @@
                                     </div>
                                     <span class="status-chip tone-ready">{{ asset_label }}</span>
                                     <div class="button-row">
-                                        <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/download">下载版本</a>
+                                        <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/download">Download</a>
                                         {% if asset_kind == "cc_skill" %}
                                             <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/skill">SKILL.md</a>
                                             <a class="ghost-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/personality">personality</a>
@@ -230,7 +232,7 @@
                                             <a class="primary-button" href="/api/projects/{{ project.id }}/asset-versions/{{ version.id }}/exports/bundle">{{ ui.export_bundle }}</a>
                                         {% endif %}
                                         <form method="post" action="/projects/{{ project.id }}/asset-versions/{{ version.id }}/delete">
-                                            <button type="submit" class="ghost-button" data-confirm="确定删除这个资产版本吗？">删除版本</button>
+                                            <button type="submit" class="ghost-button" data-confirm="确定删除这个资产版本吗？">Delete</button>
                                         </form>
                                     </div>
                                 </article>

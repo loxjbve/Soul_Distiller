@@ -112,10 +112,21 @@ def test_telegram_persona_studio_scroller_stays_interactive(page, client, app, m
     )
 
     metrics = scrollable.evaluate(
-        "(node) => ({ client: node.clientHeight, scroll: node.scrollHeight, topBefore: node.scrollTop })"
+        """
+        (node) => {
+            const firstCard = node.querySelector('[data-top-user-card]');
+            return {
+                client: node.clientHeight,
+                scroll: node.scrollHeight,
+                topBefore: node.scrollTop,
+                firstCardHeight: firstCard ? firstCard.getBoundingClientRect().height : 0,
+            };
+        }
+        """
     )
     assert metrics["client"] > 120
     assert metrics["scroll"] > metrics["client"]
+    assert 60 <= metrics["firstCardHeight"] <= 96
 
     top_after = scrollable.evaluate(
         "(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }"
@@ -125,6 +136,7 @@ def test_telegram_persona_studio_scroller_stays_interactive(page, client, app, m
 
     page.locator("[data-top-user-card]").first.click()
     assert page.locator("[data-target-submit]").is_enabled()
+    assert "Bob" in page.locator("[data-target-summary]").inner_text()
 
 
 @pytest.mark.frontend
@@ -202,37 +214,33 @@ def test_telegram_preprocess_layout_stays_contained_in_fixed_shell(page, client,
     page.evaluate(
         """
         () => {
-            const duplicateCards = (selector, count) => {
-                const board = document.querySelector(selector);
-                const template = board?.querySelector('.document-card');
-                if (!board || !template) return;
-                for (let index = 0; index < count; index += 1) {
-                    const clone = template.cloneNode(true);
-                    clone.querySelectorAll('strong').forEach((node) => {
-                        node.textContent = `${node.textContent} ${index}`;
-                    });
-                    board.appendChild(clone);
-                }
-            };
+            const board = document.querySelector('#telegram-preprocess-topic-lamps');
+            const template = board?.querySelector('.telegram-topic-lamp');
+            if (!board || !template) return;
+            for (let index = 0; index < 28; index += 1) {
+                const clone = template.cloneNode(true);
+                clone.classList.remove('status-completed', 'status-running', 'status-failed');
+                clone.classList.add(index % 4 === 0 ? 'status-running' : 'status-queued');
+                const title = clone.querySelector('strong');
+                const meta = clone.querySelector('small');
+                const order = clone.querySelector('.telegram-topic-lamp__index');
+                if (title) title.textContent = `Synthetic Topic ${index + 2}`;
+                if (meta) meta.textContent = `2025-W${String(index + 2).padStart(2, '0')}`;
+                if (order) order.textContent = String(index + 2).padStart(2, '0');
+                board.appendChild(clone);
+            }
 
-            duplicateCards('#telegram-preprocess-weekly-candidates', 12);
-            duplicateCards('#telegram-preprocess-top-users', 12);
-            duplicateCards('#telegram-preprocess-topics', 10);
-
-            const traceList = document.querySelector('#telegram-preprocess-trace-list');
-            if (traceList) {
-                for (let index = 0; index < 18; index += 1) {
-                    const bubble = document.createElement('div');
-                    bubble.className = 'bubble-context-row';
-                    bubble.innerHTML = `
-                        <div class="bubble bubble--context bubble--context-processing">
-                            <span class="bubble__dot" aria-hidden="true"></span>
-                            <span>Synthetic trace ${index}</span>
-                            <small>weekly_topic_agent</small>
-                        </div>
-                    `;
-                    traceList.appendChild(bubble);
-                }
+            const progressShell = document.querySelector('.telegram-preprocess-progress-spotlight');
+            if (progressShell) {
+                progressShell.style.minHeight = '180px';
+            }
+            const metrics = document.querySelector('.telegram-preprocess-metrics');
+            if (metrics) {
+                metrics.style.minHeight = '140px';
+            }
+            const topicBoard = document.querySelector('.telegram-preprocess-topic-board');
+            if (topicBoard) {
+                topicBoard.style.minHeight = '420px';
             }
         }
         """
@@ -264,22 +272,125 @@ def test_telegram_preprocess_layout_stays_contained_in_fixed_shell(page, client,
 
             return {
                 content: rect('.page-content'),
-                pulse: rect('.telegram-preprocess-panel--pulse'),
-                status: rect('.telegram-preprocess-panel--status'),
-                trace: rect('.telegram-preprocess-panel--trace'),
-                data: rect('.telegram-preprocess-panel--data'),
-                weeklyBoard: scrollState('#telegram-preprocess-weekly-candidates'),
+                hub: rect('.telegram-preprocess-hub'),
+                spotlight: rect('.telegram-preprocess-progress-spotlight'),
+                board: rect('.telegram-preprocess-topic-board'),
+                lamps: scrollState('#telegram-preprocess-topic-lamps'),
+                hasLegacyPanels: Boolean(
+                    document.querySelector('.telegram-preprocess-panel--trace')
+                    || document.querySelector('.telegram-preprocess-panel--data')
+                    || document.querySelector('#telegram-preprocess-weekly-candidates')
+                ),
             };
         }
         """
     )
 
-    assert metrics["pulse"]["height"] > 120
-    assert metrics["status"]["height"] > 120
-    assert metrics["trace"]["bottom"] <= metrics["content"]["bottom"] + 1
-    assert metrics["data"]["bottom"] <= metrics["content"]["bottom"] + 1
-    assert metrics["weeklyBoard"]["scrollHeight"] > metrics["weeklyBoard"]["clientHeight"]
+    assert metrics["hub"]["bottom"] <= metrics["content"]["bottom"] + 1
+    assert metrics["spotlight"]["height"] > 120
+    assert metrics["board"]["height"] > 220
+    assert metrics["lamps"]["scrollHeight"] > metrics["lamps"]["clientHeight"]
+    assert metrics["hasLegacyPanels"] is False
 
-    weekly_board = page.locator("#telegram-preprocess-weekly-candidates")
-    top_after = weekly_board.evaluate("(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }")
-    assert top_after > metrics["weeklyBoard"]["topBefore"]
+    lamp_board = page.locator("#telegram-preprocess-topic-lamps")
+    top_after = lamp_board.evaluate("(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }")
+    assert top_after > metrics["lamps"]["topBefore"]
+
+
+@pytest.mark.frontend
+def test_profile_report_assets_page_keeps_publish_clickable_in_fixed_shell(page, client, app, live_server):
+    project_payload = client.post("/api/projects", json={"name": "Frontend Assets", "description": "profile shell"}).json()
+    project_id = project_payload["id"]
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id,
+            status="completed",
+            summary_json={
+                "target_role": "Frontend Assets 本人",
+                "analysis_context": "profile report shell",
+            },
+        )
+        repository.upsert_facet(
+            session,
+            run.id,
+            "personality",
+            status="completed",
+            confidence=0.86,
+            findings_json={
+                "label": "Personality",
+                "summary": "Stable and reflective",
+                "bullets": ["Answers with explicit tradeoffs", "Keeps emotional distance under pressure"],
+            },
+            evidence_json=[
+                {
+                    "situation": "回应团队对方案优先级的追问",
+                    "expression": "先确认约束，再给出简明判断",
+                    "quote": "先把主链路跑通，再谈扩展。",
+                    "context_before": "Teammate: 我们要不要先做更多功能？",
+                    "context_after": "Another teammate: 那就先收紧当前版本。",
+                }
+            ],
+            conflicts_json=[],
+            error_message=None,
+        )
+
+    draft_payload = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "profile_report"},
+    ).json()
+    assert draft_payload["asset_kind"] == "profile_report"
+
+    page.set_viewport_size({"width": 1600, "height": 1100})
+    page.goto(f"{live_server}/projects/{project_id}/assets?kind=profile_report", wait_until="networkidle")
+
+    assert page.evaluate("document.documentElement.dataset.shellMode") == "fixed"
+    assert page.locator("#asset-publish-btn").is_enabled()
+
+    page.evaluate(
+        """
+        () => {
+            const scroll = document.querySelector('.asset-draft-scroll');
+            if (!scroll) return;
+            const filler = document.createElement('div');
+            filler.style.height = '960px';
+            filler.dataset.syntheticFill = '1';
+            scroll.appendChild(filler);
+        }
+        """
+    )
+
+    metrics = page.evaluate(
+        """
+        () => {
+            const scroll = document.querySelector('.asset-draft-scroll');
+            const publish = document.querySelector('#asset-publish-btn');
+            if (!scroll || !publish) return null;
+            const publishBox = publish.getBoundingClientRect();
+            return {
+                scrollHeight: scroll.scrollHeight,
+                clientHeight: scroll.clientHeight,
+                topBefore: scroll.scrollTop,
+                publishTop: publishBox.top,
+                publishBottom: publishBox.bottom,
+                viewportHeight: window.innerHeight,
+            };
+        }
+        """
+    )
+
+    assert metrics is not None
+    assert metrics["scrollHeight"] > metrics["clientHeight"]
+    assert metrics["publishTop"] >= 0
+    assert metrics["publishBottom"] <= metrics["viewportHeight"]
+
+    top_after = page.locator(".asset-draft-scroll").evaluate(
+        "(node) => { node.scrollTop = node.scrollHeight; return node.scrollTop; }"
+    )
+    assert top_after > metrics["topBefore"]
+
+    assert page.locator(".version-card").count() == 0
+    page.locator("#asset-publish-btn").click()
+    page.wait_for_function("() => document.querySelectorAll('.version-card').length > 0", timeout=4000)
+    assert page.locator(".version-card").count() >= 1

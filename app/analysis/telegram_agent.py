@@ -156,6 +156,21 @@ class TelegramAnalysisAgent:
             "fewshots 必须优先围绕目标用户自己的消息展开，但每条都要补上前后几条上下文。\n"
             "每条 fewshot 都必须包含 message_id, sender_name, sent_at, situation, expression, quote, context_before, context_after。"
         )
+        system_prompt = (
+            "你正在分析已经写入 SQL 的 Telegram 群聊记录。\n"
+            "这个模式绝对不能使用 embedding、chunk retrieval 或 retrieval.search。\n"
+            "请严格按这个顺序工作：\n"
+            "1. 先读取目标用户信息。\n"
+            "2. 再查询与目标用户相关的话题表。\n"
+            "3. 根据目标用户参与的话题，抓取原始消息作为 few-shot 证据。\n"
+            "4. 优先使用 analyze_database 保持上下文紧凑。\n"
+            "只返回 JSON，必须包含 summary, bullets, confidence, fewshots, conflicts, notes。\n"
+            "除 JSON 键名外，所有可读文本尽量使用简体中文。\n"
+            "fewshots 必须优先围绕目标用户自己的消息展开，但每条都要补上前后几条上下文。\n"
+            "每条 fewshot 都必须包含 message_id, sender_name, sent_at, situation, expression, quote, context_before, context_after。\n"
+            "其中 situation 要明确说明目标用户当时面对什么情况；expression 要概括其表达方式；quote 必须保留目标用户原话。\n"
+            "context_before 和 context_after 必须优先提供非目标用户的前后文，帮助理解回应对象、话题延续和互动关系。"
+        )
         user_prompt = json.dumps(
             {
                 "project": self.project.name,
@@ -913,38 +928,80 @@ class TelegramAnalysisAgent:
                 self.session,
                 self.project.id,
                 message_id,
-                before=2,
-                after=2,
+                before=6,
+                after=6,
             )
-            before_lines: list[str] = []
-            after_lines: list[str] = []
+            before_rows: list[dict[str, Any]] = []
+            after_rows: list[dict[str, Any]] = []
             for row in window:
                 row_id = int(row.telegram_message_id or 0)
                 text = " ".join((row.text_normalized or "").split()).strip()
                 if not row_id or not text or row_id == message_id:
                     continue
-                line = f"{row.sender_name or 'unknown'}: {text[:90]}"
+                line = f"{row.sender_name or 'unknown'}: {text[:120]}"
+                entry = {
+                    "message_id": row_id,
+                    "line": line,
+                    "is_target": bool(item.participant_id and row.participant_id == item.participant_id),
+                }
                 if row_id < message_id:
-                    before_lines.append(line)
+                    before_rows.append(entry)
                 else:
-                    after_lines.append(line)
+                    after_rows.append(entry)
+            before_lines = self._pick_context_lines(before_rows, limit=3, from_end=True)
+            after_lines = self._pick_context_lines(after_rows, limit=3, from_end=False)
             quote = " ".join((item.text_normalized or "").split()).strip()[:220]
             fewshots.append(
                 {
                     "message_id": message_id,
                     "sender_name": item.sender_name,
                     "sent_at": item.sent_at.isoformat() if item.sent_at else None,
-                    "situation": self._describe_message_situation(before_lines, after_lines),
+                    "situation": self._describe_message_situation_v2(before_lines, after_lines),
                     "expression": self._describe_expression_style(quote),
                     "quote": quote,
-                    "context_before": " | ".join(before_lines[:2]) or None,
-                    "context_after": " | ".join(after_lines[:2]) or None,
+                    "context_before": " | ".join(before_lines) or None,
+                    "context_after": " | ".join(after_lines) or None,
                     "reason": "Target-user few-shot with local Telegram context",
                 }
             )
             if len(fewshots) >= 12:
                 break
         return fewshots
+
+    @staticmethod
+    def _pick_context_lines(
+        rows: list[dict[str, Any]],
+        *,
+        limit: int,
+        from_end: bool,
+    ) -> list[str]:
+        if not rows:
+            return []
+        selected = list(rows[-limit:] if from_end else rows[:limit])
+        if not any(not bool(item.get("is_target")) for item in selected):
+            fallback = None
+            pool = list(reversed(rows)) if from_end else rows
+            for item in pool:
+                if not bool(item.get("is_target")):
+                    fallback = item
+                    break
+            if fallback and fallback not in selected:
+                if from_end:
+                    selected = [fallback, *selected[1:]]
+                else:
+                    selected = [*selected[:-1], fallback]
+                selected.sort(key=lambda item: int(item.get("message_id") or 0))
+        return [str(item.get("line") or "").strip() for item in selected if str(item.get("line") or "").strip()]
+
+    @staticmethod
+    def _describe_message_situation_v2(before_lines: list[str], after_lines: list[str]) -> str:
+        if before_lines and after_lines:
+            return f"目标用户是在回应“{before_lines[-1]}”这条上文，给出自己的表态后，对话继续推进到“{after_lines[0]}”。"
+        if before_lines:
+            return f"目标用户是在“{before_lines[-1]}”这条上文之后直接接话回应。"
+        if after_lines:
+            return f"目标用户先抛出这句回应，随后对话继续接到“{after_lines[0]}”。"
+        return "目标用户在当前话题节点里直接给出了一句独立回应。"
 
     @staticmethod
     def _describe_message_situation(before_lines: list[str], after_lines: list[str]) -> str:

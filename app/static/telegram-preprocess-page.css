@@ -1,17 +1,10 @@
 .page-telegram-preprocess .page-banner {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: 1fr;
     gap: 12px;
     padding: 12px 16px;
-    align-items: center;
 }
 
 .page-telegram-preprocess .page-banner__main {
-    gap: 6px;
-}
-
-.page-telegram-preprocess .page-banner__meta {
-    align-items: flex-end;
-    justify-content: center;
     gap: 6px;
 }
 
@@ -21,19 +14,15 @@
 }
 
 .page-telegram-preprocess .page-banner h1 {
-    font-size: clamp(1.32rem, 1.6vw, 1.74rem);
+    font-size: clamp(1.32rem, 1.6vw, 1.78rem);
     line-height: 1.06;
     max-width: none;
 }
 
 .page-telegram-preprocess .page-banner p {
-    max-width: 72ch;
+    max-width: 84ch;
     font-size: 0.82rem;
     line-height: 1.34;
-    display: -webkit-box;
-    -webkit-line-clamp: 1;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
 }
 
 .page-telegram-preprocess .page-banner__actions {
@@ -47,17 +36,6 @@
     font-size: 0.76rem;
 }
 
-.page-telegram-preprocess .page-banner__signal-row {
-    justify-content: flex-end;
-    gap: 6px;
-}
-
-.page-telegram-preprocess .page-banner__signal-row .page-banner__label {
-    min-height: 24px;
-    padding: 0 8px;
-    font-size: 0.68rem;
-}
-
 .page-telegram-preprocess .telegram-preprocess-start-form {
     gap: 8px;
 }
@@ -67,250 +45,216 @@
 }
 
 .page-telegram-preprocess .telegram-preprocess-start-form .inline-number-field input {
-    width: 64px;
+    width: 68px;
     min-height: 32px;
     padding: 0 10px;
 }
 
 .page-telegram-preprocess .page-content {
-    grid-template-columns: minmax(0, 1.64fr) minmax(320px, 0.82fr);
-    grid-template-rows: minmax(0, 1.06fr) minmax(0, 0.74fr) minmax(0, 1.6fr);
-    grid-template-areas:
-        "pulse status"
-        "workers trace"
-        "data data";
-    gap: 12px;
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--pulse,
-.page-telegram-preprocess .telegram-preprocess-panel--status,
-.page-telegram-preprocess .telegram-preprocess-panel--workers,
-.page-telegram-preprocess .telegram-preprocess-panel--trace,
-.page-telegram-preprocess .telegram-preprocess-panel--data {
+.page-telegram-preprocess .telegram-preprocess-hub,
+.page-telegram-preprocess .telegram-preprocess-hub__body,
+.page-telegram-preprocess .telegram-preprocess-topic-board,
+.page-telegram-preprocess .telegram-preprocess-topic-lamps {
     min-height: 0;
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--trace,
-.page-telegram-preprocess .telegram-preprocess-panel--data {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-
-.page-telegram-preprocess .telegram-preprocess-panel--pulse .panel-header,
-.page-telegram-preprocess .telegram-preprocess-panel--status .panel-header,
-.page-telegram-preprocess .telegram-preprocess-panel--workers .panel-header,
-.page-telegram-preprocess .telegram-preprocess-live-grid .panel-header,
-.page-telegram-preprocess .telegram-preprocess-data-grid .panel-header {
+.page-telegram-preprocess .telegram-preprocess-hub__header {
     align-items: center;
-    padding-bottom: 8px;
+    padding-bottom: 10px;
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--pulse .panel-body,
-.page-telegram-preprocess .telegram-preprocess-panel--status .panel-body,
-.page-telegram-preprocess .telegram-preprocess-panel--workers .panel-body,
-.page-telegram-preprocess .telegram-preprocess-live-grid .panel-body,
-.page-telegram-preprocess .telegram-preprocess-data-grid .panel-body {
+.page-telegram-preprocess .telegram-preprocess-hub__status {
+    display: flex;
+    align-items: center;
     gap: 8px;
-    min-height: 0;
-}
-
-.page-telegram-preprocess .telegram-preprocess-panel--pulse h2,
-.page-telegram-preprocess .telegram-preprocess-panel--status h2,
-.page-telegram-preprocess .telegram-preprocess-panel--workers h2,
-.page-telegram-preprocess .telegram-preprocess-live-grid h2,
-.page-telegram-preprocess .telegram-preprocess-data-grid h2 {
-    font-size: 1rem;
-    margin: 2px 0 0;
 }
 
 .page-telegram-preprocess .analysis-live-pill,
-.page-telegram-preprocess .analysis-signal-chip,
-.page-telegram-preprocess .telegram-preprocess-panel--status .status-chip,
-.page-telegram-preprocess .telegram-preprocess-data-grid .status-chip {
+.page-telegram-preprocess .telegram-preprocess-hub .status-chip,
+.page-telegram-preprocess .analysis-signal-chip {
     min-height: 28px;
     padding: 0 9px;
     font-size: 0.72rem;
 }
 
-.page-telegram-preprocess #telegram-preprocess-live-note {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+.page-telegram-preprocess .telegram-preprocess-hub__body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
 
-.page-telegram-preprocess .analysis-signal-chip-row {
-    margin-top: 0;
+.page-telegram-preprocess .telegram-preprocess-progress-spotlight {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.page-telegram-preprocess .telegram-preprocess-progress-spotlight__head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.page-telegram-preprocess .telegram-preprocess-progress-spotlight__head h3,
+.page-telegram-preprocess .telegram-preprocess-topic-board__head h3 {
+    font-size: 1.02rem;
+    margin-top: 2px;
+}
+
+.page-telegram-preprocess .progress-shell--slim {
     gap: 6px;
 }
 
-.page-telegram-preprocess .progress-shell {
-    gap: 6px;
-}
-
-.page-telegram-preprocess .progress-track {
+.page-telegram-preprocess .progress-shell--slim .progress-track {
     height: 6px;
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--status .panel-body {
-    overflow: hidden;
+.page-telegram-preprocess .telegram-preprocess-topic-board {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: clamp(320px, 46vh, 560px);
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--status .metric-list {
+.page-telegram-preprocess .telegram-preprocess-topic-board__head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.page-telegram-preprocess .telegram-preprocess-topic-lamps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px;
+    align-content: start;
+    padding-right: 4px;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 56px;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp__body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp strong,
+.page-telegram-preprocess .telegram-topic-lamp small {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp strong {
+    font-size: 0.88rem;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp small,
+.page-telegram-preprocess .telegram-topic-lamp__index {
+    color: var(--text-secondary);
+    font: 600 0.72rem/1 var(--font-mono);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp__dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.42);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-queued .telegram-topic-lamp__dot {
+    background: rgba(97, 168, 255, 0.9);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-running {
+    border-color: rgba(255, 212, 93, 0.24);
+    background: rgba(255, 212, 93, 0.08);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-running .telegram-topic-lamp__dot {
+    background: #ffd45d;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-completed {
+    border-color: rgba(66, 216, 168, 0.18);
+    background: rgba(66, 216, 168, 0.06);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-completed .telegram-topic-lamp__dot {
+    background: #42d8a8;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-failed {
+    border-color: rgba(255, 110, 147, 0.18);
+    background: rgba(255, 110, 147, 0.08);
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.status-failed .telegram-topic-lamp__dot {
+    background: #ff6e93;
+}
+
+.page-telegram-preprocess .telegram-topic-lamp.is-current {
+    box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.12);
+}
+
+.page-telegram-preprocess .telegram-preprocess-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.page-telegram-preprocess .telegram-preprocess-metric-card {
+    padding: 12px 14px;
+    border-radius: 16px;
     gap: 4px;
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--status .metric-row {
-    min-height: 30px;
-    padding: 0 10px;
+.page-telegram-preprocess .telegram-preprocess-metric-card strong {
+    font-size: 1.16rem;
 }
 
-.page-telegram-preprocess #telegram-preprocess-run-meta {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+.page-telegram-preprocess .telegram-preprocess-metric-card small {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
 }
 
-.page-telegram-preprocess .telegram-preprocess-panel--workers .agent-lane-strip {
-    gap: 8px;
-    align-content: start;
-}
-
-.page-telegram-preprocess .agent-lane-card {
-    min-height: 96px;
-    padding: 12px;
-}
-
-.page-telegram-preprocess .agent-lane-card__head {
-    margin-bottom: 8px;
-}
-
-.page-telegram-preprocess .agent-lane-card__meta {
-    margin-bottom: 8px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-live-grid {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-live-grid > .panel-shell {
-    min-height: 0;
-    overflow: hidden;
-}
-
-.page-telegram-preprocess #telegram-preprocess-trace-list,
-.page-telegram-preprocess #telegram-preprocess-live-output {
-    min-height: 0;
-    max-height: none;
-}
-
-.page-telegram-preprocess .trace-box.live-trace-box {
-    min-height: 0;
-}
-
-.page-telegram-preprocess .telegram-preprocess-panel--data {
-    overflow: hidden;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-auto-rows: minmax(0, 1fr);
-    gap: 12px;
-    align-content: stretch;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid > .panel-shell {
-    min-height: 0;
-    overflow: hidden;
-}
-
-.page-telegram-preprocess .telegram-preprocess-live-grid .panel-header,
-.page-telegram-preprocess .telegram-preprocess-data-grid .panel-header {
-    padding-left: 14px;
-    padding-right: 14px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-live-grid .panel-body,
-.page-telegram-preprocess .telegram-preprocess-data-grid .panel-body {
-    padding: 12px 14px 14px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid .panel-body--tight {
-    padding-top: 6px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid .document-board,
-.page-telegram-preprocess .telegram-preprocess-data-grid .context-list {
-    min-height: 0;
-    max-height: none;
-}
-
-.page-telegram-preprocess #telegram-preprocess-weekly-candidates,
-.page-telegram-preprocess #telegram-preprocess-top-users,
-.page-telegram-preprocess #telegram-preprocess-topics {
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.page-telegram-preprocess #telegram-preprocess-active-users {
-    grid-template-columns: 1fr;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid .document-card {
-    gap: 6px;
-    padding: 10px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-data-grid .helper-text,
-.page-telegram-preprocess .telegram-preprocess-data-grid p {
-    font-size: 0.8rem;
-    line-height: 1.45;
+.page-telegram-preprocess .telegram-preprocess-error {
+    margin-top: -2px;
 }
 
 @media (max-width: 1280px) {
-    .page-telegram-preprocess .page-content {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto auto minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
-        grid-template-areas:
-            "pulse"
-            "status"
-            "workers"
-            "trace"
-            "data";
+    .page-telegram-preprocess .telegram-preprocess-progress-spotlight__head,
+    .page-telegram-preprocess .telegram-preprocess-topic-board__head {
+        align-items: flex-start;
+        flex-direction: column;
     }
 
-    .page-telegram-preprocess .telegram-preprocess-live-grid,
-    .page-telegram-preprocess .telegram-preprocess-data-grid {
+    .page-telegram-preprocess .telegram-preprocess-metrics {
         grid-template-columns: 1fr;
-        grid-auto-rows: minmax(220px, auto);
     }
 }
 
 @media (max-width: 900px) {
-    .page-telegram-preprocess .page-banner {
+    .page-telegram-preprocess .telegram-preprocess-topic-lamps {
         grid-template-columns: 1fr;
-        align-items: flex-start;
-    }
-
-    .page-telegram-preprocess .page-banner__meta {
-        align-items: flex-start;
-    }
-
-    .page-telegram-preprocess .page-banner__signal-row {
-        justify-content: flex-start;
-    }
-
-    .page-telegram-preprocess .page-banner p,
-    .page-telegram-preprocess #telegram-preprocess-live-note,
-    .page-telegram-preprocess #telegram-preprocess-run-meta {
-        -webkit-line-clamp: unset;
-        white-space: normal;
     }
 }

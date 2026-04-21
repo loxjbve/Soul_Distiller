@@ -6,7 +6,13 @@
 .assets-card--draft,
 .assets-card--documents,
 .assets-card--versions,
-.assets-side-column {
+.assets-side-column,
+.asset-draft-form,
+.asset-draft-scroll,
+.asset-editor-shell,
+.asset-editor-pages,
+.asset-editor-page,
+.asset-editor-field {
     min-height: 0;
 }
 
@@ -17,6 +23,10 @@
     min-height: 0;
 }
 
+.assets-card--draft .panel-body {
+    padding: 0;
+}
+
 .asset-generation-shell {
     display: flex;
     flex-direction: column;
@@ -24,26 +34,82 @@
 }
 
 .asset-draft-form {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
     min-height: 0;
 }
 
-.asset-draft-form .button-row {
-    margin-top: auto;
+.asset-draft-scroll {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: 16px 18px 12px;
+}
+
+.asset-draft-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 12px 18px 18px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(180deg, rgba(8, 10, 16, 0), rgba(8, 10, 16, 0.92) 36%),
+        rgba(8, 10, 16, 0.92);
 }
 
 .asset-editor-shell,
 .asset-editor-pages,
 .asset-editor-page,
 .asset-editor-field {
-    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.asset-editor-shell,
+.asset-editor-pages {
+    flex: 1 1 auto;
+    gap: var(--space-3);
+}
+
+.asset-editor-page {
+    display: none;
+    gap: var(--space-3);
+    flex: 1 1 auto;
+}
+
+.asset-editor-page.is-active {
+    display: flex;
 }
 
 .asset-editor-textarea {
-    min-height: 520px;
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
 }
 
 .asset-draft-placeholder {
     margin-top: 12px;
+}
+
+.assets-side-column {
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3);
+}
+
+.assets-side-column .panel-body {
+    overflow: hidden;
+}
+
+.assets-side-column .panel-scroll {
+    min-height: 0;
 }
 
 .version-card form {
@@ -53,5 +119,9 @@
 @media (max-width: 1280px) {
     .page-assets .page-content {
         grid-template-columns: 1fr;
+    }
+
+    .asset-draft-actions {
+        position: static;
     }
 }

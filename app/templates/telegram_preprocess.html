@@ -3,7 +3,7 @@
 {% block page_class %}page-telegram-preprocess{% endblock %}
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260421a">
+<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260421b">
 {% endblock %}
 
 {% block content %}
@@ -12,8 +12,8 @@
         <div class="page-banner__main">
             <span class="page-banner__eyebrow">Telegram</span>
             <div class="page-banner__title-row">
-                <h1>{{ project.name }} · {{ ui.hero_title }}</h1>
-                <span class="page-banner__label">Operation Bridge</span>
+                <h1>{{ project.name }} | {{ ui.hero_title }}</h1>
+                <span class="page-banner__label">Topic Preprocess</span>
             </div>
             <p>{{ ui.hero_note }}</p>
             <div class="page-banner__actions">
@@ -34,236 +34,134 @@
                 </form>
             </div>
         </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
-                <span class="page-banner__label">Top Users</span>
-                <span class="page-banner__label">Weekly Candidates</span>
-            </div>
-        </div>
     </section>
 
     <script type="application/json" id="telegram-preprocess-bootstrap">{{ telegram_preprocess_bootstrap | safe }}</script>
 
     <section class="page-content">
-        <section class="panel-shell telegram-preprocess-panel--pulse">
-            <div class="panel-header">
+        <article class="panel-shell telegram-preprocess-hub">
+            <div class="panel-header panel-header--slim telegram-preprocess-hub__header">
                 <div>
                     <p class="eyebrow">Run Pulse</p>
                     <h2 id="telegram-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</h2>
                     <p class="section-note" id="telegram-preprocess-live-note">{{ ui.live_note }}</p>
                 </div>
-                <span class="analysis-live-pill" id="telegram-preprocess-live-pill">{{ ui.status_waiting }}</span>
-            </div>
-            <div class="panel-body">
-                <div class="analysis-signal-chip-row">
-                    <span class="analysis-signal-chip" id="telegram-preprocess-coverage-chip">Topics {{ selected_run_data.topic_count if selected_run_data else 0 }} / {{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</span>
-                    <span class="analysis-signal-chip" id="telegram-preprocess-weekly-concurrency-chip">Concurrency {{ selected_run_data.requested_weekly_concurrency if selected_run_data else 1 }}</span>
-                    <span class="analysis-signal-chip" id="telegram-preprocess-active-agent-chip">Active {{ selected_run_data.active_agents if selected_run_data else 0 }}</span>
-                    <span class="analysis-signal-chip" id="telegram-preprocess-token-chip">Tokens {{ selected_run_data.total_tokens if selected_run_data else 0 }}</span>
-                    <span class="analysis-signal-chip" id="telegram-preprocess-snapshot-chip">Snapshot {{ selected_run_data.snapshot_version if selected_run_data else 0 }}</span>
-                </div>
-                <div class="progress-shell">
-                    <div class="progress-labels">
-                        <strong>{{ ui.overall_progress }}</strong>
-                        <span id="telegram-preprocess-progress-label-duplicate">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
-                    </div>
-                    <div class="progress-track">
-                        <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
-                    </div>
-                </div>
-                <div class="progress-shell">
-                    <div class="progress-labels">
-                        <strong>{{ ui.coverage_progress }}</strong>
-                        <span id="telegram-preprocess-current-progress-label">0%</span>
-                    </div>
-                    <div class="progress-track">
-                        <div class="progress-fill" id="telegram-preprocess-current-progress-fill" style="width: 0%;"></div>
-                    </div>
+                <div class="telegram-preprocess-hub__status">
+                    <span class="status-chip tone-queued" id="telegram-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
+                    <span class="analysis-live-pill" id="telegram-preprocess-live-pill">{{ ui.status_waiting }}</span>
                 </div>
             </div>
-        </section>
+            <div class="panel-body telegram-preprocess-hub__body">
+                <section class="telegram-preprocess-progress-spotlight">
+                    <div class="telegram-preprocess-progress-spotlight__head">
+                        <div>
+                            <p class="eyebrow">Current Topic</p>
+                            <h3 id="telegram-preprocess-current-topic-label">{{ selected_run_data.current_topic_label if selected_run_data and selected_run_data.current_topic_label else (selected_run_data.current_stage if selected_run_data else ui.stage_waiting) }}</h3>
+                            <p class="section-note" id="telegram-preprocess-current-topic-progress">
+                                {% if selected_run_data %}
+                                    处理中 Topic {{ selected_run_data.current_topic_index or 0 }}/{{ selected_run_data.current_topic_total or selected_run_data.weekly_candidate_count or 0 }}
+                                {% else %}
+                                    处理中 Topic 0/0
+                                {% endif %}
+                            </p>
+                        </div>
+                        <div class="analysis-signal-chip-row">
+                            <span class="analysis-signal-chip" id="telegram-preprocess-input-token-chip">In {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
+                            <span class="analysis-signal-chip" id="telegram-preprocess-output-token-chip">Out {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
+                        </div>
+                    </div>
+                    <div class="progress-shell progress-shell--slim">
+                        <div class="progress-labels">
+                            <strong>{{ ui.overall_progress }}</strong>
+                            <span id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+                        </div>
+                    </div>
+                </section>
 
-        <article class="panel-shell telegram-preprocess-panel--status">
-            <div class="panel-header panel-header--slim">
-                <div>
-                    <p class="eyebrow">Current</p>
-                    <h2>{{ ui.current_run }}</h2>
-                </div>
-                <span class="status-chip" id="telegram-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
-            </div>
-            <div class="panel-body panel-body--tight">
-                <div class="metric-list panel-scroll" data-panel-scroll>
-                    <div class="metric-row"><span>{{ ui.stage }}</span><strong id="telegram-preprocess-stage">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.total_progress }}</span><strong id="telegram-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</strong></div>
-                    <div class="metric-row"><span>{{ ui.weekly_candidates }}</span><strong id="telegram-preprocess-weekly-candidate-count">{{ selected_run_data.weekly_candidate_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>Top Users</span><strong id="telegram-preprocess-top-user-count">{{ selected_run_data.top_user_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>Active Users</span><strong id="telegram-preprocess-active-user-count">{{ selected_run_data.active_user_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.final_topics }}</span><strong id="telegram-preprocess-topic-count">{{ selected_run_data.topic_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.request_concurrency }}</span><strong id="telegram-preprocess-weekly-concurrency">{{ selected_run_data.requested_weekly_concurrency if selected_run_data else 1 }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.active_workers }}</span><strong id="telegram-preprocess-active-agents">{{ selected_run_data.active_agents if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.completed_weeks }}</span><strong id="telegram-preprocess-completed-weeks">{{ selected_run_data.completed_week_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>{{ ui.remaining_weeks }}</span><strong id="telegram-preprocess-remaining-weeks">{{ selected_run_data.remaining_week_count if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>Total Tokens</span><strong id="telegram-preprocess-total-tokens">{{ selected_run_data.total_tokens if selected_run_data else 0 }}</strong></div>
-                    <div class="metric-row"><span>Cache Read</span><strong id="telegram-preprocess-cache-read">{{ selected_run_data.cache_read_tokens if selected_run_data else 0 }}</strong></div>
-                </div>
-                <p class="helper-text" id="telegram-preprocess-run-meta">
-                    {% if selected_run_data %}
-                        {{ selected_run_data.created_at or selected_run_data.started_at or selected_run_data.id }}
-                    {% else %}
-                        {{ ui.no_run }}
-                    {% endif %}
-                </p>
-                <p class="section-note" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
+                <section class="telegram-preprocess-topic-board">
+                    <div class="telegram-preprocess-topic-board__head">
+                        <div>
+                            <p class="eyebrow">Topics</p>
+                            <h3>Topic Indicators</h3>
+                        </div>
+                        <p class="helper-text" id="telegram-preprocess-topic-board-note">
+                            {% if selected_run_data %}
+                                处理中 Topic {{ selected_run_data.current_topic_index or 0 }}/{{ selected_run_data.current_topic_total or selected_run_data.weekly_candidate_count or 0 }}
+                            {% else %}
+                                处理中 Topic 0/0
+                            {% endif %}
+                        </p>
+                    </div>
+                    <div id="telegram-preprocess-topic-lamps" class="telegram-preprocess-topic-lamps panel-scroll" data-panel-scroll>
+                        {% if weekly_candidates %}
+                            {% for candidate in weekly_candidates %}
+                                {% set topic = topics[loop.index0] if topics|length >= loop.index else None %}
+                                {% set is_current = selected_run_data and (selected_run_data.current_topic_index or 0) == loop.index %}
+                                {% set lamp_status = "completed" if topic or (selected_run_data and selected_run_data.status == "completed") else ("failed" if selected_run_data and selected_run_data.status == "failed" and is_current else ("running" if selected_run_data and selected_run_data.status in ["queued", "running"] and is_current else "queued")) %}
+                                <article class="telegram-topic-lamp status-{{ lamp_status }} {% if is_current %}is-current{% endif %}">
+                                    <span class="telegram-topic-lamp__dot" aria-hidden="true"></span>
+                                    <div class="telegram-topic-lamp__body">
+                                        <strong>{{ topic.title if topic else (candidate.week_key or ("Topic " ~ loop.index)) }}</strong>
+                                        <small>{{ candidate.week_key }}{% if topic and topic.summary %} · {{ topic.summary }}{% endif %}</small>
+                                    </div>
+                                    <span class="telegram-topic-lamp__index">{{ "%02d"|format(loop.index) }}</span>
+                                </article>
+                            {% endfor %}
+                        {% elif topics %}
+                            {% for topic in topics %}
+                                <article class="telegram-topic-lamp status-completed">
+                                    <span class="telegram-topic-lamp__dot" aria-hidden="true"></span>
+                                    <div class="telegram-topic-lamp__body">
+                                        <strong>{{ topic.title or ("Topic " ~ topic.topic_index) }}</strong>
+                                        <small>{{ topic.metadata.week_key if topic.metadata and topic.metadata.week_key else "" }}{% if topic.summary %} · {{ topic.summary }}{% endif %}</small>
+                                    </div>
+                                    <span class="telegram-topic-lamp__index">{{ "%02d"|format(topic.topic_index or loop.index) }}</span>
+                                </article>
+                            {% endfor %}
+                        {% else %}
+                            <div class="empty-panel">
+                                <strong>{{ ui.no_run }}</strong>
+                            </div>
+                        {% endif %}
+                    </div>
+                </section>
+
+                <section class="telegram-preprocess-metrics">
+                    <article class="surface-card telegram-preprocess-metric-card">
+                        <span class="eyebrow">Input Tokens</span>
+                        <strong id="telegram-preprocess-input-tokens">{{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</strong>
+                        <small>prompt</small>
+                    </article>
+                    <article class="surface-card telegram-preprocess-metric-card">
+                        <span class="eyebrow">Output Tokens</span>
+                        <strong id="telegram-preprocess-output-tokens">{{ selected_run_data.completion_tokens if selected_run_data else 0 }}</strong>
+                        <small>completion</small>
+                    </article>
+                    <article class="surface-card telegram-preprocess-metric-card">
+                        <span class="eyebrow">Current Progress</span>
+                        <strong id="telegram-preprocess-current-progress-value">
+                            {% if selected_run_data %}
+                                处理中 Topic {{ selected_run_data.current_topic_index or 0 }}/{{ selected_run_data.current_topic_total or selected_run_data.weekly_candidate_count or 0 }}
+                            {% else %}
+                                处理中 Topic 0/0
+                            {% endif %}
+                        </strong>
+                        <small id="telegram-preprocess-current-progress-stage">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</small>
+                    </article>
+                </section>
+
+                <p class="section-note telegram-preprocess-error" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
                     {{ selected_run_data.error_message if selected_run_data else "" }}
                 </p>
             </div>
         </article>
-
-        <article class="panel-shell telegram-preprocess-panel--workers">
-            <div class="panel-header panel-header--slim">
-                <div>
-                    <p class="eyebrow">Workers</p>
-                    <h2>{{ ui.worker_lanes }}</h2>
-                </div>
-            </div>
-            <div class="panel-body panel-body--tight">
-                <div id="telegram-preprocess-agent-lanes" class="agent-lane-strip panel-scroll" data-lane-strip data-panel-scroll>
-                    <div class="empty-panel">
-                        <strong>{{ ui.no_workers }}</strong>
-                    </div>
-                </div>
-            </div>
-        </article>
-
-        <section class="telegram-preprocess-panel--trace">
-            <div class="telegram-preprocess-live-grid">
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">Trace</p>
-                            <h2>{{ ui.trace_timeline }}</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="telegram-preprocess-trace-list" class="context-list panel-scroll" data-panel-scroll>
-                            <div class="empty-panel">
-                                <strong>{{ ui.waiting_events }}</strong>
-                            </div>
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">Live Output</p>
-                            <h2>{{ ui.live_output }}</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <p class="helper-text" id="telegram-preprocess-live-title">{{ ui.waiting_llm }}</p>
-                        <pre class="trace-box live-trace-box panel-scroll" id="telegram-preprocess-live-output" data-panel-scroll></pre>
-                    </div>
-                </article>
-            </div>
-        </section>
-
-        <section class="telegram-preprocess-panel--data">
-            <div class="telegram-preprocess-data-grid">
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">SQL Intermediate</p>
-                            <h2>Weekly Candidates</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="telegram-preprocess-weekly-candidates" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                            {% if not weekly_candidates %}
-                                <div class="empty-panel"><strong>{{ ui.empty_weekly }}</strong></div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">SQL Intermediate</p>
-                            <h2>Top Users</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="telegram-preprocess-top-users" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                            {% if not top_users %}
-                                <div class="empty-panel"><strong>{{ ui.empty_top }}</strong></div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">Identity</p>
-                            <h2>Active Users</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="telegram-preprocess-active-users" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                            <div class="empty-panel"><strong>{{ ui.empty_active }}</strong></div>
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">Final Result</p>
-                            <h2>{{ ui.topic_table }}</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div id="telegram-preprocess-topics" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                            {% if not topics %}
-                                <div class="empty-panel"><strong>{{ ui.empty_topics }}</strong></div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </article>
-
-                <article class="panel-shell">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">History</p>
-                            <h2>{{ ui.history_run }}</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        {% if run_history %}
-                            <div class="context-list panel-scroll" data-panel-scroll>
-                                {% for run in run_history %}
-                                    <a class="context-item" href="/projects/{{ project.id }}/preprocess?run_id={{ run.id }}">
-                                        <strong>{{ run.status }}</strong>
-                                        <span>{{ run.current_stage or "queued" }}</span>
-                                        <small>{{ run.created_at or run.started_at or run.id }}</small>
-                                    </a>
-                                {% endfor %}
-                            </div>
-                        {% else %}
-                            <div class="empty-panel">
-                                <strong>{{ ui.empty_history }}</strong>
-                            </div>
-                        {% endif %}
-                    </div>
-                </article>
-            </div>
-        </section>
     </section>
 </div>
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}"></script>
+<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260421b"></script>
 {% endblock %}
