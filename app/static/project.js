@@ -83,7 +83,6 @@ if (bootstrap.project?.id) {
         elements.retryAll?.addEventListener("click", () => runProjectAction("retry-all", elements.retryAll, state.ui.retry_success));
         elements.stopProcessing?.addEventListener("click", () => runProjectAction("stop-processing", elements.stopProcessing, state.ui.stop_success));
         initTelegramTargetPickers();
-        elements.relationshipMemberSelect?.addEventListener("change", () => renderTelegramRelationships());
 
         if (elements.dropzone && elements.fileInput) {
             ["dragenter", "dragover"].forEach((eventName) => {
@@ -203,7 +202,6 @@ if (bootstrap.project?.id) {
             elements.loadMore.hidden = !state.pagination.has_more;
         }
         updateStats();
-        renderTelegramRelationships();
     }
 
     function getFilteredDocuments() {
@@ -997,6 +995,7 @@ if (bootstrap.project?.id) {
     }
 
     function showFeedback(message, tone = "info") {
+        // Show feedback notice
         showNotice(elements.feedback, message, tone);
     }
 }

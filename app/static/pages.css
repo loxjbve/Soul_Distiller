@@ -283,9 +283,9 @@
     }
 
     .persona-top-user-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(216px, 1fr));
-        gap: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         align-content: start;
     }
 
@@ -293,57 +293,49 @@
         position: relative;
         appearance: none;
         display: grid;
-        grid-template-rows: auto 1fr auto;
-        gap: 10px;
-        align-items: start;
+        grid-template-columns: auto 1fr auto;
+        gap: 12px;
+        align-items: center;
         text-align: left;
         width: 100%;
-        min-height: 118px;
-        padding: 14px;
-        border-radius: 18px;
+        min-height: 54px;
+        padding: 10px 14px;
+        border-radius: 12px;
         border: 1px solid rgba(255, 255, 255, 0.09);
         background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
-            radial-gradient(circle at top right, rgba(97, 168, 255, 0.14), transparent 54%),
-            rgba(12, 17, 28, 0.9);
-        box-shadow: 0 14px 28px rgba(5, 10, 24, 0.18);
+            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)),
+            rgba(12, 17, 28, 0.6);
         transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
     }
 
     .persona-top-user-card:hover {
-        transform: translateY(-1px);
+        transform: translateX(2px);
         border-color: rgba(97, 168, 255, 0.28);
         background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03)),
-            radial-gradient(circle at top right, rgba(97, 168, 255, 0.18), transparent 58%),
-            rgba(16, 21, 36, 0.94);
-        box-shadow: 0 18px 36px rgba(8, 14, 30, 0.24);
+            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+            rgba(16, 21, 36, 0.8);
     }
 
     .persona-top-user-card strong {
         width: 100%;
-        min-height: 2.8em;
-        font-size: 0.96rem;
-        line-height: 1.4;
+        min-height: auto;
+        font-size: 0.92rem;
+        line-height: 1.3;
         letter-spacing: 0.01em;
         color: var(--text-strong);
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
+        white-space: nowrap;
         overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .persona-top-user-card small {
         color: var(--text-secondary);
-        width: 100%;
-        margin-top: auto;
-        min-height: 2.7em;
+        width: auto;
+        margin-top: 0;
+        min-height: auto;
         font-size: 0.78rem;
-        line-height: 1.45;
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        overflow: hidden;
+        line-height: 1.3;
+        white-space: nowrap;
     }
 
     .persona-top-user-card.is-selected {

@@ -304,6 +304,16 @@ def project_detail(request: Request, project_id: str, session: SessionDep):
     )
 
 
+@router.get("/projects/{project_id}/relationships", response_class=HTMLResponse)
+def project_relationships(request: Request, project_id: str, session: SessionDep):
+    context = _project_context(request, session, project_id)
+    return templates.TemplateResponse(
+        request=request,
+        name="project_relationships.html",
+        context=_page_context(request, "relationships", **context),
+    )
+
+
 @router.post("/projects/{project_id}/update")
 def update_project_form(
     request: Request,

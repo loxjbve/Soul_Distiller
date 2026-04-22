@@ -29,6 +29,9 @@
                 {% if latest_run and not telegram_is_parent_workspace %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.common.back_to_analysis }}</a>
                 {% endif %}
+                {% if telegram_is_parent_workspace %}
+                    <a class="ghost-button" href="/projects/{{ project.id }}/relationships">{{ ui.telegram_relationship_title or '群组关系分析' }}</a>
+                {% endif %}
                 <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=cc_skill">{{ ui.open_assets }}</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
                 <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
@@ -504,92 +507,7 @@
             </article>
 
             {% if telegram_is_parent_workspace %}
-                <article class="panel-shell telegram-relationship-panel" id="telegram-relationship-panel">
-                    <div class="panel-header panel-header--slim">
-                        <div>
-                            <p class="eyebrow">{{ ui.telegram_relationship_eyebrow or 'RELATIONSHIP SNAPSHOT' }}</p>
-                            <h2>{{ ui.telegram_relationship_title or '群组关系分析' }}</h2>
-                        </div>
-                        <span class="status-chip tone-processing" id="telegram-relationship-status">
-                            {% if telegram_relationship_bundle and telegram_relationship_bundle.snapshot %}
-                                {{ telegram_relationship_bundle.snapshot.status }}
-                            {% else %}
-                                {{ ui.telegram_relationship_waiting or 'waiting' }}
-                            {% endif %}
-                        </span>
-                    </div>
-                    <div class="panel-body panel-body--tight">
-                        <div class="telegram-relationship-empty" id="telegram-relationship-empty" {% if telegram_relationship_bundle and telegram_relationship_bundle.snapshot %}hidden{% endif %}>
-                            <strong>{{ ui.telegram_relationship_empty_title or '请先完成 Telegram 预处理' }}</strong>
-                            <p>{{ ui.telegram_relationship_empty_note or '成功的预处理完成后，这里会显示群内成员之间的关系快照。' }}</p>
-                        </div>
 
-                        <div class="telegram-relationship-shell" id="telegram-relationship-shell" {% if not telegram_relationship_bundle or not telegram_relationship_bundle.snapshot %}hidden{% endif %}>
-                            <div class="telegram-relationship-metrics">
-                                <article class="telegram-relationship-metric">
-                                    <span>{{ ui.telegram_relationship_metric_users or '分析人数' }}</span>
-                                    <strong id="telegram-relationship-users">0</strong>
-                                </article>
-                                <article class="telegram-relationship-metric">
-                                    <span>{{ ui.telegram_relationship_metric_edges or '关系边数' }}</span>
-                                    <strong id="telegram-relationship-edges">0</strong>
-                                </article>
-                                <article class="telegram-relationship-metric">
-                                    <span>{{ ui.telegram_relationship_metric_friendly or '友好关系' }}</span>
-                                    <strong id="telegram-relationship-friendly">0</strong>
-                                </article>
-                                <article class="telegram-relationship-metric">
-                                    <span>{{ ui.telegram_relationship_metric_tense or '紧张关系' }}</span>
-                                    <strong id="telegram-relationship-tense">0</strong>
-                                </article>
-                            </div>
-
-                            <div class="telegram-relationship-columns">
-                                <section class="telegram-relationship-block">
-                                    <div class="telegram-relationship-block__head">
-                                        <strong>{{ ui.telegram_relationship_top_friendly or '最强友好关系' }}</strong>
-                                    </div>
-                                    <div class="telegram-relationship-list" id="telegram-relationship-friendly-list"></div>
-                                </section>
-
-                                <section class="telegram-relationship-block">
-                                    <div class="telegram-relationship-block__head">
-                                        <strong>{{ ui.telegram_relationship_top_tense or '最强紧张关系' }}</strong>
-                                    </div>
-                                    <div class="telegram-relationship-list" id="telegram-relationship-tense-list"></div>
-                                </section>
-                            </div>
-
-                            <section class="telegram-relationship-member">
-                                <div class="telegram-relationship-block__head">
-                                    <strong>{{ ui.telegram_relationship_member_title or '按成员查看' }}</strong>
-                                </div>
-                                <label class="telegram-relationship-member__picker">
-                                    <span>{{ ui.telegram_relationship_member_picker or '选择群友' }}</span>
-                                    <select id="telegram-relationship-member-select"></select>
-                                </label>
-                                <div class="telegram-relationship-member__groups">
-                                    <div class="telegram-relationship-member-group">
-                                        <h3>{{ ui.telegram_relationship_group_allies or '友好' }}</h3>
-                                        <div class="telegram-relationship-list" id="telegram-relationship-member-allies"></div>
-                                    </div>
-                                    <div class="telegram-relationship-member-group">
-                                        <h3>{{ ui.telegram_relationship_group_tense or '紧张' }}</h3>
-                                        <div class="telegram-relationship-list" id="telegram-relationship-member-tense"></div>
-                                    </div>
-                                    <div class="telegram-relationship-member-group">
-                                        <h3>{{ ui.telegram_relationship_group_neutral or '中性' }}</h3>
-                                        <div class="telegram-relationship-list" id="telegram-relationship-member-neutral"></div>
-                                    </div>
-                                    <div class="telegram-relationship-member-group">
-                                        <h3>{{ ui.telegram_relationship_group_unclear or '待确认' }}</h3>
-                                        <div class="telegram-relationship-list" id="telegram-relationship-member-unclear"></div>
-                                    </div>
-                                </div>
-                            </section>
-                        </div>
-                    </div>
-                </article>
 
                 <article class="panel-shell">
                     <div class="panel-header panel-header--slim">
