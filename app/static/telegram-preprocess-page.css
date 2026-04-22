@@ -38,10 +38,26 @@
 
 .page-telegram-preprocess .telegram-preprocess-start-form {
     gap: 8px;
+    display: inline-flex;
+    flex-wrap: nowrap;
+    align-items: center;
 }
 
 .page-telegram-preprocess .telegram-preprocess-start-form .inline-number-field {
+    display: inline-flex;
+    flex-wrap: nowrap;
     gap: 8px;
+    align-items: center;
+    margin: 0;
+}
+
+.page-telegram-preprocess .page-banner__actions > .telegram-preprocess-start-form > * {
+    width: auto;
+    flex: 0 0 auto;
+}
+
+.page-telegram-preprocess .telegram-preprocess-start-form__submit {
+    white-space: nowrap;
 }
 
 .page-telegram-preprocess .telegram-preprocess-start-form .inline-number-field input {
@@ -299,6 +315,10 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
     gap: 8px;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: clamp(280px, 42vh, 560px);
+    overflow: auto;
     align-content: start;
     padding-right: 4px;
 }

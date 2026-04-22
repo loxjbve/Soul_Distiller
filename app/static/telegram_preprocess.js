@@ -562,7 +562,7 @@ if (bootstrap?.project_id) {
             }
             const title = String(topic?.title || candidate?.week_key || `Topic ${index}`).trim();
             const weekKey = String(topic?.metadata?.week_key || candidate?.week_key || "").trim();
-            const meta = [weekKey, topic?.summary ? String(topic.summary).trim() : ""].filter(Boolean).join(" 路 ");
+            const meta = [weekKey, topic?.summary ? String(topic.summary).trim() : ""].filter(Boolean).join(" · ");
             models.push({
                 index,
                 status,
@@ -577,17 +577,22 @@ if (bootstrap?.project_id) {
     function buildTopicProgressText(bundle) {
         const total = Number(bundle.current_topic_total || bundle.weekly_candidate_count || bundle.window_count || 0);
         const index = Number(bundle.current_topic_index || 0);
+        const completed = Number(bundle.completed_week_count || bundle.topic_count || 0);
+        const completedClamped = Math.min(Math.max(completed, 0), Math.max(total, 0));
         if (bundle.status === "completed") {
-            return `Completed Topic ${total || 0}/${total || 0}`;
+            return `已完成 Topic ${total || 0}/${total || 0}`;
         }
         if (bundle.status === "failed") {
-            return `Stopped at Topic ${Math.max(index, 0)}/${total || 0}`;
+            return `在 Topic ${Math.max(index, completedClamped, 0)}/${total || 0} 处停止`;
         }
         if (!total) {
-            return "Processing Topic 0/0";
+            return "处理中 Topic 0/0";
         }
-        const current = Math.max(index || 1, 1);
-        return `Processing Topic ${current}/${total}`;
+        if (completedClamped >= total) {
+            return `已完成 Topic ${total}/${total}`;
+        }
+        const current = Math.min(Math.max(completedClamped + 1, index || 1, 1), total);
+        return `处理中 Topic ${current}/${total}（已完成 ${completedClamped}）`;
     }
 
     function buildLiveNote(bundle) {

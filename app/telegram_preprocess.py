@@ -3933,15 +3933,16 @@ class TelegramPreprocessWorker:
                 {
                     "role": "system",
                     "content": (
-                        "You are the Telegram relationship snapshot agent.\n"
-                        "Judge the relationship between two Telegram participants from structured evidence.\n"
-                        "Return JSON only with keys relation_label, confidence, summary, supporting_signals, counter_signals, evidence_message_ids.\n"
-                        "Allowed relation_label values: friendly, neutral, tense, unclear.\n"
-                        "friendly means repeated support, collaboration, or constructive handoff.\n"
-                        "neutral means interaction is stable but not clearly close or hostile.\n"
-                        "tense means repeated contradiction, confrontation, or adversarial pushback.\n"
-                        "unclear means the evidence is mixed or insufficient.\n"
-                        "Do not invent evidence."
+                        "你是 Telegram 群聊关系快照分析代理。\n"
+                        "请基于结构化证据判断两位参与者的关系。\n"
+                        "仅返回 JSON，键必须是 relation_label, confidence, summary, supporting_signals, counter_signals, evidence_message_ids。\n"
+                        "relation_label 只允许 friendly, neutral, tense, unclear。\n"
+                        "friendly 表示持续支持、协作、积极接力。\n"
+                        "neutral 表示互动稳定，但不明显亲近或敌对。\n"
+                        "tense 表示持续反驳、对立、冲突拉扯。\n"
+                        "unclear 表示证据混杂或不足。\n"
+                        "summary、supporting_signals、counter_signals 必须使用中文。\n"
+                        "不要编造证据。"
                     ),
                 },
                 {
@@ -4090,6 +4091,50 @@ class TelegramPreprocessWorker:
             (item["participant_a_id"], item["participant_b_id"])
             for item in llm_candidates
         }
+        llm_results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        llm_errors_by_key: dict[tuple[str, str], str] = {}
+        llm_max_workers = max(
+            TELEGRAM_PREPROCESS_MIN_CONCURRENCY,
+            min(len(llm_candidates), self.weekly_summary_concurrency),
+        )
+        if self.client and llm_candidates:
+            self._trace(
+                "stage_progress",
+                stage="relationship_snapshot",
+                message=(
+                    f"Running relationship edge analysis with concurrency "
+                    f"{llm_max_workers} for {len(llm_candidates)} candidate pairs."
+                ),
+                llm_pair_count=len(llm_candidates),
+                weekly_summary_concurrency=self.weekly_summary_concurrency,
+                relationship_concurrency=llm_max_workers,
+            )
+            with ThreadPoolExecutor(
+                max_workers=llm_max_workers,
+                thread_name_prefix="telegram-relationship-edge",
+            ) as executor:
+                future_map = {
+                    executor.submit(self._summarize_relationship_edge, candidate, participant_lookup): (
+                        candidate["participant_a_id"],
+                        candidate["participant_b_id"],
+                    )
+                    for candidate in llm_candidates
+                }
+                for future in as_completed(future_map):
+                    pair_key = future_map[future]
+                    try:
+                        llm_results_by_key[pair_key] = future.result()
+                    except Exception as exc:
+                        llm_errors_by_key[pair_key] = str(exc)
+                        self._trace(
+                            "agent_retry",
+                            stage="relationship_snapshot",
+                            agent="relationship_edge_agent",
+                            participant_a_id=pair_key[0],
+                            participant_b_id=pair_key[1],
+                            message="Relationship edge summary fell back to rule-only handling.",
+                            error=str(exc),
+                        )
         partial_snapshot = False
         snapshot_notes: list[str] = []
         edge_payloads: list[dict[str, Any]] = []
@@ -4124,10 +4169,13 @@ class TelegramPreprocessWorker:
             summary = None
             supporting_signals: list[str] = []
             counter_signals: list[str] = []
-            if (candidate["participant_a_id"], candidate["participant_b_id"]) in llm_candidate_keys:
+            pair_key = (candidate["participant_a_id"], candidate["participant_b_id"])
+            if pair_key in llm_candidate_keys:
                 if self.client:
                     try:
-                        llm_payload = self._summarize_relationship_edge(candidate, participant_lookup)
+                        if pair_key in llm_errors_by_key:
+                            raise RuntimeError(llm_errors_by_key[pair_key])
+                        llm_payload = llm_results_by_key[pair_key]
                         relation_label = llm_payload["relation_label"] or heuristic_label
                         confidence = llm_payload["confidence"] or heuristic_confidence
                         summary = llm_payload["summary"]
@@ -4152,15 +4200,6 @@ class TelegramPreprocessWorker:
                         summary = None
                         snapshot_notes.append(
                             f"LLM summary fallback for pair {candidate['participant_a_id']} / {candidate['participant_b_id']}: {exc}"
-                        )
-                        self._trace(
-                            "agent_retry",
-                            stage="relationship_snapshot",
-                            agent="relationship_edge_agent",
-                            participant_a_id=candidate["participant_a_id"],
-                            participant_b_id=candidate["participant_b_id"],
-                            message="Relationship edge summary fell back to rule-only handling.",
-                            error=str(exc),
                         )
                 else:
                     partial_snapshot = True

@@ -3,7 +3,7 @@
 {% block page_class %}page-telegram-preprocess{% endblock %}
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260422a">
+<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260422b">
 {% endblock %}
 
 {% block content %}
@@ -28,8 +28,12 @@
                             value="{{ selected_run_data.weekly_summary_concurrency if selected_run_data else 1 }}"
                         >
                     </label>
-                    <button type="submit" class="primary-button" {% if not can_start %}disabled{% endif %}>
-                        {{ ui.btn_resume if selected_run_data and selected_run_data.resume_available else ui.btn_start }}
+                    <button type="submit" class="primary-button telegram-preprocess-start-form__submit" {% if not can_start %}disabled{% endif %}>
+                        {% if selected_run_data and selected_run_data.resume_available %}
+                            {{ ui.btn_resume or "继续预处理" }}
+                        {% else %}
+                            {{ ui.btn_start or "开始预处理" }}
+                        {% endif %}
                     </button>
                 </form>
             </div>
@@ -174,5 +178,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260422a"></script>
+<script type="module" defer src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260422b"></script>
 {% endblock %}
