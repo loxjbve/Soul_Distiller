@@ -95,7 +95,7 @@ function setupAnalysisMonitor() {
     let renderQueued = false;
     let pollId = null;
 
-    const scheduleRender = (nextPayload) => {
+    const scheduleRender = throttle((nextPayload) => {
         latestPayload = nextPayload;
         if (renderQueued || !latestPayload) {
             return;
@@ -105,7 +105,7 @@ function setupAnalysisMonitor() {
             renderQueued = false;
             renderAnalysis(latestPayload, projectId);
         });
-    };
+    }, 100);
 
     if (payload) {
         scheduleRender(payload);
@@ -249,14 +249,14 @@ function renderEventList(events) {
         return;
     }
 
-    const signature = events.map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
+    const signature = events.slice(0, 200).map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
     if (analysisUiState.renderCache.eventSignature === signature) {
         return;
     }
     analysisUiState.renderCache.eventSignature = signature;
 
     eventList.innerHTML = events.length
-        ? events.map(renderEventItem).join("")
+        ? events.slice(0, 200).map(renderEventItem).join("")
         : `<details class="event-item" open><summary class="event-item-summary"><strong>暂无事件</strong></summary><div class="event-item-body"><p>分析开始后，这里会持续写入运行日志。</p></div></details>`;
 }
 
@@ -713,14 +713,14 @@ function renderEventListV2(events) {
         return;
     }
 
-    const signature = events.map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
+    const signature = events.slice(0, 200).map((event) => `${event.id}:${event.event_type}:${event.level}:${event.created_at}`).join("|");
     if (analysisUiState.renderCache.eventSignature === signature) {
         return;
     }
     analysisUiState.renderCache.eventSignature = signature;
 
     eventList.innerHTML = events.length
-        ? events.map(renderEventItemV2).join("")
+        ? events.slice(0, 200).map(renderEventItemV2).join("")
         : `<details class="event-item" open><summary class="event-item-summary"><strong>No events yet</strong></summary><div class="event-item-body"><p>Run events will appear here as facets move through the queue.</p></div></details>`;
 }
 
@@ -1518,6 +1518,25 @@ function safeParseJson(value) {
     } catch {
         return null;
     }
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+function throttle(func, limit) {
+    let inThrottle;
+    return function(...args) {
+        if (!inThrottle) {
+            func.apply(this, args);
+            inThrottle = true;
+            setTimeout(() => (inThrottle = false), limit);
+        }
+    };
 }
 
 function escapeHtml(value) {

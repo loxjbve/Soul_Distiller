@@ -65,5 +65,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="{{ request.url_for('static', path='settings.js') }}"></script>
+<script type="module" defer src="{{ request.url_for('static', path='settings.js') }}"></script>
 {% endblock %}

@@ -174,5 +174,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260422a"></script>
+<script type="module" defer src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260422a"></script>
 {% endblock %}

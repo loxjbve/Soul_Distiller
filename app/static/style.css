@@ -1,37 +1,37 @@
 :root {
-    --bg: #061019;
-    --bg-soft: #0a1824;
-    --panel: rgba(10, 24, 36, 0.78);
-    --panel-strong: rgba(8, 20, 31, 0.92);
-    --panel-hover: rgba(15, 31, 46, 0.96);
-    --text: #e8f1f7;
-    --text-soft: #a5bbcc;
-    --text-dim: #7791a5;
-    --line: rgba(152, 198, 230, 0.18);
-    --line-strong: rgba(152, 198, 230, 0.3);
-    --accent: #57d7ff;
-    --accent-strong: #1fb8f3;
-    --accent-soft: rgba(87, 215, 255, 0.16);
-    --success: #38d39f;
-    --warning: #ffba57;
-    --danger: #ff7a7a;
-    --queued: #7f97ab;
-    --shadow: 0 8px 30px rgba(0, 0, 0, 0.2);
-    --radius-xl: 24px;
-    --radius-lg: 18px;
-    --radius-md: 12px;
-    --radius-sm: 8px;
-    --font-sans: "IBM Plex Sans", "Noto Sans SC", "Segoe UI", sans-serif;
-    --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+    --bg: #131314;
+    --bg-soft: #1e1f20;
+    --panel: rgba(40, 42, 44, 0.78);
+    --panel-strong: rgba(51, 53, 55, 0.92);
+    --panel-hover: rgba(61, 63, 65, 0.96);
+    --text: #e3e3e3;
+    --text-soft: #c4c7c5;
+    --text-dim: #8e918f;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.2);
+    --accent: #a8c7fa;
+    --accent-strong: #d3e3fd;
+    --accent-soft: rgba(168, 199, 250, 0.16);
+    --success: #6dd58c;
+    --warning: #ffdf99;
+    --danger: #f2b8b5;
+    --queued: #8e918f;
+    --shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    --radius-xl: 32px;
+    --radius-lg: 24px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
+    --font-sans: "Google Sans", "IBM Plex Sans", "Noto Sans SC", "Segoe UI", sans-serif;
+    --font-mono: "Google Sans Mono", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
 
-    --chat-surface: rgba(255, 255, 255, 0.03);
-    --chat-surface-strong: rgba(255, 255, 255, 0.06);
-    --chat-user-bg: rgba(87, 215, 255, 0.12);
-    --chat-user-border: rgba(87, 215, 255, 0.32);
-    --chat-tool-border: rgba(152, 198, 230, 0.2);
-    --chat-pill-bg: rgba(152, 198, 230, 0.08);
-    --chat-code-bg: #04101a;
-    --chat-code-border: rgba(152, 198, 230, 0.16);
+    --chat-surface: rgba(255, 255, 255, 0.04);
+    --chat-surface-strong: rgba(255, 255, 255, 0.08);
+    --chat-user-bg: rgba(168, 199, 250, 0.12);
+    --chat-user-border: rgba(168, 199, 250, 0.32);
+    --chat-tool-border: rgba(255, 255, 255, 0.15);
+    --chat-pill-bg: rgba(255, 255, 255, 0.08);
+    --chat-code-bg: #1e1f20;
+    --chat-code-border: rgba(255, 255, 255, 0.1);
     --chat-muted: var(--text-dim);
 }
 
@@ -1085,26 +1085,26 @@ textarea {
 .page-project--telegram-parent,
 .page-project--telegram-child,
 .page-analysis-center {
-    --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
-    --bg: #0a0a0a;
-    --bg-soft: #101119;
-    --panel: rgba(16, 18, 27, 0.82);
-    --panel-strong: rgba(14, 16, 24, 0.92);
-    --panel-hover: rgba(21, 24, 35, 0.96);
-    --text: #eef2ff;
-    --text-soft: #b4bfd8;
-    --text-dim: #7d86a6;
+    --font-sans: "Google Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "Google Sans Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --bg: #131314;
+    --bg-soft: #1e1f20;
+    --panel: rgba(40, 42, 44, 0.82);
+    --panel-strong: rgba(51, 53, 55, 0.92);
+    --panel-hover: rgba(61, 63, 65, 0.96);
+    --text: #e3e3e3;
+    --text-soft: #c4c7c5;
+    --text-dim: #8e918f;
     --line: rgba(255, 255, 255, 0.1);
     --line-strong: rgba(255, 255, 255, 0.16);
-    --accent: #67a5ff;
-    --accent-strong: #8b5cf6;
-    --accent-soft: rgba(103, 165, 255, 0.18);
-    --chat-user-bg: rgba(103, 165, 255, 0.14);
-    --chat-user-border: rgba(103, 165, 255, 0.28);
+    --accent: #a8c7fa;
+    --accent-strong: #d3e3fd;
+    --accent-soft: rgba(168, 199, 250, 0.18);
+    --chat-user-bg: rgba(168, 199, 250, 0.14);
+    --chat-user-border: rgba(168, 199, 250, 0.28);
     --chat-tool-border: rgba(255, 255, 255, 0.1);
     --chat-pill-bg: rgba(255, 255, 255, 0.06);
-    --chat-code-bg: #0d1018;
+    --chat-code-bg: #1e1f20;
     --chat-code-border: rgba(255, 255, 255, 0.08);
     --shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
     color: var(--text);
@@ -1975,33 +1975,33 @@ textarea {
    2026 Desktop Shell + Agentic Workspace Refresh
    ========================================================= */
 :root {
-    --bg: #0a0a0a;
-    --bg-soft: #12131a;
-    --panel: rgba(18, 20, 30, 0.84);
-    --panel-strong: rgba(14, 16, 24, 0.94);
-    --panel-hover: rgba(25, 28, 39, 0.96);
-    --text: #eef2ff;
-    --text-soft: #b6c0d8;
-    --text-dim: #7781a6;
+    --bg: #131314;
+    --bg-soft: #1e1f20;
+    --panel: rgba(40, 42, 44, 0.84);
+    --panel-strong: rgba(51, 53, 55, 0.94);
+    --panel-hover: rgba(61, 63, 65, 0.96);
+    --text: #e3e3e3;
+    --text-soft: #c4c7c5;
+    --text-dim: #8e918f;
     --line: rgba(255, 255, 255, 0.1);
     --line-strong: rgba(255, 255, 255, 0.18);
-    --accent: #61a8ff;
-    --accent-strong: #8d6bff;
-    --accent-soft: rgba(97, 168, 255, 0.16);
-    --warning: #ffc56b;
-    --success: #5fe0ad;
-    --danger: #ff8b9a;
-    --queued: #8a95b5;
+    --accent: #a8c7fa;
+    --accent-strong: #d3e3fd;
+    --accent-soft: rgba(168, 199, 250, 0.16);
+    --warning: #ffdf99;
+    --success: #6dd58c;
+    --danger: #f2b8b5;
+    --queued: #8e918f;
     --shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
-    --radius-xl: 30px;
-    --radius-lg: 24px;
-    --radius-md: 18px;
-    --radius-sm: 14px;
-    --font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    --radius-xl: 32px;
+    --radius-lg: 28px;
+    --radius-md: 20px;
+    --radius-sm: 16px;
+    --font-sans: "Google Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono: "Google Sans Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
     --scrollbar-thumb: rgba(255, 255, 255, 0.16);
     --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
-    --shell-gap: 18px;
+    --shell-gap: 20px;
 }
 
 .app-body {

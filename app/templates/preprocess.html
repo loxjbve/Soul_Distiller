@@ -94,5 +94,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="{{ request.url_for('static', path='preprocess.js') }}"></script>
+<script type="module" defer src="{{ request.url_for('static', path='preprocess.js') }}"></script>
 {% endblock %}

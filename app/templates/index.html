@@ -72,39 +72,6 @@
                                         </form>
                                     </div>
                                 </article>
-
-                                <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
-                                    <div class="modal-dialog">
-                                        <div class="modal-head">
-                                            <div>
-                                                <p class="eyebrow">{{ ui.modal_edit_eyebrow }}</p>
-                                                <h3>{{ ui.modal_edit_title }}</h3>
-                                            </div>
-                                            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
-                                        </div>
-                                        <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
-                                            <label>
-                                                <span>{{ ui.modal_name }}</span>
-                                                <input type="text" name="name" value="{{ project.name }}" required>
-                                            </label>
-                                            <label>
-                                                <span>{{ ui.modal_description }}</span>
-                                                <textarea name="description" rows="4">{{ project.description or '' }}</textarea>
-                                            </label>
-                                            <label>
-                                                <span>{{ ui.modal_mode }}</span>
-                                                <select name="mode">
-                                                    <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
-                                                    <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
-                                                    <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
-                                                </select>
-                                            </label>
-                                            <div class="button-row button-row--end">
-                                                <button type="submit" class="primary-button">{{ ui.modal_submit }}</button>
-                                            </div>
-                                        </form>
-                                    </div>
-                                </div>
                             {% endfor %}
                         </div>
                     {% else %}
@@ -151,5 +118,42 @@
         </form>
     </div>
 </div>
+
+{% if projects %}
+    {% for project in projects %}
+    <div class="modal-overlay" id="edit-project-modal-{{ project.id }}" hidden>
+        <div class="modal-dialog">
+            <div class="modal-head">
+                <div>
+                    <p class="eyebrow">{{ ui.modal_edit_eyebrow }}</p>
+                    <h3>{{ ui.modal_edit_title }}</h3>
+                </div>
+                <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+            </div>
+            <form method="post" action="/projects/{{ project.id }}/update" class="form-stack">
+                <label>
+                    <span>{{ ui.modal_name }}</span>
+                    <input type="text" name="name" value="{{ project.name }}" required>
+                </label>
+                <label>
+                    <span>{{ ui.modal_description }}</span>
+                    <textarea name="description" rows="4">{{ project.description or '' }}</textarea>
+                </label>
+                <label>
+                    <span>{{ ui.modal_mode }}</span>
+                    <select name="mode">
+                        <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
+                        <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
+                        <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
+                    </select>
+                </label>
+                <div class="button-row button-row--end">
+                    <button type="submit" class="primary-button">{{ ui.modal_submit }}</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endfor %}
+{% endif %}
 
 {% endblock %}

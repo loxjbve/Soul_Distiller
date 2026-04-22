@@ -7,6 +7,8 @@ import {
     openModal,
     setButtonBusy,
     showNotice,
+    debounce,
+    throttle
 } from "./shared.js";
 
 const bootstrap = JSON.parse(document.getElementById("project-bootstrap")?.textContent || "{}");
@@ -196,7 +198,9 @@ if (bootstrap.project?.id) {
     function render() {
         const documents = getFilteredDocuments();
         elements.grid.innerHTML = "";
-        documents.forEach((document) => elements.grid.appendChild(renderDocumentCard(document)));
+        const fragment = document.createDocumentFragment();
+        documents.forEach((document) => fragment.appendChild(renderDocumentCard(document)));
+        elements.grid.appendChild(fragment);
         elements.empty.hidden = documents.length > 0;
         if (elements.loadMore) {
             elements.loadMore.hidden = !state.pagination.has_more;
@@ -396,6 +400,12 @@ if (bootstrap.project?.id) {
         }
     }
 
+    const scheduleRender = throttle(() => {
+        window.requestAnimationFrame(() => {
+            render();
+        });
+    }, 100);
+
     function connectSocket() {
         const protocol = window.location.protocol === "https:" ? "wss" : "ws";
         state.socket = new WebSocket(`${protocol}://${window.location.host}/api/projects/${state.projectId}/documents/ws`);
@@ -414,7 +424,7 @@ if (bootstrap.project?.id) {
                 }
             });
             refreshStatsFromDocuments();
-            render();
+            scheduleRender();
         });
 
         state.socket.addEventListener("close", () => {
@@ -524,7 +534,7 @@ if (bootstrap.project?.id) {
                 button.addEventListener("click", () => selectCard(button));
             });
 
-            queryInput.addEventListener("input", () => {
+            queryInput.addEventListener("input", debounce(() => {
                 const value = queryInput.value.trim();
                 const selectedCard = cardButtons.find((button) => button.classList.contains("is-selected")) || null;
                 if (selectedCard && value !== (selectedCard.dataset.label || "")) {
@@ -546,13 +556,13 @@ if (bootstrap.project?.id) {
                     `;
                 }
                 syncSubmit();
-            });
+            }, 300));
 
-            nameInput?.addEventListener("input", () => {
+            nameInput?.addEventListener("input", debounce(() => {
                 const value = nameInput.value.trim();
                 nameDirty = Boolean(value && value !== autofillValue);
                 syncSubmit();
-            });
+            }, 300));
 
             const initialCard = cardButtons.find(
                 (button) => (button.dataset.participantId || "") === participantInput.value

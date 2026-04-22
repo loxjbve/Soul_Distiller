@@ -1,78 +1,92 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} Skill{% endblock %}
+{% block body_class %}theme-ambient--skill{% endblock %}
+{% block page_class %}page-skill{% endblock %}
 {% block content %}
-<section class="project-hero">
-    <div class="project-hero-copy">
-        <p class="eyebrow">{{ ui.preview }}</p>
-        <h1>{{ project.name }} {{ ui.draft_title }}</h1>
-        <p class="hero-note">{{ ui.hero_note }}</p>
-    </div>
-    <div class="project-hero-actions">
-        <form method="post" action="/projects/{{ project.id }}/skills/generate">
-            <button type="submit">{{ ui.regenerate }}</button>
-        </form>
-        <a class="secondary-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.back_to_analysis }}</a>
-    </div>
-</section>
-
-{% if draft %}
-    <section class="workspace-panel">
-        <div class="section-head">
-            <div>
-                <p class="eyebrow">{{ ui.draft_eyebrow }}</p>
-                <h2>{{ ui.edit_draft }}</h2>
+<div class="page-frame">
+    <section class="page-banner">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">{{ ui.preview }}</span>
+            <div class="page-banner__title-row">
+                <h1>{{ project.name }} {{ ui.draft_title }}</h1>
+            </div>
+            <p>{{ ui.hero_note }}</p>
+            <div class="page-banner__actions">
+                <form method="post" action="/projects/{{ project.id }}/skills/generate" class="inline-form" style="display: inline-block;">
+                    <button type="submit" class="primary-button">{{ ui.regenerate }}</button>
+                </form>
+                <a class="ghost-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.back_to_analysis }}</a>
             </div>
         </div>
-        <form method="post" action="/projects/{{ project.id }}/skills/{{ draft.id }}/save" class="stack roomy">
-            <label>
-                <span>Markdown Skill</span>
-                <textarea name="markdown_text" rows="18">{{ draft.markdown_text }}</textarea>
-            </label>
-            <label>
-                <span>JSON Payload</span>
-                <textarea name="json_payload" rows="18">{{ draft_json_pretty }}</textarea>
-            </label>
-            <label>
-                <span>System Prompt</span>
-                <textarea name="system_prompt" rows="14">{{ draft.system_prompt }}</textarea>
-            </label>
-            <label>
-                <span>{{ ui.review_notes }}</span>
-                <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
-            </label>
-            <div class="inline-actions">
-                <button type="submit">{{ ui.save_draft }}</button>
-                <button formaction="/projects/{{ project.id }}/skills/{{ draft.id }}/publish" type="submit">{{ ui.publish_version }}</button>
-            </div>
-        </form>
     </section>
-{% else %}
-    <section class="workspace-panel">
-        <p class="muted">{{ ui.no_draft }}</p>
-    </section>
-{% endif %}
 
-<section class="workspace-panel">
-    <div class="section-head">
-        <div>
-            <p class="eyebrow">{{ ui.version_history }}</p>
-            <h2>{{ ui.published_versions }}</h2>
-        </div>
-    </div>
-    {% if versions %}
-        <div class="project-list">
-            {% for version in versions %}
-                <div class="project-row">
-                    <div>
-                        <strong>v{{ version.version_number }}</strong>
-                        <p>{{ version.published_at }}</p>
-                    </div>
-                    <span>{{ ui.published }}</span>
+    <section class="page-content">
+        <article class="panel-shell">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">{{ ui.draft_eyebrow }}</p>
+                    <h2>{{ ui.edit_draft }}</h2>
                 </div>
-            {% endfor %}
-        </div>
-    {% else %}
-        <p class="muted">{{ ui.no_versions }}</p>
-    {% endif %}
-</section>
+            </div>
+            <div class="panel-body">
+                {% if draft %}
+                    <form method="post" action="/projects/{{ project.id }}/skills/{{ draft.id }}/save" class="form-stack">
+                        <label>
+                            <span>Markdown Skill</span>
+                            <textarea name="markdown_text" rows="18">{{ draft.markdown_text }}</textarea>
+                        </label>
+                        <label>
+                            <span>JSON Payload</span>
+                            <textarea name="json_payload" rows="18">{{ draft_json_pretty }}</textarea>
+                        </label>
+                        <label>
+                            <span>System Prompt</span>
+                            <textarea name="system_prompt" rows="14">{{ draft.system_prompt }}</textarea>
+                        </label>
+                        <label>
+                            <span>{{ ui.review_notes }}</span>
+                            <textarea name="notes" rows="3">{{ draft.notes or "" }}</textarea>
+                        </label>
+                        <div class="button-row button-row--end">
+                            <button type="submit" class="ghost-button">{{ ui.save_draft }}</button>
+                            <button formaction="/projects/{{ project.id }}/skills/{{ draft.id }}/publish" type="submit" class="primary-button">{{ ui.publish_version }}</button>
+                        </div>
+                    </form>
+                {% else %}
+                    <div class="empty-panel">
+                        <strong>{{ ui.no_draft }}</strong>
+                    </div>
+                {% endif %}
+            </div>
+        </article>
+
+        <article class="panel-shell">
+            <div class="panel-header">
+                <div>
+                    <p class="eyebrow">{{ ui.version_history }}</p>
+                    <h2>{{ ui.published_versions }}</h2>
+                </div>
+            </div>
+            <div class="panel-body panel-body--tight">
+                {% if versions %}
+                    <div class="version-list panel-scroll">
+                        {% for version in versions %}
+                            <article class="version-card" style="display: flex; justify-content: space-between; padding: 1rem; border-bottom: 1px solid var(--border-color);">
+                                <div>
+                                    <strong>v{{ version.version_number }}</strong>
+                                    <p class="muted" style="margin: 0; font-size: 0.875rem;">{{ version.published_at }}</p>
+                                </div>
+                                <span class="status-chip tone-ready">{{ ui.published }}</span>
+                            </article>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="empty-panel">
+                        <strong>{{ ui.no_versions }}</strong>
+                    </div>
+                {% endif %}
+            </div>
+        </article>
+    </section>
+</div>
 {% endblock %}
