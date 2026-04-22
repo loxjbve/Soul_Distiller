@@ -67,6 +67,14 @@
     gap: 12px;
 }
 
+.page-analysis.page-analysis-center.page-analysis--telegram-persona .page-content {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+        "center"
+        "results";
+}
+
 .page-analysis.page-analysis-center .analysis-center-panel .panel-header {
     align-items: center;
     padding-bottom: 10px;
