@@ -55,96 +55,169 @@ if (bootstrap.project?.id) {
     }
 
     function renderGraph(users, edges) {
-        const chart = echarts.init(elements.graphContainer, 'dark', { backgroundColor: 'transparent' });
-        
-        const nodes = users.map(user => {
-            const msgCount = user.message_count || 1;
-            const size = Math.max(10, Math.min(60, Math.log10(msgCount) * 15));
-            return {
-                id: user.participant_id,
-                name: user.label || user.participant_id,
-                symbolSize: size,
-                itemStyle: {
-                    color: '#61a8ff',
-                    borderColor: '#fff',
-                    borderWidth: 1
-                },
-                label: {
-                    show: size > 20,
-                    position: 'bottom',
-                    color: '#cbe4ff',
-                    fontSize: 10
-                },
-                value: msgCount
-            };
-        });
+        // Helper to interpolate between two hex colors
+        function interpolateColor(color1, color2, factor) {
+            const r1 = parseInt(color1.substring(1, 3), 16);
+            const g1 = parseInt(color1.substring(3, 5), 16);
+            const b1 = parseInt(color1.substring(5, 7), 16);
 
-        const links = edges.map(edge => {
-            let color = '#555';
-            if (edge.relation_label === 'friendly') color = '#42d8a8';
-            else if (edge.relation_label === 'tense') color = '#ff718a';
-            
-            const strength = edge.interaction_strength || 0;
-            const width = Math.max(1, strength * 5);
-            
-            return {
-                source: edge.participant_a_id,
-                target: edge.participant_b_id,
-                value: strength,
-                lineStyle: {
-                    color: color,
-                    width: width,
-                    opacity: 0.6,
-                    curveness: 0.2
-                },
-                relation_label: edge.relation_label
-            };
-        });
+            const r2 = parseInt(color2.substring(1, 3), 16);
+            const g2 = parseInt(color2.substring(3, 5), 16);
+            const b2 = parseInt(color2.substring(5, 7), 16);
 
-        const option = {
-            tooltip: {
-                trigger: 'item',
-                formatter: function (params) {
-                    if (params.dataType === 'node') {
-                        return `<b>${escapeHtml(params.data.name)}</b><br/>Messages: ${params.data.value}`;
-                    } else if (params.dataType === 'edge') {
-                        return `<b>${escapeHtml(params.data.relation_label)}</b><br/>Strength: ${params.data.value}`;
-                    }
+            const r = Math.round(r1 + factor * (r2 - r1));
+            const g = Math.round(g1 + factor * (g2 - g1));
+            const b = Math.round(b1 + factor * (b2 - b1));
+
+            return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+        }
+
+        // Use a small timeout to ensure the DOM is laid out
+        setTimeout(() => {
+            if (!elements.graphContainer) return;
+            
+            const chart = echarts.init(elements.graphContainer, 'dark', { backgroundColor: 'transparent' });
+            
+            const usersWithStats = users.map(user => {
+                const userEdges = edges.filter(e => 
+                    String(e.participant_a_id) === String(user.participant_id) || 
+                    String(e.participant_b_id) === String(user.participant_id)
+                );
+                return {
+                    ...user,
+                    friendlyCount: userEdges.filter(e => e.relation_label === 'friendly').length,
+                    tenseCount: userEdges.filter(e => e.relation_label === 'tense').length
+                };
+            });
+
+            const maxFriendly = Math.max(...usersWithStats.map(u => u.friendlyCount), 1);
+            const maxTense = Math.max(...usersWithStats.map(u => u.tenseCount), 1);
+
+            const nodes = usersWithStats.map(user => {
+                const msgCount = user.message_count || 1;
+                const size = Math.max(18, Math.min(50, Math.log10(msgCount) * 14));
+                
+                // Calculate color based on relationship counts
+                // Green (friendly) vs Red (tense)
+                // Score from -1 (most tense) to 1 (most friendly)
+                let score = 0;
+                if (user.friendlyCount > 0 || user.tenseCount > 0) {
+                    const friendlyRatio = user.friendlyCount / maxFriendly;
+                    const tenseRatio = user.tenseCount / maxTense;
+                    score = friendlyRatio - tenseRatio;
                 }
-            },
-            series: [
-                {
-                    type: 'graph',
-                    layout: 'force',
-                    nodes: nodes,
-                    links: links,
-                    roam: true,
+                
+                // Map score to color gradient: Red (#ff718a) -> Grey (#61a8ff) -> Green (#42d8a8)
+                let color = '#61a8ff'; // Default
+                if (score > 0) {
+                    // Interpolate between Blue and Green
+                    color = interpolateColor('#61a8ff', '#42d8a8', score);
+                } else if (score < 0) {
+                    // Interpolate between Blue and Red
+                    color = interpolateColor('#61a8ff', '#ff718a', Math.abs(score));
+                }
+
+                const label = String(user.label || user.participant_id);
+                const abbreviation = label.length > 2 ? label.substring(0, 2) : label;
+
+                return {
+                    id: String(user.participant_id),
+                    name: label,
+                    symbolSize: size,
+                    itemStyle: {
+                        color: color,
+                        borderColor: '#fff',
+                        borderWidth: 1
+                    },
                     label: {
-                        position: 'right'
+                        show: true,
+                        formatter: abbreviation,
+                        position: 'inside',
+                        color: '#fff',
+                        fontSize: 10,
+                        fontWeight: 'bold'
                     },
-                    force: {
-                        repulsion: 300,
-                        edgeLength: 150
-                    },
+                    value: msgCount,
+                    friendlyCount: user.friendlyCount,
+                    tenseCount: user.tenseCount
+                };
+            });
+
+            const links = edges.map(edge => {
+                let color = '#555';
+                if (edge.relation_label === 'friendly') color = '#42d8a8';
+                else if (edge.relation_label === 'tense') color = '#ff718a';
+                
+                const strength = edge.interaction_strength || 0;
+                const width = Math.max(1, strength * 5);
+                
+                return {
+                    source: String(edge.participant_a_id),
+                    target: String(edge.participant_b_id),
+                    value: strength,
                     lineStyle: {
-                        color: 'source',
-                        curveness: 0.3
+                        color: color,
+                        width: width,
+                        opacity: 0.6,
+                        curveness: 0.2
                     },
-                    emphasis: {
-                        focus: 'adjacency',
-                        lineStyle: {
-                            width: 5
+                    relation_label: edge.relation_label
+                };
+            });
+
+            const option = {
+                tooltip: {
+                    trigger: 'item',
+                    formatter: function (params) {
+                        if (params.dataType === 'node') {
+                            return `<b>${escapeHtml(params.data.name)}</b><br/>
+                                    Messages: ${params.data.value}<br/>
+                                    Friendly: ${params.data.friendlyCount}<br/>
+                                    Tense: ${params.data.tenseCount}`;
+                        } else if (params.dataType === 'edge') {
+                            return `<b>${escapeHtml(params.data.relation_label)}</b><br/>Strength: ${params.data.value}`;
                         }
                     }
-                }
-            ]
-        };
+                },
+                series: [
+                    {
+                        type: 'graph',
+                        layout: 'force',
+                        nodes: nodes,
+                        links: links,
+                        roam: true,
+                        label: {
+                            position: 'right'
+                        },
+                        force: {
+                            repulsion: 1500,
+                            edgeLength: 150,
+                            gravity: 0.05,
+                            initLayout: 'circular'
+                        },
+                        lineStyle: {
+                            color: 'source',
+                            curveness: 0.3
+                        },
+                        emphasis: {
+                            focus: 'adjacency',
+                            lineStyle: {
+                                width: 5
+                            }
+                        }
+                    }
+                ]
+            };
 
-        chart.setOption(option);
-        
-        window.addEventListener('resize', () => {
+            chart.setOption(option);
+            
+            window.addEventListener('resize', () => {
+                chart.resize();
+            });
+            
+            // Final check on size
             chart.resize();
-        });
+        }, 100);
     }
 
     function renderRelationshipCollection(container, edges, options = {}) {
