@@ -28,9 +28,9 @@
         --accent-success: #42d8a8;
         --accent-danger: #ff6e93;
 
-        --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.2);
-        --shadow-hard: 0 16px 32px rgba(0, 0, 0, 0.4);
-        --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.05), 0 0 16px rgba(97, 168, 255, 0.05);
+        --shadow-soft: 0 4px 12px rgba(0, 0, 0, 0.15);
+        --shadow-hard: 0 8px 24px rgba(0, 0, 0, 0.3);
+        --shadow-glow: 0 0 0 1px rgba(255, 255, 255, 0.05);
 
         --glass-blur: blur(12px);
         --glass-sheen: linear-gradient(145deg, rgba(255, 255, 255, 0.04), transparent 50%);
