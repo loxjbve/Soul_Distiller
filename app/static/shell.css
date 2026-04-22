@@ -380,11 +380,8 @@
         background: var(--scrollbar-thumb-hover);
     }
 
-    .screen-noise,
     .screen-grid,
-    .screen-scanline,
-    .screen-aura,
-    .cursor-glow {
+    .screen-scanline {
         position: fixed;
         inset: 0;
         pointer-events: none;
@@ -392,18 +389,9 @@
         transition: opacity var(--motion-slow) var(--easing-standard);
     }
 
-    .theme-ambient .screen-noise,
     .theme-ambient .screen-grid,
-    .theme-ambient .screen-scanline,
-    .theme-ambient .screen-aura {
+    .theme-ambient .screen-scanline {
         opacity: 1;
-    }
-
-    .screen-noise {
-        z-index: -4;
-        background-image: radial-gradient(circle, rgba(255, 255, 255, 0.68) 0.5px, transparent 0.55px);
-        background-size: 12px 12px;
-        opacity: 0.018;
     }
 
     .screen-grid {
@@ -431,42 +419,6 @@
     @keyframes scanline-scroll {
         0% { background-position: 0 0; }
         100% { background-position: 0 100vh; }
-    }
-
-    .screen-aura {
-        z-index: -6;
-        filter: blur(120px);
-    }
-
-    .screen-aura-left {
-        inset: 5% auto auto 4%;
-        width: 32rem;
-        height: 32rem;
-        background: rgba(97, 168, 255, 0.18);
-    }
-
-    .screen-aura-right {
-        inset: auto 7% 8% auto;
-        width: 28rem;
-        height: 28rem;
-        background: rgba(141, 107, 255, 0.16);
-    }
-
-    .cursor-glow {
-        z-index: -3;
-        width: 180px;
-        height: 180px;
-        border-radius: 50%;
-        margin-left: -90px;
-        margin-top: -90px;
-        background: radial-gradient(circle, rgba(97, 168, 255, 0.22), transparent 70%);
-        filter: blur(18px);
-        opacity: 0;
-        transform: translate3d(-999px, -999px, 0);
-    }
-
-    .theme-ambient .cursor-glow.is-visible {
-        opacity: 0.42;
     }
 
     html[data-shell-mode="fixed"],

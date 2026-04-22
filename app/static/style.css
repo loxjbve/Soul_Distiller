@@ -80,45 +80,15 @@ p {
     margin: 0;
 }
 
-.screen-noise,
-.screen-grid,
-.screen-aura {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-}
-
-.screen-noise {
-    opacity: 0.03;
-    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.8) 0.6px, transparent 0.6px);
-    background-size: 10px 10px;
-}
-
 .screen-grid {
     background:
         linear-gradient(rgba(152, 198, 230, 0.05) 1px, transparent 1px),
         linear-gradient(90deg, rgba(152, 198, 230, 0.05) 1px, transparent 1px);
     background-size: 48px 48px;
     mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.45), transparent 85%);
-}
-
-.screen-aura {
-    filter: blur(120px);
-    opacity: 0.4;
-}
-
-.screen-aura-left {
-    inset: 8% auto auto 5%;
-    width: 26rem;
-    height: 26rem;
-    background: rgba(87, 215, 255, 0.18);
-}
-
-.screen-aura-right {
-    inset: auto 8% 8% auto;
-    width: 22rem;
-    height: 22rem;
-    background: rgba(255, 186, 87, 0.12);
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
 }
 
 .site-shell {
@@ -212,18 +182,14 @@ p {
     position: relative;
     overflow: hidden;
     border: 1px solid var(--line);
-    background: linear-gradient(180deg, rgba(12, 27, 40, 0.9), rgba(6, 16, 25, 0.86));
+    background: var(--panel, rgba(18, 20, 30, 0.84));
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
 .hero-panel::before,
 .surface-card::before {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(135deg, rgba(87, 215, 255, 0.08), transparent 40%, rgba(255, 186, 87, 0.05));
-    pointer-events: none;
+    display: none;
 }
 
 .hero-panel {
@@ -427,8 +393,8 @@ button {
 
 .primary-button:hover,
 button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 12px 24px rgba(87, 215, 255, 0.24);
+    box-shadow: 0 4px 12px rgba(87, 215, 255, 0.2);
+    filter: brightness(1.1);
 }
 
 .ghost-button,
@@ -998,58 +964,7 @@ textarea {
         transition: none !important;
     }
 }
-.cursor-glow { position: fixed; width: 600px; height: 600px; border-radius: 50%; background: radial-gradient(circle, rgba(0, 240, 255, 0.08), transparent 50%); pointer-events: none; z-index: -1; transform: translate(-50%, -50%); transition: opacity 0.3s; opacity: 0; } .cursor-glow.active { opacity: 1; }
 
-/* =========================================================
-   Holographic Lab UI Overrides (from feat/holographic-ui)
-   ========================================================= */
-:root {
-    --radius-xl: 0px;
-    --radius-lg: 0px;
-    --radius-md: 0px;
-    --radius-sm: 0px;
-    --clip-panel: polygon(0 0, calc(100% - 20px) 0, 100% 20px, 100% 100%, 20px 100%, 0 calc(100% - 20px));
-    --clip-button: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
-    --clip-chip: polygon(0 0, calc(100% - 6px) 0, 100% 6px, 100% 100%, 6px 100%, 0 calc(100% - 6px));
-}
-
-.site-shell, .workspace-panel, .panel, .doc-card, .metric-tile, .modal {
-    clip-path: var(--clip-panel);
-    border-radius: 0 !important;
-}
-
-button, .primary-button, .secondary-button, .ghost-button, .danger-button, input, select, textarea, .trace-box, .event-item {
-    clip-path: var(--clip-button);
-    border-radius: 0 !important;
-}
-
-.status-pill, .hero-chips span, .facet-meta span, .metric-card {
-    clip-path: var(--clip-chip);
-    border-radius: 0 !important;
-}
-
-/* Holographic Hover Effects */
-button:hover, .primary-button:hover {
-    animation: textGlitch 0.3s ease;
-}
-
-@keyframes textGlitch {
-    0%, 100% { transform: translate(0); }
-    20% { transform: translate(-1px, 1px); text-shadow: 2px 0 var(--accent), -2px 0 var(--danger); }
-    40% { transform: translate(1px, -1px); text-shadow: -2px 0 var(--accent), 2px 0 var(--purple); }
-    60% { transform: translate(-1px, -1px); }
-    80% { transform: translate(1px, 1px); text-shadow: 2px 0 var(--danger), -2px 0 var(--accent); }
-}
-
-.workspace-panel::before, .workspace-panel::after {
-    content: ''; position: absolute; width: 30px; height: 30px;
-    opacity: 0.5; transition: 0.3s; pointer-events: none; z-index: 10;
-}
-.workspace-panel::before { top: 0; left: 0; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
-.workspace-panel::after { bottom: 0; right: 0; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
-.workspace-panel:hover::before, .workspace-panel:hover::after {
-    opacity: 1; width: 40px; height: 40px; box-shadow: 0 0 15px var(--accent-soft);
-}
 
 /* =========================================
    Agentic Trace UI (Multi-dimensional Analysis)
@@ -1247,11 +1162,9 @@ button:hover, .primary-button:hover {
 .page-project--telegram-child .surface-card,
 .page-analysis-center .hero-panel,
 .page-analysis-center .surface-card {
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background:
-        linear-gradient(180deg, rgba(19, 22, 32, 0.92), rgba(12, 14, 22, 0.84)),
-        radial-gradient(circle at top right, rgba(103, 165, 255, 0.12), transparent 38%);
-    box-shadow: var(--shadow);
+    border: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
     backdrop-filter: blur(18px);
 }
 
@@ -1261,7 +1174,7 @@ button:hover, .primary-button:hover {
 .page-project--telegram-child .surface-card::before,
 .page-analysis-center .hero-panel::before,
 .page-analysis-center .surface-card::before {
-    background: linear-gradient(135deg, rgba(103, 165, 255, 0.08), transparent 42%, rgba(139, 92, 246, 0.08));
+    display: none;
 }
 
 .page-project--telegram-parent button:hover,
@@ -1272,7 +1185,6 @@ button:hover, .primary-button:hover {
 .page-analysis-center .primary-button:hover {
     animation: none !important;
     text-shadow: none !important;
-    transform: translateY(-1px);
 }
 
 .page-project--telegram-parent .workspace-panel::before,
@@ -2116,51 +2028,12 @@ button:hover, .primary-button:hover {
 .app-body {
     color: var(--text);
     font-family: var(--font-sans);
-    background:
-        radial-gradient(circle at top left, rgba(97, 168, 255, 0.12), transparent 26%),
-        radial-gradient(circle at 82% 12%, rgba(141, 107, 255, 0.12), transparent 20%),
-        radial-gradient(circle at 50% 110%, rgba(95, 224, 173, 0.06), transparent 22%),
-        linear-gradient(180deg, #050607 0%, #090a0f 100%);
-}
-
-.app-body .cursor-glow {
-    display: none !important;
-}
-
-.app-body .site-shell,
-.app-body .hero-panel,
-.app-body .surface-card,
-.app-body .metric-card,
-.app-body .status-chip,
-.app-body .filter-chip,
-.app-body button,
-.app-body .primary-button,
-.app-body .secondary-button,
-.app-body .ghost-button,
-.app-body .danger-button,
-.app-body input,
-.app-body select,
-.app-body textarea,
-.app-body .trace-box,
-.app-body .event-item,
-.app-body .status-pill {
-    clip-path: none !important;
-}
-
-.app-body button:hover,
-.app-body .primary-button:hover,
-.app-body .ghost-button:hover {
-    animation: none !important;
-    text-shadow: none !important;
+    background: var(--bg-soft);
 }
 
 .app-body .screen-grid {
     opacity: 0.4;
     mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.32), transparent 78%);
-}
-
-.app-body .screen-noise {
-    opacity: 0.012;
 }
 
 .app-body .site-header {
@@ -2176,17 +2049,15 @@ button:hover, .primary-button:hover {
 .app-body .surface-card,
 .app-body .metric-card {
     border-radius: var(--radius-lg) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background:
-        linear-gradient(180deg, rgba(21, 23, 35, 0.9), rgba(12, 13, 20, 0.88)),
-        radial-gradient(circle at top right, rgba(97, 168, 255, 0.12), transparent 34%);
-    box-shadow: var(--shadow);
+    border: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
     backdrop-filter: blur(20px);
 }
 
 .app-body .hero-panel::before,
 .app-body .surface-card::before {
-    background: linear-gradient(135deg, rgba(97, 168, 255, 0.08), transparent 42%, rgba(141, 107, 255, 0.08));
+    display: none;
 }
 
 .app-body button,

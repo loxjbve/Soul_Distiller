@@ -110,7 +110,7 @@ CC_SKILL_DOCUMENT_FILENAMES = {
 
 
 class ProjectCreatePayload(BaseModel):
-    name: str
+    name: str | None = None
     description: str | None = None
     mode: str = "group"
 
@@ -230,11 +230,17 @@ def index(request: Request, session: SessionDep):
 @router.post("/projects")
 def create_project_form(
     session: SessionDep,
-    name: Annotated[str, Form(...)],
+    name: Annotated[str | None, Form()] = None,
     description: Annotated[str | None, Form()] = None,
     mode: Annotated[str, Form()] = "group",
 ):
-    project = repository.create_project(session, name=name, description=description, mode=mode)
+    actual_name = (name or "").strip()
+    if not actual_name:
+        if mode == "telegram":
+            actual_name = "未命名 Telegram 项目"
+        else:
+            raise HTTPException(status_code=400, detail="Project name is required.")
+    project = repository.create_project(session, name=actual_name, description=description, mode=mode)
     return RedirectResponse(url=f"/projects/{project.id}", status_code=303)
 
 
@@ -987,7 +993,13 @@ def save_service_settings_api(
 
 @router.post("/api/projects")
 def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
-    project = repository.create_project(session, payload.name, payload.description, mode=payload.mode)
+    actual_name = (payload.name or "").strip()
+    if not actual_name:
+        if payload.mode == "telegram":
+            actual_name = "未命名 Telegram 项目"
+        else:
+            raise HTTPException(status_code=400, detail="Project name is required.")
+    project = repository.create_project(session, actual_name, payload.description, mode=payload.mode)
     return _ok_response(
         "项目已创建。",
         id=project.id,

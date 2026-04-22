@@ -8,105 +8,31 @@
         <div class="page-banner__main">
             <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
-                <h1>{{ ui.hero_title }}</h1>
-                <span class="page-banner__label">{{ ui.launch_deck_label }}</span>
+                <h1>{{ ui.title }}</h1>
             </div>
-            <p>{{ ui.hero_note }}</p>
             <div class="page-banner__chip-row">
+                <span class="status-chip tone-processing">
+                    {{ projects|length }} {{ ui.workspaces_suffix }}
+                </span>
                 <span class="status-chip {{ 'tone-ready' if chat_configured else 'tone-failed' }}">
                     {{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}
                 </span>
                 <span class="status-chip {{ 'tone-ready' if embedding_configured else 'tone-warning' }}">
                     {{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}
                 </span>
-                <span class="status-chip tone-processing">{{ ui.tech_stack_chip }}</span>
-            </div>
-        </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
-                <span class="page-banner__label">{{ ui.panel_existing }}</span>
-                <span class="page-banner__label">{{ projects|length }} {{ ui.workspaces_suffix }}</span>
             </div>
         </div>
     </section>
 
     <section class="page-content">
-        <article class="panel-shell">
-            <div class="panel-header">
-                <div>
-                    <p class="eyebrow">{{ ui.section_create_eyebrow }}</p>
-                    <h2>{{ ui.panel_create }}</h2>
-                </div>
-                <span class="status-chip tone-processing">{{ ui.new_workspace_chip }}</span>
-            </div>
-            <div class="panel-body">
-                <form method="post" action="/projects">
-                    <label>
-                        <span>{{ ui.create_name }}</span>
-                        <input type="text" name="name" placeholder="{{ ui.create_name_placeholder }}" required>
-                    </label>
-                    <label>
-                        <span>{{ ui.create_mode }}</span>
-                        <select name="mode">
-                            <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
-                            <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
-                            <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
-                        </select>
-                    </label>
-                    <label>
-                        <span>{{ ui.create_description }}</span>
-                        <textarea name="description" rows="6" placeholder="{{ ui.create_description_placeholder }}"></textarea>
-                    </label>
-                    <div class="button-row button-row--end">
-                        <button type="submit" class="primary-button">{{ ui.create_submit }}</button>
-                    </div>
-                </form>
-            </div>
-        </article>
-
-        <div class="workspace-column home-rail-grid">
-            <article class="panel-shell">
-                <div class="panel-header">
-                    <div>
-                        <p class="eyebrow">{{ ui.section_systems_eyebrow }}</p>
-                        <h2>{{ ui.title }}</h2>
-                    </div>
-                    <span class="status-chip tone-ready">{{ ui.workbench_chip }}</span>
-                </div>
-                <div class="panel-body">
-                    <div class="home-status-grid">
-                        <article class="metric-card">
-                            <span>{{ ui.metric_projects }}</span>
-                            <strong>{{ projects|length }}</strong>
-                            <p>{{ ui.metric_note }}</p>
-                        </article>
-                        <article class="metric-card">
-                            <span>{{ ui.metric_chat_label }}</span>
-                            <strong>{{ ui.metric_status_ready if chat_configured else ui.metric_status_check }}</strong>
-                            <p>{{ ui.status_chat_ready if chat_configured else ui.status_chat_missing }}</p>
-                        </article>
-                        <article class="metric-card">
-                            <span>{{ ui.metric_embedding_label }}</span>
-                            <strong>{{ ui.metric_status_ready if embedding_configured else ui.metric_status_check }}</strong>
-                            <p>{{ ui.status_embedding_ready if embedding_configured else ui.status_embedding_missing }}</p>
-                        </article>
-                        <article class="metric-card">
-                            <span>{{ ui.metric_interface_label }}</span>
-                            <strong>{{ ui.metric_interface_value }}</strong>
-                            <p>{{ ui.metric_interface_note }}</p>
-                        </article>
-                    </div>
-                </div>
-            </article>
-
+        <div class="workspace-column">
             <article class="panel-shell">
                 <div class="panel-header">
                     <div>
                         <p class="eyebrow">{{ ui.section_workspace_eyebrow }}</p>
                         <h2>{{ ui.panel_existing }}</h2>
                     </div>
-                    <span class="status-chip tone-processing">{{ projects|length }}</span>
+                    <button type="button" class="primary-button" data-modal-open="create-project-modal">{{ ui.panel_create }}</button>
                 </div>
                 <div class="panel-body">
                     {% if projects %}
@@ -192,4 +118,38 @@
         </div>
     </section>
 </div>
+
+<div class="modal-overlay" id="create-project-modal" hidden>
+    <div class="modal-dialog">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">{{ ui.section_create_eyebrow }}</p>
+                <h3>{{ ui.panel_create }}</h3>
+            </div>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <form method="post" action="/projects" class="form-stack">
+            <label>
+                <span>{{ ui.create_name }}</span>
+                <input type="text" name="name" placeholder="{{ ui.create_name_placeholder }}">
+            </label>
+            <label>
+                <span>{{ ui.create_mode }}</span>
+                <select name="mode">
+                    <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
+                    <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
+                    <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
+                </select>
+            </label>
+            <label>
+                <span>{{ ui.create_description }}</span>
+                <textarea name="description" rows="4" placeholder="{{ ui.create_description_placeholder }}"></textarea>
+            </label>
+            <div class="button-row button-row--end">
+                <button type="submit" class="primary-button">{{ ui.create_submit }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 {% endblock %}

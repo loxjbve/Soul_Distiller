@@ -34,13 +34,9 @@ if (bootstrap?.project_id) {
         livePill: document.getElementById("telegram-preprocess-live-pill"),
         currentTopicLabel: document.getElementById("telegram-preprocess-current-topic-label"),
         currentTopicProgress: document.getElementById("telegram-preprocess-current-topic-progress"),
-        currentProgressValue: document.getElementById("telegram-preprocess-current-progress-value"),
-        currentProgressStage: document.getElementById("telegram-preprocess-current-progress-stage"),
         topicBoardNote: document.getElementById("telegram-preprocess-topic-board-note"),
         progressLabel: document.getElementById("telegram-preprocess-progress-label"),
         progressFill: document.getElementById("telegram-preprocess-progress-fill"),
-        inputTokens: document.getElementById("telegram-preprocess-input-tokens"),
-        outputTokens: document.getElementById("telegram-preprocess-output-tokens"),
         inputTokenChip: document.getElementById("telegram-preprocess-input-token-chip"),
         outputTokenChip: document.getElementById("telegram-preprocess-output-token-chip"),
         topicLamps: document.getElementById("telegram-preprocess-topic-lamps"),
@@ -181,12 +177,12 @@ if (bootstrap?.project_id) {
             updateText(elements.liveNote, "Waiting for a new preprocess run.");
             updateText(elements.currentTopicLabel, "Waiting");
             updateText(elements.currentTopicProgress, "Processing Topic 0/0");
-            updateText(elements.currentProgressValue, "Processing Topic 0/0");
-            updateText(elements.currentProgressStage, "Waiting");
+            
+            
             updateText(elements.topicBoardNote, "Processing Topic 0/0");
             updateText(elements.progressLabel, "0%");
-            updateText(elements.inputTokens, "0");
-            updateText(elements.outputTokens, "0");
+            
+            
             updateText(elements.inputTokenChip, "In 0");
             updateText(elements.outputTokenChip, "Out 0");
             setWidth(elements.progressFill, 0);
@@ -203,12 +199,12 @@ if (bootstrap?.project_id) {
         updateText(elements.liveNote, buildLiveNote(bundle));
         updateText(elements.currentTopicLabel, bundle.current_topic_label || bundle.current_stage || "Waiting");
         updateText(elements.currentTopicProgress, progressText);
-        updateText(elements.currentProgressValue, progressText);
-        updateText(elements.currentProgressStage, bundle.current_stage || "Waiting");
+        
+        
         updateText(elements.topicBoardNote, progressText);
         updateText(elements.progressLabel, `${percent}%`);
-        updateText(elements.inputTokens, bundle.prompt_tokens || 0);
-        updateText(elements.outputTokens, bundle.completion_tokens || 0);
+        
+        
         updateText(elements.inputTokenChip, `In ${bundle.prompt_tokens || 0}`);
         updateText(elements.outputTokenChip, `Out ${bundle.completion_tokens || 0}`);
         setWidth(elements.progressFill, percent);

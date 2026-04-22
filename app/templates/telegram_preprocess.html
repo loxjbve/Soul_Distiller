@@ -100,8 +100,8 @@
                     </div>
                 </section>
 
-                <section class="telegram-preprocess-topic-board">
-                    <div class="telegram-preprocess-topic-board__head">
+                <details class="telegram-preprocess-topic-board" open>
+                    <summary class="telegram-preprocess-topic-board__head">
                         <div>
                             <p class="eyebrow">Topics</p>
                             <h3>Topic Indicators</h3>
@@ -113,7 +113,7 @@
                                 处理中 Topic 0/0
                             {% endif %}
                         </p>
-                    </div>
+                    </summary>
                     <div id="telegram-preprocess-topic-lamps" class="telegram-preprocess-topic-lamps panel-scroll" data-panel-scroll>
                         {% if weekly_candidates %}
                             {% for candidate in weekly_candidates %}
@@ -146,31 +146,7 @@
                             </div>
                         {% endif %}
                     </div>
-                </section>
-
-                <section class="telegram-preprocess-metrics">
-                    <article class="surface-card telegram-preprocess-metric-card">
-                        <span class="eyebrow">Input Tokens</span>
-                        <strong id="telegram-preprocess-input-tokens">{{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</strong>
-                        <small>prompt</small>
-                    </article>
-                    <article class="surface-card telegram-preprocess-metric-card">
-                        <span class="eyebrow">Output Tokens</span>
-                        <strong id="telegram-preprocess-output-tokens">{{ selected_run_data.completion_tokens if selected_run_data else 0 }}</strong>
-                        <small>completion</small>
-                    </article>
-                    <article class="surface-card telegram-preprocess-metric-card">
-                        <span class="eyebrow">Current Progress</span>
-                        <strong id="telegram-preprocess-current-progress-value">
-                            {% if selected_run_data %}
-                                处理中 Topic {{ selected_run_data.current_topic_index or 0 }}/{{ selected_run_data.current_topic_total or selected_run_data.weekly_candidate_count or 0 }}
-                            {% else %}
-                                处理中 Topic 0/0
-                            {% endif %}
-                        </strong>
-                        <small id="telegram-preprocess-current-progress-stage">{{ selected_run_data.current_stage if selected_run_data else ui.stage_waiting }}</small>
-                    </article>
-                </section>
+                </details>
 
                 <p class="section-note telegram-preprocess-error" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
                     {{ selected_run_data.error_message if selected_run_data else "" }}
