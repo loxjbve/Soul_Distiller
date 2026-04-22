@@ -284,66 +284,88 @@
 
     .persona-top-user-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(auto-fit, minmax(216px, 1fr));
+        gap: 12px;
         align-content: start;
     }
 
     .persona-top-user-card {
         position: relative;
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        align-items: flex-start;
-        justify-content: flex-start;
+        appearance: none;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 10px;
+        align-items: start;
         text-align: left;
         width: 100%;
-        min-height: 78px;
-        padding: 10px 12px;
-        border-radius: 14px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        min-height: 118px;
+        padding: 14px;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.09);
         background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
-            rgba(14, 18, 30, 0.82);
-        box-shadow: none;
+            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+            radial-gradient(circle at top right, rgba(97, 168, 255, 0.14), transparent 54%),
+            rgba(12, 17, 28, 0.9);
+        box-shadow: 0 14px 28px rgba(5, 10, 24, 0.18);
+        transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
     }
 
     .persona-top-user-card:hover {
-        border-color: rgba(97, 168, 255, 0.22);
-        background: rgba(97, 168, 255, 0.08);
+        transform: translateY(-1px);
+        border-color: rgba(97, 168, 255, 0.28);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03)),
+            radial-gradient(circle at top right, rgba(97, 168, 255, 0.18), transparent 58%),
+            rgba(16, 21, 36, 0.94);
+        box-shadow: 0 18px 36px rgba(8, 14, 30, 0.24);
     }
 
     .persona-top-user-card strong {
         width: 100%;
-        font-size: 0.9rem;
+        min-height: 2.8em;
+        font-size: 0.96rem;
+        line-height: 1.4;
+        letter-spacing: 0.01em;
         color: var(--text-strong);
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
 
     .persona-top-user-card small {
         color: var(--text-secondary);
         width: 100%;
-        font-size: 0.76rem;
-        line-height: 1.3;
+        margin-top: auto;
+        min-height: 2.7em;
+        font-size: 0.78rem;
+        line-height: 1.45;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
         overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
 
     .persona-top-user-card.is-selected {
-        border-color: rgba(97, 168, 255, 0.34);
+        border-color: rgba(97, 168, 255, 0.42);
         background:
-            linear-gradient(135deg, rgba(97, 168, 255, 0.18), rgba(141, 107, 255, 0.12)),
-            rgba(16, 20, 34, 0.88);
-        box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.14);
+            linear-gradient(135deg, rgba(97, 168, 255, 0.2), rgba(99, 199, 255, 0.08)),
+            radial-gradient(circle at top right, rgba(97, 168, 255, 0.2), transparent 56%),
+            rgba(15, 21, 37, 0.95);
+        box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.18), 0 20px 38px rgba(8, 14, 32, 0.28);
     }
 
     .persona-top-user-card__rank {
-        color: var(--accent-blue);
-        font: 700 0.72rem/1 var(--font-mono);
-        letter-spacing: 0.12em;
+        display: inline-flex;
+        align-items: center;
+        width: max-content;
+        padding: 5px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(97, 168, 255, 0.2);
+        background: rgba(97, 168, 255, 0.1);
+        color: #9fcbff;
+        font: 700 0.68rem/1 var(--font-mono);
+        letter-spacing: 0.1em;
         text-transform: uppercase;
     }
 
@@ -437,6 +459,267 @@
         display: flex;
         flex-direction: column;
         gap: var(--space-3);
+    }
+
+    .telegram-relationship-panel .panel-body {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .telegram-relationship-empty {
+        display: grid;
+        gap: 8px;
+        padding: 4px 2px 2px;
+    }
+
+    .telegram-relationship-empty p {
+        margin: 0;
+        color: var(--text-secondary);
+        line-height: 1.5;
+    }
+
+    .telegram-relationship-shell {
+        display: grid;
+        gap: 14px;
+        min-height: 0;
+    }
+
+    .telegram-relationship-metrics {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
+
+    .telegram-relationship-metric {
+        padding: 12px 13px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02)),
+            rgba(10, 15, 25, 0.84);
+        display: grid;
+        gap: 6px;
+    }
+
+    .telegram-relationship-metric span {
+        color: var(--text-secondary);
+        font-size: 0.73rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .telegram-relationship-metric strong {
+        font-size: 1.12rem;
+        color: var(--text-strong);
+    }
+
+    .telegram-relationship-columns,
+    .telegram-relationship-member__groups {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+
+    .telegram-relationship-block,
+    .telegram-relationship-member-group {
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+    }
+
+    .telegram-relationship-block__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .telegram-relationship-block__head strong,
+    .telegram-relationship-member-group h3 {
+        margin: 0;
+        color: var(--text-strong);
+        font-size: 0.92rem;
+    }
+
+    .telegram-relationship-member {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .telegram-relationship-member__picker {
+        display: grid;
+        gap: 6px;
+    }
+
+    .telegram-relationship-member__picker span {
+        color: var(--text-secondary);
+        font-size: 0.76rem;
+    }
+
+    .telegram-relationship-list {
+        display: grid;
+        gap: 10px;
+        min-width: 0;
+    }
+
+    .telegram-relationship-list__empty {
+        margin: 0;
+        padding: 12px 13px;
+        border-radius: 14px;
+        border: 1px dashed rgba(255, 255, 255, 0.12);
+        color: var(--text-secondary);
+        font-size: 0.82rem;
+        line-height: 1.45;
+    }
+
+    .telegram-relationship-item {
+        min-width: 0;
+        padding: 12px 13px;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.015)),
+            rgba(9, 14, 24, 0.88);
+        display: grid;
+        gap: 8px;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    }
+
+    .telegram-relationship-item__head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .telegram-relationship-item__head strong {
+        min-width: 0;
+        font-size: 0.92rem;
+        line-height: 1.4;
+    }
+
+    .telegram-relationship-item__head .status-chip {
+        flex: 0 0 auto;
+    }
+
+    .telegram-relationship-item__meta {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        line-height: 1.4;
+    }
+
+    .telegram-relationship-item__summary {
+        margin: 0;
+        color: var(--text-primary);
+        font-size: 0.83rem;
+        line-height: 1.5;
+    }
+
+    .telegram-relationship-item__details {
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        padding-top: 8px;
+    }
+
+    .telegram-relationship-item__details summary {
+        cursor: pointer;
+        color: var(--accent-blue);
+        font-size: 0.79rem;
+        font-weight: 600;
+        list-style: none;
+    }
+
+    .telegram-relationship-item__details summary::-webkit-details-marker {
+        display: none;
+    }
+
+    .telegram-relationship-item__details-body {
+        display: grid;
+        gap: 10px;
+        margin-top: 10px;
+    }
+
+    .telegram-relationship-detail-group {
+        display: grid;
+        gap: 8px;
+    }
+
+    .telegram-relationship-detail-group > span {
+        color: var(--text-secondary);
+        font-size: 0.72rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+    }
+
+    .telegram-relationship-signal-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .telegram-relationship-signal {
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: rgba(97, 168, 255, 0.1);
+        color: #cbe4ff;
+        font-size: 0.75rem;
+        line-height: 1.3;
+    }
+
+    .telegram-relationship-evidence-stack {
+        display: grid;
+        gap: 8px;
+    }
+
+    .telegram-relationship-evidence {
+        display: grid;
+        gap: 7px;
+        padding: 10px 11px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .telegram-relationship-evidence strong {
+        font-size: 0.82rem;
+        color: var(--text-strong);
+    }
+
+    .telegram-relationship-evidence p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.78rem;
+        line-height: 1.45;
+    }
+
+    .telegram-relationship-evidence__meta {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        line-height: 1.45;
+    }
+
+    .telegram-relationship-evidence__stack {
+        display: grid;
+        gap: 6px;
+    }
+
+    .telegram-relationship-evidence__message {
+        display: grid;
+        gap: 4px;
+        padding: 8px 9px;
+        border-radius: 10px;
+        background: rgba(7, 11, 19, 0.54);
+    }
+
+    .telegram-relationship-evidence__message span {
+        color: #d9ebff;
+        font-size: 0.74rem;
+        font-weight: 600;
+    }
+
+    .telegram-relationship-evidence__message p {
+        color: var(--text-primary);
     }
 
     .page-analysis .page-content {
@@ -936,6 +1219,12 @@
 
         .persona-top-user-grid,
         .document-board {
+            grid-template-columns: 1fr;
+        }
+
+        .telegram-relationship-columns,
+        .telegram-relationship-member__groups,
+        .telegram-relationship-metrics {
             grid-template-columns: 1fr;
         }
 

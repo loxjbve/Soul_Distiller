@@ -47,6 +47,21 @@ if (bootstrap.project?.id) {
         statsFailed: document.getElementById("status-failed"),
         analyzeSubmit: document.getElementById("analyze-submit-btn"),
         targetPickers: [...document.querySelectorAll("[data-telegram-target-picker]")],
+        relationshipPanel: document.getElementById("telegram-relationship-panel"),
+        relationshipStatus: document.getElementById("telegram-relationship-status"),
+        relationshipEmpty: document.getElementById("telegram-relationship-empty"),
+        relationshipShell: document.getElementById("telegram-relationship-shell"),
+        relationshipUsers: document.getElementById("telegram-relationship-users"),
+        relationshipEdges: document.getElementById("telegram-relationship-edges"),
+        relationshipFriendly: document.getElementById("telegram-relationship-friendly"),
+        relationshipTense: document.getElementById("telegram-relationship-tense"),
+        relationshipFriendlyList: document.getElementById("telegram-relationship-friendly-list"),
+        relationshipTenseList: document.getElementById("telegram-relationship-tense-list"),
+        relationshipMemberSelect: document.getElementById("telegram-relationship-member-select"),
+        relationshipMemberAllies: document.getElementById("telegram-relationship-member-allies"),
+        relationshipMemberTense: document.getElementById("telegram-relationship-member-tense"),
+        relationshipMemberNeutral: document.getElementById("telegram-relationship-member-neutral"),
+        relationshipMemberUnclear: document.getElementById("telegram-relationship-member-unclear"),
     };
 
     bindEvents();
@@ -68,6 +83,7 @@ if (bootstrap.project?.id) {
         elements.retryAll?.addEventListener("click", () => runProjectAction("retry-all", elements.retryAll, state.ui.retry_success));
         elements.stopProcessing?.addEventListener("click", () => runProjectAction("stop-processing", elements.stopProcessing, state.ui.stop_success));
         initTelegramTargetPickers();
+        elements.relationshipMemberSelect?.addEventListener("change", () => renderTelegramRelationships());
 
         if (elements.dropzone && elements.fileInput) {
             ["dragenter", "dragover"].forEach((eventName) => {
@@ -187,6 +203,7 @@ if (bootstrap.project?.id) {
             elements.loadMore.hidden = !state.pagination.has_more;
         }
         updateStats();
+        renderTelegramRelationships();
     }
 
     function getFilteredDocuments() {
@@ -552,6 +569,393 @@ if (bootstrap.project?.id) {
                 syncSubmit();
             }
         });
+    }
+
+    function renderTelegramRelationships() {
+        if (!elements.relationshipPanel) {
+            return;
+        }
+        const bundle = state.telegram.relationships || null;
+        const snapshot = bundle?.snapshot || null;
+        const summary = snapshot?.summary || {};
+        const users = Array.isArray(bundle?.users) ? bundle.users : [];
+        const edges = Array.isArray(bundle?.edges) ? bundle.edges : [];
+
+        setRelationshipStatus(snapshot?.status || "waiting");
+
+        if (!snapshot) {
+            if (elements.relationshipEmpty) {
+                elements.relationshipEmpty.hidden = false;
+            }
+            if (elements.relationshipShell) {
+                elements.relationshipShell.hidden = true;
+            }
+            return;
+        }
+
+        if (elements.relationshipEmpty) {
+            elements.relationshipEmpty.hidden = true;
+        }
+        if (elements.relationshipShell) {
+            elements.relationshipShell.hidden = false;
+        }
+
+        if (elements.relationshipUsers) {
+            elements.relationshipUsers.textContent = String(snapshot.analyzed_user_count ?? users.length ?? 0);
+        }
+        if (elements.relationshipEdges) {
+            elements.relationshipEdges.textContent = String(summary.edge_count ?? edges.length ?? 0);
+        }
+        if (elements.relationshipFriendly) {
+            elements.relationshipFriendly.textContent = String(summary.friendly_count ?? 0);
+        }
+        if (elements.relationshipTense) {
+            elements.relationshipTense.textContent = String(summary.tense_count ?? 0);
+        }
+
+        const friendlyEdges = edges
+            .filter((edge) => edge.relation_label === "friendly")
+            .sort(sortRelationshipEdges)
+            .slice(0, 8);
+        const tenseEdges = edges
+            .filter((edge) => edge.relation_label === "tense")
+            .sort(sortRelationshipEdges)
+            .slice(0, 8);
+
+        renderRelationshipCollection(
+            elements.relationshipFriendlyList,
+            friendlyEdges,
+            {
+                emptyText: state.ui.telegram_relationship_no_friendly || "No friendly ties yet.",
+            }
+        );
+        renderRelationshipCollection(
+            elements.relationshipTenseList,
+            tenseEdges,
+            {
+                emptyText: state.ui.telegram_relationship_no_tense || "No tense ties yet.",
+            }
+        );
+
+        if (!elements.relationshipMemberSelect) {
+            return;
+        }
+        const previousSelection = elements.relationshipMemberSelect.value;
+        const availableIds = users.map((user) => String(user.participant_id || ""));
+        const selectedParticipantId = (
+            previousSelection && availableIds.includes(previousSelection)
+                ? previousSelection
+                : (availableIds[0] || "")
+        );
+
+        elements.relationshipMemberSelect.innerHTML = users.map((user) => {
+            const participantId = String(user.participant_id || "");
+            const label = String(user.label || participantId);
+            const messageCount = Number(user.message_count || 0);
+            const selected = participantId === selectedParticipantId ? " selected" : "";
+            return `<option value="${escapeHtml(participantId)}"${selected}>${escapeHtml(label)} · ${messageCount}</option>`;
+        }).join("");
+
+        const selectedUser = users.find((user) => String(user.participant_id || "") === selectedParticipantId) || null;
+        renderTelegramRelationshipMember(selectedUser);
+    }
+
+    function renderTelegramRelationshipMember(user) {
+        const relationGroups = {
+            friendly: [],
+            tense: [],
+            neutral: [],
+            unclear: [],
+        };
+        if (user && Array.isArray(user.relations)) {
+            user.relations
+                .slice()
+                .sort(sortRelationshipEdges)
+                .forEach((edge) => {
+                    const label = normalizeRelationshipLabel(edge.relation_label);
+                    relationGroups[label].push(edge);
+                });
+        }
+
+        renderRelationshipCollection(
+            elements.relationshipMemberAllies,
+            relationGroups.friendly,
+            {
+                participantId: user?.participant_id || "",
+                emptyText: state.ui.telegram_relationship_group_empty_allies || "No friendly ties.",
+            }
+        );
+        renderRelationshipCollection(
+            elements.relationshipMemberTense,
+            relationGroups.tense,
+            {
+                participantId: user?.participant_id || "",
+                emptyText: state.ui.telegram_relationship_group_empty_tense || "No tense ties.",
+            }
+        );
+        renderRelationshipCollection(
+            elements.relationshipMemberNeutral,
+            relationGroups.neutral,
+            {
+                participantId: user?.participant_id || "",
+                emptyText: state.ui.telegram_relationship_group_empty_neutral || "No neutral ties.",
+            }
+        );
+        renderRelationshipCollection(
+            elements.relationshipMemberUnclear,
+            relationGroups.unclear,
+            {
+                participantId: user?.participant_id || "",
+                emptyText: state.ui.telegram_relationship_group_empty_unclear || "No unclear ties.",
+            }
+        );
+    }
+
+    function renderRelationshipCollection(container, edges, options = {}) {
+        if (!container) {
+            return;
+        }
+        const participantId = String(options.participantId || "");
+        if (!Array.isArray(edges) || !edges.length) {
+            container.innerHTML = `<p class="telegram-relationship-list__empty">${escapeHtml(options.emptyText || "No relationship data.")}</p>`;
+            return;
+        }
+        container.innerHTML = edges.map((edge) => renderRelationshipItem(edge, { participantId })).join("");
+    }
+
+    function renderRelationshipItem(edge, options = {}) {
+        const participantId = String(options.participantId || "");
+        const label = normalizeRelationshipLabel(edge.relation_label);
+        const labelText = relationshipLabelText(label);
+        const labelTone = relationshipLabelTone(label);
+        const pairLabel = participantId
+            ? relationshipCounterpartLabel(edge, participantId)
+            : `${edge.participant_a_label || edge.participant_a_id} × ${edge.participant_b_label || edge.participant_b_id}`;
+        const summary = String(edge.summary || "").trim() || (state.ui.telegram_relationship_rule_only || "Rule-based evidence only.");
+        const metrics = [
+            `${state.ui.telegram_relationship_strength || "Strength"} ${formatRelationshipNumber(edge.interaction_strength)}`,
+            `${state.ui.telegram_relationship_confidence || "Confidence"} ${formatRelationshipNumber(edge.confidence)}`,
+        ];
+        const details = renderRelationshipDetails(edge);
+
+        return `
+            <article class="telegram-relationship-item">
+                <div class="telegram-relationship-item__head">
+                    <strong>${escapeHtml(pairLabel)}</strong>
+                    <span class="status-chip ${labelTone}">${escapeHtml(labelText)}</span>
+                </div>
+                <div class="telegram-relationship-item__meta">${escapeHtml(metrics.join(" · "))}</div>
+                <p class="telegram-relationship-item__summary">${escapeHtml(summary)}</p>
+                ${details}
+            </article>
+        `;
+    }
+
+    function renderRelationshipDetails(edge) {
+        const metrics = edge.metrics || {};
+        const supportingSignals = Array.isArray(metrics.supporting_signals) ? metrics.supporting_signals : [];
+        const counterSignals = Array.isArray(metrics.counter_signals) ? metrics.counter_signals : [];
+        const evidence = Array.isArray(edge.evidence) ? edge.evidence : [];
+        const counterevidence = Array.isArray(edge.counterevidence) ? edge.counterevidence : [];
+        const sections = [];
+
+        if (supportingSignals.length) {
+            sections.push(`
+                <div class="telegram-relationship-detail-group">
+                    <span>${escapeHtml(state.ui.telegram_relationship_supporting_signals || "Support")}</span>
+                    <div class="telegram-relationship-signal-row">
+                        ${supportingSignals.map((item) => `<span class="telegram-relationship-signal">${escapeHtml(String(item || ""))}</span>`).join("")}
+                    </div>
+                </div>
+            `);
+        }
+        if (counterSignals.length) {
+            sections.push(`
+                <div class="telegram-relationship-detail-group">
+                    <span>${escapeHtml(state.ui.telegram_relationship_counter_signals || "Counter-signals")}</span>
+                    <div class="telegram-relationship-signal-row">
+                        ${counterSignals.map((item) => `<span class="telegram-relationship-signal">${escapeHtml(String(item || ""))}</span>`).join("")}
+                    </div>
+                </div>
+            `);
+        }
+        if (evidence.length) {
+            sections.push(`
+                <div class="telegram-relationship-detail-group">
+                    <span>${escapeHtml(state.ui.telegram_relationship_evidence || "Evidence")}</span>
+                    <div class="telegram-relationship-evidence-stack">
+                        ${evidence.map((item) => renderRelationshipEvidence(item)).join("")}
+                    </div>
+                </div>
+            `);
+        }
+        if (counterevidence.length) {
+            sections.push(`
+                <div class="telegram-relationship-detail-group">
+                    <span>${escapeHtml(state.ui.telegram_relationship_counterevidence || "Counterevidence")}</span>
+                    <div class="telegram-relationship-evidence-stack">
+                        ${counterevidence.map((item) => renderRelationshipEvidence(item)).join("")}
+                    </div>
+                </div>
+            `);
+        }
+        if (!sections.length) {
+            return "";
+        }
+        return `
+            <details class="telegram-relationship-item__details">
+                <summary>${escapeHtml(state.ui.telegram_relationship_view_evidence || "View evidence")}</summary>
+                <div class="telegram-relationship-item__details-body">
+                    ${sections.join("")}
+                </div>
+            </details>
+        `;
+    }
+
+    function renderRelationshipEvidence(item) {
+        if ((item?.kind || "") === "reply_context") {
+            const summary = String(item.summary || state.ui.telegram_relationship_reply_chain || "Reply chain");
+            const messages = Array.isArray(item.messages) ? item.messages : [];
+            return `
+                <article class="telegram-relationship-evidence">
+                    <strong>${escapeHtml(summary)}</strong>
+                    <div class="telegram-relationship-evidence__stack">
+                        ${messages.map((message) => {
+                            const sender = String(message.sender_name || message.participant_id || "Unknown");
+                            const text = String(message.text || "");
+                            return `
+                                <div class="telegram-relationship-evidence__message">
+                                    <span>${escapeHtml(sender)}</span>
+                                    <p>${escapeHtml(text)}</p>
+                                </div>
+                            `;
+                        }).join("")}
+                    </div>
+                </article>
+            `;
+        }
+
+        const title = String(item?.title || item?.week_key || state.ui.telegram_relationship_shared_topic || "Shared topic");
+        const summary = String(item?.summary || "");
+        const patterns = Array.isArray(item?.interaction_patterns) ? item.interaction_patterns : [];
+        const stanceParts = [
+            item?.participant_a_stance ? `${state.ui.telegram_relationship_participant_a || "A"}: ${item.participant_a_stance}` : "",
+            item?.participant_b_stance ? `${state.ui.telegram_relationship_participant_b || "B"}: ${item.participant_b_stance}` : "",
+        ].filter(Boolean);
+        const quotes = Array.isArray(item?.quotes) ? item.quotes : [];
+
+        return `
+            <article class="telegram-relationship-evidence">
+                <strong>${escapeHtml(title)}</strong>
+                ${summary ? `<p>${escapeHtml(summary)}</p>` : ""}
+                ${patterns.length ? `<div class="telegram-relationship-evidence__meta">${escapeHtml(patterns.join(" · "))}</div>` : ""}
+                ${stanceParts.length ? `<div class="telegram-relationship-evidence__meta">${escapeHtml(stanceParts.join(" · "))}</div>` : ""}
+                ${quotes.length ? `
+                    <div class="telegram-relationship-evidence__stack">
+                        ${quotes.map((quote) => {
+                            const label = String(quote.display_name || quote.participant_id || "Member");
+                            const text = String(quote.quote || "");
+                            return `
+                                <div class="telegram-relationship-evidence__message">
+                                    <span>${escapeHtml(label)}</span>
+                                    <p>${escapeHtml(text)}</p>
+                                </div>
+                            `;
+                        }).join("")}
+                    </div>
+                ` : ""}
+            </article>
+        `;
+    }
+
+    function relationshipCounterpartLabel(edge, participantId) {
+        const isA = String(edge.participant_a_id || "") === String(participantId || "");
+        return isA
+            ? (edge.participant_b_label || edge.participant_b_id || "")
+            : (edge.participant_a_label || edge.participant_a_id || "");
+    }
+
+    function setRelationshipStatus(status) {
+        if (!elements.relationshipStatus) {
+            return;
+        }
+        const normalizedStatus = String(status || "waiting").trim().toLowerCase();
+        elements.relationshipStatus.className = `status-chip ${relationshipStatusTone(normalizedStatus)}`;
+        elements.relationshipStatus.textContent = relationshipStatusLabel(normalizedStatus);
+    }
+
+    function relationshipStatusTone(status) {
+        if (status === "completed") {
+            return "tone-ready";
+        }
+        if (status === "partial") {
+            return "tone-warning";
+        }
+        if (status === "failed") {
+            return "tone-failed";
+        }
+        if (status === "running") {
+            return "tone-processing";
+        }
+        return "tone-queued";
+    }
+
+    function relationshipStatusLabel(status) {
+        const mapping = {
+            waiting: state.ui.telegram_relationship_waiting || "waiting",
+            running: state.ui.telegram_relationship_status_running || "running",
+            completed: state.ui.telegram_relationship_status_completed || "completed",
+            partial: state.ui.telegram_relationship_status_partial || "partial",
+            failed: state.ui.telegram_relationship_status_failed || "failed",
+        };
+        return mapping[status] || status || "--";
+    }
+
+    function relationshipLabelTone(label) {
+        if (label === "friendly") {
+            return "tone-ready";
+        }
+        if (label === "tense") {
+            return "tone-failed";
+        }
+        if (label === "neutral") {
+            return "tone-queued";
+        }
+        return "tone-warning";
+    }
+
+    function relationshipLabelText(label) {
+        const mapping = {
+            friendly: state.ui.telegram_relationship_label_friendly || "Friendly",
+            neutral: state.ui.telegram_relationship_label_neutral || "Neutral",
+            tense: state.ui.telegram_relationship_label_tense || "Tense",
+            unclear: state.ui.telegram_relationship_label_unclear || "Unclear",
+        };
+        return mapping[label] || label || "Unclear";
+    }
+
+    function normalizeRelationshipLabel(label) {
+        const normalized = String(label || "").trim().toLowerCase();
+        if (["friendly", "neutral", "tense", "unclear"].includes(normalized)) {
+            return normalized;
+        }
+        return "unclear";
+    }
+
+    function sortRelationshipEdges(left, right) {
+        const strengthDelta = Number(right?.interaction_strength || 0) - Number(left?.interaction_strength || 0);
+        if (strengthDelta !== 0) {
+            return strengthDelta;
+        }
+        return Number(right?.confidence || 0) - Number(left?.confidence || 0);
+    }
+
+    function formatRelationshipNumber(value) {
+        const normalized = Number(value || 0);
+        if (!Number.isFinite(normalized)) {
+            return "0.00";
+        }
+        return normalized.toFixed(2);
     }
 
     function statusToLabel(status) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -26,8 +27,11 @@ from app.models import (
     TelegramPreprocessActiveUser,
     TelegramPreprocessRun,
     TelegramPreprocessWeeklyTopicCandidate,
+    TelegramRelationshipEdge,
+    TelegramRelationshipSnapshot,
     TelegramPreprocessTopic,
     TelegramPreprocessTopicParticipant,
+    TelegramPreprocessTopicQuote,
     TelegramTopicReport,
     TextChunk,
     utcnow,
@@ -156,6 +160,14 @@ def delete_project_cascade(session: Session, project_id: str) -> None:
     for cid in child_ids:
         delete_project_cascade(session, cid)
 
+    relationship_snapshot_ids = session.scalars(
+        select(TelegramRelationshipSnapshot.id).where(TelegramRelationshipSnapshot.project_id == project_id)
+    ).all()
+    if relationship_snapshot_ids:
+        session.execute(delete(TelegramRelationshipEdge).where(TelegramRelationshipEdge.snapshot_id.in_(relationship_snapshot_ids)))
+        session.execute(delete(TelegramRelationshipSnapshot).where(TelegramRelationshipSnapshot.id.in_(relationship_snapshot_ids)))
+
+    session.execute(delete(TelegramPreprocessTopicQuote).where(TelegramPreprocessTopicQuote.run_id.in_(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.project_id == project_id))))
     session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.run_id.in_(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.project_id == project_id))))
     session.execute(delete(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.project_id == project_id))
     session.execute(delete(TelegramPreprocessTopUser).where(TelegramPreprocessTopUser.project_id == project_id))
@@ -421,6 +433,15 @@ def delete_telegram_export_by_document(session: Session, document_id: str) -> No
         session.scalars(select(TelegramPreprocessRun.id).where(TelegramPreprocessRun.chat_id.in_(chat_ids)))
     )
     if run_ids:
+        snapshot_ids = list(
+            session.scalars(
+                select(TelegramRelationshipSnapshot.id).where(TelegramRelationshipSnapshot.run_id.in_(run_ids))
+            )
+        )
+        if snapshot_ids:
+            session.execute(delete(TelegramRelationshipEdge).where(TelegramRelationshipEdge.snapshot_id.in_(snapshot_ids)))
+            session.execute(delete(TelegramRelationshipSnapshot).where(TelegramRelationshipSnapshot.id.in_(snapshot_ids)))
+        session.execute(delete(TelegramPreprocessTopicQuote).where(TelegramPreprocessTopicQuote.run_id.in_(run_ids)))
         session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.run_id.in_(run_ids)))
         session.execute(delete(TelegramPreprocessWeeklyTopicCandidate).where(TelegramPreprocessWeeklyTopicCandidate.run_id.in_(run_ids)))
         session.execute(delete(TelegramPreprocessTopUser).where(TelegramPreprocessTopUser.run_id.in_(run_ids)))
@@ -692,7 +713,9 @@ def get_telegram_preprocess_run(session: Session, run_id: str) -> TelegramPrepro
         .options(
             selectinload(TelegramPreprocessRun.top_users),
             selectinload(TelegramPreprocessRun.weekly_topic_candidates),
-            selectinload(TelegramPreprocessRun.topics).selectinload(TelegramPreprocessTopic.participants),
+            selectinload(TelegramPreprocessRun.topics).selectinload(TelegramPreprocessTopic.participants).selectinload(TelegramPreprocessTopicParticipant.participant),
+            selectinload(TelegramPreprocessRun.topics).selectinload(TelegramPreprocessTopic.quotes).selectinload(TelegramPreprocessTopicQuote.participant),
+            selectinload(TelegramPreprocessRun.topic_quotes),
             selectinload(TelegramPreprocessRun.active_users),
         )
     )
@@ -836,6 +859,7 @@ def replace_telegram_preprocess_weekly_topic_candidates(
             project_id=project_id,
             chat_id=chat_id,
             week_key=str(payload.get("week_key") or "").strip(),
+            window_index=max(1, int(payload.get("window_index") or len(created) + 1)),
             start_at=payload.get("start_at"),
             end_at=payload.get("end_at"),
             start_message_id=payload.get("start_message_id"),
@@ -867,6 +891,7 @@ def list_telegram_preprocess_weekly_topic_candidates(
         )
         .order_by(
             TelegramPreprocessWeeklyTopicCandidate.week_key.asc(),
+            TelegramPreprocessWeeklyTopicCandidate.window_index.asc(),
             TelegramPreprocessWeeklyTopicCandidate.start_at.asc(),
             TelegramPreprocessWeeklyTopicCandidate.created_at.asc(),
         )
@@ -894,16 +919,20 @@ def replace_telegram_preprocess_topics(
         session.scalars(select(TelegramPreprocessTopic.id).where(TelegramPreprocessTopic.run_id == run_id))
     )
     if existing_topic_ids:
+        session.execute(delete(TelegramPreprocessTopicQuote).where(TelegramPreprocessTopicQuote.topic_id.in_(existing_topic_ids)))
         session.execute(delete(TelegramPreprocessTopicParticipant).where(TelegramPreprocessTopicParticipant.topic_id.in_(existing_topic_ids)))
     session.execute(delete(TelegramPreprocessTopic).where(TelegramPreprocessTopic.run_id == run_id))
 
     created: list[TelegramPreprocessTopic] = []
     for payload in topics:
+        metadata = dict(payload.get("metadata_json") or {})
         topic = TelegramPreprocessTopic(
             run_id=run_id,
             project_id=project_id,
             chat_id=chat_id,
             topic_index=int(payload.get("topic_index") or len(created) + 1),
+            week_key=str(payload.get("week_key") or metadata.get("week_key") or "").strip() or None,
+            week_topic_index=int(payload.get("week_topic_index") or payload.get("topic_index") or len(created) + 1),
             title=str(payload.get("title") or "").strip() or f"Topic {len(created) + 1}",
             summary=str(payload.get("summary") or "").strip(),
             start_at=payload.get("start_at"),
@@ -914,22 +943,14 @@ def replace_telegram_preprocess_topics(
             participant_count=int(payload.get("participant_count") or 0),
             keywords_json=list(payload.get("keywords_json") or payload.get("keywords") or []),
             evidence_json=list(payload.get("evidence_json") or []),
-            metadata_json=dict(payload.get("metadata_json") or {}),
+            metadata_json=metadata,
         )
         session.add(topic)
         created.append(topic)
     session.flush()
 
-    topic_id_by_index = {topic.topic_index: topic.id for topic in created}
-    topic_id_by_title = {topic.title: topic.id for topic in created}
-    for payload in topics:
-        topic_id = payload.get("topic_id")
-        if not topic_id:
-            topic_id = topic_id_by_index.get(int(payload.get("topic_index") or 0))
-        if not topic_id:
-            topic_id = topic_id_by_title.get(str(payload.get("title") or "").strip())
-        if not topic_id:
-            continue
+    for topic, payload in zip(created, topics):
+        topic_id = topic.id
         for participant_payload in payload.get("participants") or []:
             participant_id = str(participant_payload.get("participant_id") or "").strip()
             if not participant_id:
@@ -940,8 +961,44 @@ def replace_telegram_preprocess_topics(
                     topic_id=topic_id,
                     participant_id=participant_id,
                     role_hint=str(participant_payload.get("role_hint") or "").strip() or None,
+                    stance_summary=str(participant_payload.get("stance_summary") or "").strip() or None,
                     message_count=int(participant_payload.get("message_count") or 0),
                     mention_count=int(participant_payload.get("mention_count") or 0),
+                )
+            )
+        quote_payloads = list(payload.get("participant_quotes") or [])
+        for participant_payload in payload.get("participants") or []:
+            participant_id = str(participant_payload.get("participant_id") or "").strip()
+            if not participant_id:
+                continue
+            for quote_payload in participant_payload.get("quotes") or []:
+                quote_payloads.append(
+                    {
+                        "participant_id": participant_id,
+                        **dict(quote_payload or {}),
+                    }
+                )
+        for rank, quote_payload in enumerate(quote_payloads, start=1):
+            participant_id = str(quote_payload.get("participant_id") or "").strip()
+            quote_text = str(quote_payload.get("quote") or "").strip()
+            if not participant_id or not quote_text:
+                continue
+            sent_at = quote_payload.get("sent_at")
+            if isinstance(sent_at, str) and sent_at.strip():
+                try:
+                    sent_at = datetime.fromisoformat(sent_at)
+                except ValueError:
+                    sent_at = None
+            session.add(
+                TelegramPreprocessTopicQuote(
+                    run_id=run_id,
+                    project_id=project_id,
+                    topic_id=topic_id,
+                    participant_id=participant_id,
+                    rank=int(quote_payload.get("rank") or rank),
+                    telegram_message_id=int(quote_payload.get("message_id")) if quote_payload.get("message_id") is not None else None,
+                    sent_at=sent_at,
+                    quote=quote_text,
                 )
             )
     session.flush()
@@ -998,11 +1055,47 @@ def list_telegram_preprocess_topics(
             TelegramPreprocessTopic.run_id == run_id,
         )
         .options(
-            selectinload(TelegramPreprocessTopic.participants).selectinload(TelegramPreprocessTopicParticipant.participant)
+            selectinload(TelegramPreprocessTopic.participants).selectinload(TelegramPreprocessTopicParticipant.participant),
+            selectinload(TelegramPreprocessTopic.quotes).selectinload(TelegramPreprocessTopicQuote.participant),
         )
-        .order_by(TelegramPreprocessTopic.topic_index.asc(), TelegramPreprocessTopic.start_at.asc())
+        .order_by(
+            TelegramPreprocessTopic.week_key.asc(),
+            TelegramPreprocessTopic.week_topic_index.asc(),
+            TelegramPreprocessTopic.topic_index.asc(),
+            TelegramPreprocessTopic.start_at.asc(),
+        )
     )
     return list(session.scalars(stmt))
+
+
+def list_telegram_preprocess_topics_for_participant(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str,
+    participant_id: str,
+) -> list[TelegramPreprocessTopic]:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramPreprocessTopic)
+        .join(TelegramPreprocessTopicParticipant, TelegramPreprocessTopicParticipant.topic_id == TelegramPreprocessTopic.id)
+        .where(
+            TelegramPreprocessTopic.project_id == target_project_id,
+            TelegramPreprocessTopic.run_id == run_id,
+            TelegramPreprocessTopicParticipant.participant_id == participant_id,
+        )
+        .options(
+            selectinload(TelegramPreprocessTopic.participants).selectinload(TelegramPreprocessTopicParticipant.participant),
+            selectinload(TelegramPreprocessTopic.quotes).selectinload(TelegramPreprocessTopicQuote.participant),
+        )
+        .order_by(
+            TelegramPreprocessTopic.week_key.asc(),
+            TelegramPreprocessTopic.week_topic_index.asc(),
+            TelegramPreprocessTopic.topic_index.asc(),
+            TelegramPreprocessTopic.start_at.asc(),
+        )
+    )
+    return list(session.scalars(stmt).unique())
 
 
 def list_telegram_preprocess_active_users(
@@ -1020,6 +1113,133 @@ def list_telegram_preprocess_active_users(
         )
         .options(selectinload(TelegramPreprocessActiveUser.participant))
         .order_by(TelegramPreprocessActiveUser.rank.asc(), TelegramPreprocessActiveUser.created_at.asc())
+    )
+    return list(session.scalars(stmt))
+
+
+def create_or_replace_telegram_relationship_snapshot(
+    session: Session,
+    *,
+    run_id: str,
+    project_id: str,
+    chat_id: str | None,
+    status: str = "running",
+    analyzed_user_count: int = 0,
+    candidate_pair_count: int = 0,
+    llm_pair_count: int = 0,
+    label_scheme: str = "friendly|neutral|tense|unclear",
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+    error_message: str | None = None,
+    summary_json: dict[str, Any] | None = None,
+) -> TelegramRelationshipSnapshot:
+    existing = get_telegram_relationship_snapshot_for_run(session, run_id)
+    if existing:
+        session.execute(delete(TelegramRelationshipEdge).where(TelegramRelationshipEdge.snapshot_id == existing.id))
+        session.execute(delete(TelegramRelationshipSnapshot).where(TelegramRelationshipSnapshot.id == existing.id))
+        session.flush()
+
+    snapshot = TelegramRelationshipSnapshot(
+        run_id=run_id,
+        project_id=project_id,
+        chat_id=chat_id,
+        status=status,
+        analyzed_user_count=analyzed_user_count,
+        candidate_pair_count=candidate_pair_count,
+        llm_pair_count=llm_pair_count,
+        label_scheme=label_scheme,
+        started_at=started_at,
+        finished_at=finished_at,
+        error_message=error_message,
+        summary_json=dict(summary_json or {}),
+    )
+    session.add(snapshot)
+    session.flush()
+    return snapshot
+
+
+def replace_telegram_relationship_edges(
+    session: Session,
+    *,
+    snapshot_id: str,
+    project_id: str,
+    edges: list[dict[str, Any]],
+) -> list[TelegramRelationshipEdge]:
+    session.execute(delete(TelegramRelationshipEdge).where(TelegramRelationshipEdge.snapshot_id == snapshot_id))
+    created: list[TelegramRelationshipEdge] = []
+    for payload in edges:
+        participant_a_id = str(payload.get("participant_a_id") or "").strip()
+        participant_b_id = str(payload.get("participant_b_id") or "").strip()
+        if not participant_a_id or not participant_b_id or participant_a_id == participant_b_id:
+            continue
+        if participant_b_id < participant_a_id:
+            participant_a_id, participant_b_id = participant_b_id, participant_a_id
+        item = TelegramRelationshipEdge(
+            snapshot_id=snapshot_id,
+            project_id=project_id,
+            participant_a_id=participant_a_id,
+            participant_b_id=participant_b_id,
+            interaction_strength=float(payload.get("interaction_strength") or 0.0),
+            confidence=float(payload.get("confidence") or 0.0),
+            relation_label=str(payload.get("relation_label") or "unclear").strip() or "unclear",
+            summary=str(payload.get("summary") or "").strip() or None,
+            evidence_json=list(payload.get("evidence_json") or []),
+            counterevidence_json=list(payload.get("counterevidence_json") or []),
+            metrics_json=dict(payload.get("metrics_json") or {}),
+        )
+        session.add(item)
+        created.append(item)
+    session.flush()
+    return created
+
+
+def get_telegram_relationship_snapshot(session: Session, snapshot_id: str) -> TelegramRelationshipSnapshot | None:
+    stmt = (
+        select(TelegramRelationshipSnapshot)
+        .where(TelegramRelationshipSnapshot.id == snapshot_id)
+        .options(selectinload(TelegramRelationshipSnapshot.edges))
+    )
+    return session.scalar(stmt)
+
+
+def get_telegram_relationship_snapshot_for_run(
+    session: Session,
+    run_id: str,
+) -> TelegramRelationshipSnapshot | None:
+    stmt = (
+        select(TelegramRelationshipSnapshot)
+        .where(TelegramRelationshipSnapshot.run_id == run_id)
+        .options(selectinload(TelegramRelationshipSnapshot.edges))
+    )
+    return session.scalar(stmt)
+
+
+def get_latest_telegram_relationship_snapshot(
+    session: Session,
+    project_id: str,
+    *,
+    status: str | None = None,
+) -> TelegramRelationshipSnapshot | None:
+    target_project_id = get_target_project_id(session, project_id)
+    stmt = (
+        select(TelegramRelationshipSnapshot)
+        .where(TelegramRelationshipSnapshot.project_id == target_project_id)
+        .order_by(desc(TelegramRelationshipSnapshot.created_at))
+        .options(selectinload(TelegramRelationshipSnapshot.edges))
+    )
+    if status:
+        stmt = stmt.where(TelegramRelationshipSnapshot.status == status)
+    return session.scalars(stmt).first()
+
+
+def list_telegram_relationship_edges(
+    session: Session,
+    snapshot_id: str,
+) -> list[TelegramRelationshipEdge]:
+    stmt = (
+        select(TelegramRelationshipEdge)
+        .where(TelegramRelationshipEdge.snapshot_id == snapshot_id)
+        .order_by(TelegramRelationshipEdge.interaction_strength.desc(), TelegramRelationshipEdge.created_at.asc())
     )
     return list(session.scalars(stmt))
 

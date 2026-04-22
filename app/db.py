@@ -205,6 +205,16 @@ def upgrade_schema(engine) -> None:
             )
 
         if "telegram_preprocess_weekly_topic_candidates" in tables:
+            weekly_candidate_columns = {
+                column["name"] for column in inspector.get_columns("telegram_preprocess_weekly_topic_candidates")
+            }
+            if "window_index" not in weekly_candidate_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE telegram_preprocess_weekly_topic_candidates ADD COLUMN window_index INTEGER DEFAULT 1"
+                )
+            connection.exec_driver_sql(
+                "UPDATE telegram_preprocess_weekly_topic_candidates SET window_index = 1 WHERE window_index IS NULL OR window_index <= 0"
+            )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_weekly_candidates_run_week ON telegram_preprocess_weekly_topic_candidates (run_id, week_key)"
             )
@@ -214,8 +224,28 @@ def upgrade_schema(engine) -> None:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_weekly_candidates_project_time ON telegram_preprocess_weekly_topic_candidates (project_id, start_at, end_at)"
             )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_weekly_candidates_run_window ON telegram_preprocess_weekly_topic_candidates (run_id, week_key, window_index)"
+            )
 
         if "telegram_preprocess_topics" in tables:
+            topic_columns = {column["name"] for column in inspector.get_columns("telegram_preprocess_topics")}
+            if "week_key" not in topic_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE telegram_preprocess_topics ADD COLUMN week_key VARCHAR(32)"
+                )
+            if "week_topic_index" not in topic_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE telegram_preprocess_topics ADD COLUMN week_topic_index INTEGER DEFAULT 0"
+                )
+            connection.exec_driver_sql(
+                "UPDATE telegram_preprocess_topics SET week_key = json_extract(metadata_json, '$.week_key') "
+                "WHERE week_key IS NULL AND metadata_json IS NOT NULL"
+            )
+            connection.exec_driver_sql(
+                "UPDATE telegram_preprocess_topics SET week_topic_index = topic_index "
+                "WHERE week_topic_index IS NULL OR week_topic_index <= 0"
+            )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topics_run_topic ON telegram_preprocess_topics (run_id, topic_index)"
             )
@@ -225,13 +255,34 @@ def upgrade_schema(engine) -> None:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topics_project_messages ON telegram_preprocess_topics (project_id, start_message_id, end_message_id)"
             )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topics_run_week_topic ON telegram_preprocess_topics (run_id, week_key, week_topic_index)"
+            )
 
         if "telegram_preprocess_topic_participants" in tables:
+            topic_participant_columns = {
+                column["name"] for column in inspector.get_columns("telegram_preprocess_topic_participants")
+            }
+            if "stance_summary" not in topic_participant_columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE telegram_preprocess_topic_participants ADD COLUMN stance_summary TEXT"
+                )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topic_participants_topic_participant ON telegram_preprocess_topic_participants (topic_id, participant_id)"
             )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topic_participants_run_participant ON telegram_preprocess_topic_participants (run_id, participant_id)"
+            )
+
+        if "telegram_preprocess_topic_quotes" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topic_quotes_topic_participant_rank ON telegram_preprocess_topic_quotes (topic_id, participant_id, rank)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topic_quotes_run_participant ON telegram_preprocess_topic_quotes (run_id, participant_id)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_topic_quotes_project_message ON telegram_preprocess_topic_quotes (project_id, telegram_message_id)"
             )
 
         if "telegram_preprocess_active_users" in tables:
@@ -240,6 +291,22 @@ def upgrade_schema(engine) -> None:
             )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_active_users_project_participant ON telegram_preprocess_active_users (project_id, participant_id)"
+            )
+
+        if "telegram_relationship_snapshots" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_relationship_snapshots_project_run ON telegram_relationship_snapshots (project_id, run_id)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_relationship_snapshots_project_status_created ON telegram_relationship_snapshots (project_id, status, created_at)"
+            )
+
+        if "telegram_relationship_edges" in tables:
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_relationship_edges_snapshot_label_strength ON telegram_relationship_edges (snapshot_id, relation_label, interaction_strength)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_telegram_relationship_edges_project_pair ON telegram_relationship_edges (project_id, participant_a_id, participant_b_id)"
             )
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_telegram_preprocess_active_users_project_uid ON telegram_preprocess_active_users (project_id, uid)"

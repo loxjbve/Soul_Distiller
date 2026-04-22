@@ -31,7 +31,16 @@ from app.storage import repository
 from app.utils.text import top_terms
 
 TELEGRAM_ACTIVE_USER_LIMIT = 20
-TELEGRAM_WEEKLY_CANDIDATE_MESSAGE_LIMIT = 300
+TELEGRAM_RELATIONSHIP_USER_LIMIT = 30
+TELEGRAM_RELATIONSHIP_LLM_EDGE_LIMIT = 40
+TELEGRAM_RELATIONSHIP_MIN_STRENGTH = 0.35
+TELEGRAM_RELATIONSHIP_MAX_TOPIC_EVIDENCE = 4
+TELEGRAM_RELATIONSHIP_MAX_REPLY_CONTEXTS = 6
+TELEGRAM_RELATIONSHIP_MAX_COUNTEREVIDENCE = 3
+TELEGRAM_WEEKLY_CANDIDATE_MESSAGE_LIMIT = 250
+TELEGRAM_WEEKLY_MAX_WINDOWS = 2
+TELEGRAM_WEEKLY_TOPIC_CAP = 4
+TELEGRAM_WEEKLY_PARTICIPANT_QUOTE_LIMIT = 4
 TELEGRAM_WEEKLY_TOOL_MAX_MESSAGES = 80
 TELEGRAM_ALIAS_TOOL_MAX_MESSAGES = 16
 TELEGRAM_WEEKLY_AGENT_MAX_ITERATIONS = 4
@@ -283,9 +292,29 @@ class TelegramPreprocessWorker:
         )
 
     def _topic_payload_from_model(self, topic: Any) -> dict[str, Any]:
+        quote_payloads = [
+            {
+                "participant_id": quote.participant_id,
+                "display_name": quote.participant.display_name if quote.participant else None,
+                "message_id": quote.telegram_message_id,
+                "sent_at": quote.sent_at.isoformat() if quote.sent_at else None,
+                "quote": quote.quote,
+                "rank": int(quote.rank or 0),
+            }
+            for quote in sorted(
+                list(getattr(topic, "quotes", None) or []),
+                key=lambda item: (
+                    item.participant_id or "",
+                    int(item.rank or 0),
+                    int(item.telegram_message_id or 0),
+                ),
+            )
+        ]
         return {
             "topic_id": getattr(topic, "id", None),
             "topic_index": int(getattr(topic, "topic_index", 0) or 0),
+            "week_key": getattr(topic, "week_key", None) or dict(getattr(topic, "metadata_json", None) or {}).get("week_key"),
+            "week_topic_index": int(getattr(topic, "week_topic_index", 0) or 0),
             "title": getattr(topic, "title", ""),
             "summary": getattr(topic, "summary", ""),
             "start_at": getattr(topic, "start_at", None),
@@ -300,11 +329,13 @@ class TelegramPreprocessWorker:
                 {
                     "participant_id": link.participant_id,
                     "role_hint": link.role_hint,
+                    "stance_summary": getattr(link, "stance_summary", None),
                     "message_count": int(link.message_count or 0),
                     "mention_count": int(link.mention_count or 0),
                 }
                 for link in list(getattr(topic, "participants", None) or [])
             ],
+            "participant_quotes": quote_payloads,
             "metadata_json": dict(getattr(topic, "metadata_json", None) or {}),
         }
 
@@ -313,11 +344,18 @@ class TelegramPreprocessWorker:
         metadata = dict(payload.get("metadata_json") or {})
         candidate_id = str(metadata.get("candidate_id") or "").strip()
         if candidate_id:
-            return candidate_id
+            return f"candidate:{candidate_id}"
         week_key = str(metadata.get("week_key") or "").strip()
-        if week_key:
-            return week_key
-        return str(payload.get("topic_index") or "")
+        week_topic_index = int(payload.get("week_topic_index") or payload.get("topic_index") or 0)
+        title = str(payload.get("title") or "").strip().lower()
+        return f"topic:{week_key}:{week_topic_index}:{title}"
+
+    def _completed_candidate_keys(self, completed_topics: list[dict[str, Any]]) -> set[str]:
+        return {
+            checkpoint
+            for checkpoint in (self._topic_checkpoint_key(item) for item in completed_topics)
+            if checkpoint.startswith("candidate:")
+        }
 
     @staticmethod
     def _empty_topic_progress() -> dict[str, Any]:
@@ -347,26 +385,25 @@ class TelegramPreprocessWorker:
                 "current_topic_label": str(last_topic.get("title") or "").strip(),
             }
 
-        completed_keys = {self._topic_checkpoint_key(item) for item in completed_topics}
+        completed_keys = self._completed_candidate_keys(completed_topics)
         topic_index_by_candidate = {
             candidate.id: index
             for index, candidate in enumerate(candidates, start=1)
         }
 
         next_candidate = current_candidate
-        if next_candidate and (
-            next_candidate.id in completed_keys
-            or next_candidate.week_key in completed_keys
-        ):
+        next_candidate_key = f"candidate:{next_candidate.id}" if next_candidate else ""
+        if next_candidate and next_candidate_key in completed_keys:
             next_candidate = None
 
         if not next_candidate:
             for candidate in candidates:
-                if candidate.id in completed_keys or candidate.week_key in completed_keys:
+                if f"candidate:{candidate.id}" in completed_keys:
                     continue
                 next_candidate = candidate
                 break
 
+        completed_count = len(completed_keys)
         if not next_candidate:
             return {
                 "current_topic_index": total,
@@ -376,37 +413,214 @@ class TelegramPreprocessWorker:
 
         current_index = topic_index_by_candidate.get(
             next_candidate.id,
-            min(len(completed_topics) + 1, total),
+            min(completed_count + 1, total),
         )
         return {
             "current_topic_index": int(current_index),
             "current_topic_total": total,
-            "current_topic_label": str(next_candidate.week_key or "").strip() or f"Topic {current_index}",
+            "current_topic_label": (
+                f"{str(next_candidate.week_key or '').strip() or 'Week'}"
+                f" window {int(getattr(next_candidate, 'window_index', 1) or 1)}"
+            ),
         }
 
-    def _upsert_topic_payload(
+    @staticmethod
+    def _topic_sort_key(payload: dict[str, Any]) -> tuple[str, int, str, int]:
+        return (
+            str(payload.get("week_key") or dict(payload.get("metadata_json") or {}).get("week_key") or ""),
+            int(payload.get("week_topic_index") or payload.get("topic_index") or 0),
+            _safe_iso(payload.get("start_at")) or "",
+            int(payload.get("start_message_id") or 0),
+        )
+
+    @staticmethod
+    def _topic_score(payload: dict[str, Any]) -> tuple[float, int, int]:
+        participant_quotes = list(payload.get("participant_quotes") or [])
+        return (
+            float(len(payload.get("evidence_json") or [])) + (len(participant_quotes) * 0.35) + (len(payload.get("participants") or []) * 0.2),
+            int(payload.get("message_count") or 0),
+            int(payload.get("participant_count") or 0),
+        )
+
+    def _merge_topic_payload(
         self,
-        topics: list[dict[str, Any]],
-        payload: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        checkpoint_key = self._topic_checkpoint_key(payload)
-        updated: list[dict[str, Any]] = []
-        replaced = False
-        for item in topics:
-            if self._topic_checkpoint_key(item) == checkpoint_key:
-                updated.append(payload)
-                replaced = True
-            else:
-                updated.append(item)
-        if not replaced:
-            updated.append(payload)
-        updated.sort(
+        existing: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        metadata = dict(existing.get("metadata_json") or {})
+        incoming_metadata = dict(incoming.get("metadata_json") or {})
+        metadata["subtopics"] = _dedupe_strings(
+            list(metadata.get("subtopics") or []) + list(incoming_metadata.get("subtopics") or []),
+            limit=8,
+        )
+        metadata["interaction_patterns"] = _dedupe_strings(
+            list(metadata.get("interaction_patterns") or []) + list(incoming_metadata.get("interaction_patterns") or []),
+            limit=8,
+        )
+        merged = dict(existing)
+        merged["summary"] = max(
+            [str(existing.get("summary") or "").strip(), str(incoming.get("summary") or "").strip()],
+            key=len,
+        )
+        merged["title"] = str(existing.get("title") or "").strip() or str(incoming.get("title") or "").strip()
+        merged["start_at"] = min(
+            [item for item in [existing.get("start_at"), incoming.get("start_at")] if item is not None],
+            default=existing.get("start_at") or incoming.get("start_at"),
+        )
+        merged["end_at"] = max(
+            [item for item in [existing.get("end_at"), incoming.get("end_at")] if item is not None],
+            default=existing.get("end_at") or incoming.get("end_at"),
+        )
+        merged["start_message_id"] = min(
+            [int(item) for item in [existing.get("start_message_id"), incoming.get("start_message_id")] if item is not None],
+            default=existing.get("start_message_id") or incoming.get("start_message_id"),
+        )
+        merged["end_message_id"] = max(
+            [int(item) for item in [existing.get("end_message_id"), incoming.get("end_message_id")] if item is not None],
+            default=existing.get("end_message_id") or incoming.get("end_message_id"),
+        )
+        merged["message_count"] = max(int(existing.get("message_count") or 0), int(incoming.get("message_count") or 0))
+        merged["participant_count"] = max(int(existing.get("participant_count") or 0), int(incoming.get("participant_count") or 0))
+        merged["keywords_json"] = _dedupe_strings(
+            list(existing.get("keywords_json") or []) + list(incoming.get("keywords_json") or []),
+            limit=8,
+        )
+        evidence_by_id: dict[int, dict[str, Any]] = {}
+        for item in list(existing.get("evidence_json") or []) + list(incoming.get("evidence_json") or []):
+            message_id = int(item.get("message_id") or 0)
+            if message_id <= 0:
+                continue
+            evidence_by_id[message_id] = dict(item)
+        merged["evidence_json"] = [evidence_by_id[key] for key in sorted(evidence_by_id)[:8]]
+        participant_by_id: dict[str, dict[str, Any]] = {}
+        for participant in list(existing.get("participants") or []) + list(incoming.get("participants") or []):
+            participant_id = str(participant.get("participant_id") or "").strip()
+            if not participant_id:
+                continue
+            row = participant_by_id.get(participant_id, {"participant_id": participant_id})
+            row["role_hint"] = str(row.get("role_hint") or "").strip() or str(participant.get("role_hint") or "").strip() or None
+            row["stance_summary"] = (
+                str(participant.get("stance_summary") or "").strip()
+                or str(row.get("stance_summary") or "").strip()
+                or None
+            )
+            row["message_count"] = max(int(row.get("message_count") or 0), int(participant.get("message_count") or 0))
+            row["mention_count"] = max(int(row.get("mention_count") or 0), int(participant.get("mention_count") or 0))
+            participant_by_id[participant_id] = row
+        merged["participants"] = list(participant_by_id.values())
+        quote_seen: set[tuple[str, int, str]] = set()
+        merged_quotes: list[dict[str, Any]] = []
+        for quote in list(existing.get("participant_quotes") or []) + list(incoming.get("participant_quotes") or []):
+            participant_id = str(quote.get("participant_id") or "").strip()
+            message_id = int(quote.get("message_id") or 0)
+            quote_text = str(quote.get("quote") or "").strip()
+            if not participant_id or message_id <= 0 or not quote_text:
+                continue
+            key = (participant_id, message_id, quote_text)
+            if key in quote_seen:
+                continue
+            quote_seen.add(key)
+            merged_quotes.append(dict(quote))
+        merged_quotes.sort(
             key=lambda item: (
-                int(item.get("topic_index") or 0),
-                _safe_iso(item.get("start_at")) or "",
+                str(item.get("participant_id") or ""),
+                int(item.get("rank") or 0),
+                int(item.get("message_id") or 0),
             )
         )
-        return updated
+        limited_quotes: list[dict[str, Any]] = []
+        per_participant_counts: dict[str, int] = defaultdict(int)
+        for quote in merged_quotes:
+            participant_id = str(quote.get("participant_id") or "").strip()
+            if per_participant_counts[participant_id] >= TELEGRAM_WEEKLY_PARTICIPANT_QUOTE_LIMIT:
+                continue
+            per_participant_counts[participant_id] += 1
+            quote["rank"] = per_participant_counts[participant_id]
+            limited_quotes.append(quote)
+        merged["participant_quotes"] = limited_quotes
+        merged["metadata_json"] = {**incoming_metadata, **metadata}
+        merged["week_key"] = merged.get("week_key") or merged["metadata_json"].get("week_key")
+        return merged
+
+    def _normalize_topic_collection(
+        self,
+        topics: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for topic in topics:
+            week_key = str(topic.get("week_key") or dict(topic.get("metadata_json") or {}).get("week_key") or "").strip()
+            topic["week_key"] = week_key
+            grouped[week_key].append(topic)
+
+        normalized_topics: list[dict[str, Any]] = []
+        for week_key in sorted(grouped):
+            merged_topics: list[dict[str, Any]] = []
+            for topic in sorted(grouped[week_key], key=self._topic_sort_key):
+                candidate_title = "".join(ch for ch in str(topic.get("title") or "").lower() if ch.isalnum())
+                evidence_ids = {
+                    int(item.get("message_id") or 0)
+                    for item in (topic.get("evidence_json") or [])
+                    if int(item.get("message_id") or 0) > 0
+                }
+                merged_index = None
+                for index, existing in enumerate(merged_topics):
+                    existing_title = "".join(ch for ch in str(existing.get("title") or "").lower() if ch.isalnum())
+                    existing_evidence = {
+                        int(item.get("message_id") or 0)
+                        for item in (existing.get("evidence_json") or [])
+                        if int(item.get("message_id") or 0) > 0
+                    }
+                    if candidate_title and candidate_title == existing_title:
+                        merged_index = index
+                        break
+                    if evidence_ids and existing_evidence and evidence_ids.intersection(existing_evidence):
+                        merged_index = index
+                        break
+                if merged_index is None:
+                    merged_topics.append(topic)
+                else:
+                    merged_topics[merged_index] = self._merge_topic_payload(merged_topics[merged_index], topic)
+
+            merged_topics = [
+                topic
+                for topic in merged_topics
+                if (topic.get("evidence_json") or []) or (topic.get("participant_quotes") or [])
+            ]
+            merged_topics.sort(key=self._topic_score, reverse=True)
+            merged_topics = merged_topics[:TELEGRAM_WEEKLY_TOPIC_CAP]
+            for week_topic_index, topic in enumerate(merged_topics, start=1):
+                topic["week_key"] = week_key or None
+                topic["week_topic_index"] = week_topic_index
+                metadata = dict(topic.get("metadata_json") or {})
+                metadata["week_key"] = week_key or None
+                topic["metadata_json"] = metadata
+                normalized_topics.append(topic)
+
+        normalized_topics.sort(
+            key=lambda item: (
+                str(item.get("week_key") or ""),
+                int(item.get("week_topic_index") or 0),
+                _safe_iso(item.get("start_at")) or "",
+                int(item.get("start_message_id") or 0),
+            )
+        )
+        for topic_index, topic in enumerate(normalized_topics, start=1):
+            topic["topic_index"] = topic_index
+        return normalized_topics
+
+    def _merge_candidate_topic_payloads(
+        self,
+        topics: list[dict[str, Any]],
+        payloads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        checkpoint_keys = {self._topic_checkpoint_key(item) for item in payloads}
+        updated = [
+            item
+            for item in topics
+            if self._topic_checkpoint_key(item) not in checkpoint_keys
+        ]
+        updated.extend(payloads)
+        return self._normalize_topic_collection(updated)
 
     @staticmethod
     def _build_active_user_payload(top_user: TelegramPreprocessTopUser) -> dict[str, Any]:
@@ -671,48 +885,50 @@ class TelegramPreprocessWorker:
         for week_key, message_rows in sorted(weekly_rows.items()):
             if not message_rows:
                 continue
-            selected = self._select_densest_segment(message_rows)
-            participant_counts: dict[str, int] = defaultdict(int)
-            for item in selected:
-                participant_id = str(item.get("participant_id") or "").strip()
-                if participant_id:
-                    participant_counts[participant_id] += 1
-            top_participants = []
-            for participant_id, count in sorted(
-                participant_counts.items(),
-                key=lambda pair: (-pair[1], pair[0]),
-            )[:8]:
-                participant = participant_map.get(participant_id)
-                top_participants.append(
+            for window_index, selected in enumerate(self._select_densest_segments(message_rows), start=1):
+                participant_counts: dict[str, int] = defaultdict(int)
+                for item in selected:
+                    participant_id = str(item.get("participant_id") or "").strip()
+                    if participant_id:
+                        participant_counts[participant_id] += 1
+                top_participants = []
+                for participant_id, count in sorted(
+                    participant_counts.items(),
+                    key=lambda pair: (-pair[1], pair[0]),
+                )[:8]:
+                    participant = participant_map.get(participant_id)
+                    top_participants.append(
+                        {
+                            "participant_id": participant_id,
+                            "display_name": participant.display_name if participant else None,
+                            "username": participant.username if participant else None,
+                            "message_count": count,
+                        }
+                    )
+                payloads.append(
                     {
-                        "participant_id": participant_id,
-                        "display_name": participant.display_name if participant else None,
-                        "username": participant.username if participant else None,
-                        "message_count": count,
+                        "week_key": week_key,
+                        "window_index": window_index,
+                        "start_at": selected[0]["sent_at_value"],
+                        "end_at": selected[-1]["sent_at_value"],
+                        "start_message_id": selected[0]["message_id"],
+                        "end_message_id": selected[-1]["message_id"],
+                        "message_count": len(selected),
+                        "participant_count": len(participant_counts),
+                        "top_participants_json": top_participants,
+                        "sample_messages_json": [
+                            _compact_message_payload(item)
+                            for item in selected
+                        ],
+                        "metadata_json": {
+                            "source": "sql_materialize",
+                            "week_key": week_key,
+                            "window_index": window_index,
+                            "selected_message_count": len(selected),
+                            "week_total_message_count": len(message_rows),
+                        },
                     }
                 )
-            payloads.append(
-                {
-                    "week_key": week_key,
-                    "start_at": selected[0]["sent_at_value"],
-                    "end_at": selected[-1]["sent_at_value"],
-                    "start_message_id": selected[0]["message_id"],
-                    "end_message_id": selected[-1]["message_id"],
-                    "message_count": len(selected),
-                    "participant_count": len(participant_counts),
-                    "top_participants_json": top_participants,
-                    "sample_messages_json": [
-                        _compact_message_payload(item)
-                        for item in selected
-                    ],
-                    "metadata_json": {
-                        "source": "sql_materialize",
-                        "week_key": week_key,
-                        "selected_message_count": len(selected),
-                        "week_total_message_count": len(message_rows),
-                    },
-                }
-            )
         return repository.replace_telegram_preprocess_weekly_topic_candidates(
             self.session,
             run_id=run_id,
@@ -736,6 +952,26 @@ class TelegramPreprocessWorker:
                 best_index = start_index
         return messages[best_index: best_index + width]
 
+    def _select_densest_segments(self, messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+        remaining = list(messages)
+        selected_segments: list[list[dict[str, Any]]] = []
+        for _ in range(TELEGRAM_WEEKLY_MAX_WINDOWS):
+            if not remaining:
+                break
+            segment = self._select_densest_segment(remaining)
+            if not segment:
+                break
+            selected_segments.append(segment)
+            selected_ids = {int(item["message_id"]) for item in segment if item.get("message_id") is not None}
+            remaining = [item for item in remaining if int(item.get("message_id") or 0) not in selected_ids]
+        selected_segments.sort(
+            key=lambda segment: (
+                _safe_iso(segment[0].get("sent_at_value")) or "",
+                int(segment[0].get("message_id") or 0),
+            )
+        )
+        return selected_segments
+
     def _run_weekly_topic_summary(
         self,
         run_id: str,
@@ -758,28 +994,29 @@ class TelegramPreprocessWorker:
                 run_id=run_id,
             )
         ]
-        completed_keys = {self._topic_checkpoint_key(item) for item in existing_topics}
+        completed_keys = self._completed_candidate_keys(existing_topics)
         remaining_candidates = [
             candidate
             for candidate in candidates
-            if candidate.id not in completed_keys and candidate.week_key not in completed_keys
+            if f"candidate:{candidate.id}" not in completed_keys
         ]
+        completed_candidate_count = len(completed_keys)
         if existing_topics:
             self._trace(
                 "stage_progress",
                 stage="weekly_topic_summary",
                 message="Resuming weekly topic summaries from a saved checkpoint.",
-                completed_week_count=len(existing_topics),
+                completed_week_count=completed_candidate_count,
                 remaining_week_count=len(remaining_candidates),
                 weekly_candidate_count=len(candidates),
             )
             self._progress(
                 progress_callback,
                 "weekly_topic_summary",
-                min(40 + int((len(existing_topics) / max(len(candidates), 1)) * 34), 76),
+                min(40 + int((completed_candidate_count / max(len(candidates), 1)) * 34), 76),
                 {
                     "topic_count": len(existing_topics),
-                    "completed_week_count": len(existing_topics),
+                    "completed_week_count": completed_candidate_count,
                     "remaining_week_count": len(remaining_candidates),
                     "weekly_candidate_count": len(candidates),
                     "usage": dict(self.usage_totals),
@@ -791,11 +1028,11 @@ class TelegramPreprocessWorker:
                 "agent_completed",
                 stage="weekly_topic_summary",
                 agent="weekly_topic_agent",
-                message=f"Weekly topic summaries were already complete for {len(existing_topics)} weeks.",
+                message=f"Weekly topic summaries were already complete for {completed_candidate_count} windows.",
             )
-            return existing_topics
+            return self._normalize_topic_collection(existing_topics)
         if not self.client:
-            topics = self._development_weekly_topic_summaries(candidates)
+            topics = self._normalize_topic_collection(self._development_weekly_topic_summaries(candidates))
             repository.replace_telegram_preprocess_topics(
                 self.session,
                 run_id=run_id,
@@ -810,16 +1047,12 @@ class TelegramPreprocessWorker:
             "agent_started",
             stage="weekly_topic_summary",
             agent="weekly_topic_agent",
-            message=f"Starting one-shot weekly topic summaries for {len(remaining_candidates)} remaining weeks.",
+            message=f"Starting weekly topic summaries for {len(remaining_candidates)} remaining windows.",
             weekly_summary_concurrency=self.weekly_summary_concurrency,
         )
         topics = list(existing_topics)
         total = max(len(candidates), 1)
-        topic_index_by_candidate = {
-            candidate.id: index
-            for index, candidate in enumerate(candidates, start=1)
-        }
-        
+
         self._trace(
             "stage_progress",
             stage="weekly_topic_summary",
@@ -836,7 +1069,6 @@ class TelegramPreprocessWorker:
                     self._run_parallel_weekly_topic_task,
                     run_id,
                     candidate,
-                    topic_index_by_candidate.get(candidate.id, len(topics) + 1),
                 ): candidate
                 for candidate in remaining_candidates
             }
@@ -846,8 +1078,8 @@ class TelegramPreprocessWorker:
                 40,
                 {
                     "topic_count": len(topics),
-                    "completed_week_count": len(topics),
-                    "remaining_week_count": max(len(candidates) - len(topics), 0),
+                    "completed_week_count": completed_candidate_count,
+                    "remaining_week_count": max(len(candidates) - completed_candidate_count, 0),
                     "weekly_candidate_count": len(candidates),
                     "weekly_summary_concurrency": self.weekly_summary_concurrency,
                     "active_agents": min(len(remaining_candidates), self.weekly_summary_concurrency),
@@ -865,7 +1097,7 @@ class TelegramPreprocessWorker:
                 try:
                     result = future.result()
                     self._add_usage(result.get("usage"))
-                    topics = self._upsert_topic_payload(topics, dict(result.get("topic") or {}))
+                    topics = self._merge_candidate_topic_payloads(topics, list(result.get("topics") or []))
                     repository.replace_telegram_preprocess_topics(
                         self.session,
                         run_id=run_id,
@@ -881,19 +1113,21 @@ class TelegramPreprocessWorker:
                         agent="weekly_topic_agent",
                         message=f"Weekly topic summary unhandled error: {exc}",
                     )
+                completed_candidate_count = len(self._completed_candidate_keys(topics))
                 self._progress(
                     progress_callback,
                     "weekly_topic_summary",
-                    min(40 + int((len(topics) / total) * 34), 76),
+                    min(40 + int((completed_candidate_count / total) * 34), 76),
                     {
                         "current_week": candidate.week_key,
+                        "current_window": int(candidate.window_index or 1),
                         "topic_count": len(topics),
-                        "completed_week_count": len(topics),
-                        "remaining_week_count": max(len(candidates) - len(topics), 0),
+                        "completed_week_count": completed_candidate_count,
+                        "remaining_week_count": max(len(candidates) - completed_candidate_count, 0),
                         "weekly_candidate_count": len(candidates),
                         "weekly_summary_concurrency": self.weekly_summary_concurrency,
                         "active_agents": min(
-                            max(len(candidates) - len(topics), 0),
+                            max(len(candidates) - completed_candidate_count, 0),
                             self.weekly_summary_concurrency,
                         ),
                         "usage": dict(self.usage_totals),
@@ -904,15 +1138,14 @@ class TelegramPreprocessWorker:
             "agent_completed",
             stage="weekly_topic_summary",
             agent="weekly_topic_agent",
-            message=f"Completed one-shot weekly topic summaries for {len(topics)} weeks.",
+            message=f"Completed weekly topic summaries for {len(self._completed_candidate_keys(topics))} windows.",
         )
-        return topics
+        return self._normalize_topic_collection(topics)
 
     def _run_parallel_weekly_topic_task(
         self,
         run_id: str,
         candidate: TelegramPreprocessWeeklyTopicCandidate,
-        topic_index: int,
     ) -> dict[str, Any]:
         thread_session = Session(bind=self.session.get_bind())
         try:
@@ -928,9 +1161,9 @@ class TelegramPreprocessWorker:
                 cancel_checker=self.cancel_checker,
                 trace_callback=self._relay_non_persistent_trace,
             )
-            topic = worker._summarize_weekly_candidate_with_retries(run_id, thread_candidate, topic_index)
+            topics = worker._summarize_weekly_candidate_with_retries(run_id, thread_candidate)
             thread_session.commit()
-            return {"topic": topic, "usage": dict(worker.usage_totals)}
+            return {"topics": topics, "usage": dict(worker.usage_totals)}
         finally:
             thread_session.close()
 
@@ -942,12 +1175,19 @@ class TelegramPreprocessWorker:
         self,
         run_id: str,
         candidate: TelegramPreprocessWeeklyTopicCandidate,
-        topic_index: int,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         last_error: Exception | None = None
         for attempt in range(1, TELEGRAM_WEEKLY_AGENT_RETRIES + 1):
             try:
-                return self._run_weekly_topic_agent(run_id, candidate, topic_index, attempt=attempt)
+                try:
+                    result = self._run_weekly_topic_agent(run_id, candidate, attempt=attempt)
+                except TypeError as exc:
+                    if "topic_index" not in str(exc):
+                        raise
+                    result = self._run_weekly_topic_agent(run_id, candidate, 1, attempt=attempt)  # type: ignore[misc]
+                if isinstance(result, dict):
+                    return self._normalize_topic_collection([dict(result)])
+                return self._normalize_topic_collection(list(result or []))
             except Exception as exc:
                 last_error = exc
                 self._trace(
@@ -955,6 +1195,7 @@ class TelegramPreprocessWorker:
                     stage="weekly_topic_summary",
                     agent="weekly_topic_agent",
                     week_key=candidate.week_key,
+                    window_index=int(candidate.window_index or 1),
                     attempt=attempt,
                     max_attempts=TELEGRAM_WEEKLY_AGENT_RETRIES,
                     message=f"Weekly topic summary failed for {candidate.week_key}; retrying.",
@@ -968,10 +1209,9 @@ class TelegramPreprocessWorker:
         self,
         run_id: str,
         candidate: TelegramPreprocessWeeklyTopicCandidate,
-        topic_index: int,
         *,
         attempt: int,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         assert self.client is not None
         del run_id
         self._ensure_active()
@@ -1410,6 +1650,425 @@ class TelegramPreprocessWorker:
                         "week_key": candidate.week_key,
                         "source": "weekly_topic_sql_fallback",
                         "candidate_id": candidate.id,
+                    },
+                }
+            )
+        return topics
+
+    def _run_weekly_topic_agent(
+        self,
+        run_id: str,
+        candidate: TelegramPreprocessWeeklyTopicCandidate,
+        *,
+        attempt: int,
+    ) -> list[dict[str, Any]]:
+        assert self.client is not None
+        del run_id
+        self._ensure_active()
+        request_key = f"weekly-{candidate.week_key}-window-{int(candidate.window_index or 1)}-attempt-{attempt}"
+        label = f"Weekly topic summary {candidate.week_key} window {int(candidate.window_index or 1)}"
+        stream_callback = self._build_stream_callback(
+            stage="weekly_topic_summary",
+            agent="weekly_topic_agent",
+            request_key=request_key,
+            label=label,
+            extra={
+                "week_key": candidate.week_key,
+                "window_index": int(candidate.window_index or 1),
+                "candidate_id": candidate.id,
+            },
+        )
+        compact_lines = [
+            _compact_message_line(_compact_message_payload(item))
+            for item in list(candidate.sample_messages_json or [])
+            if item.get("message_id") is not None
+        ]
+        participant_directory = [
+            {
+                "participant_id": item.get("participant_id"),
+                "display_name": item.get("display_name"),
+                "username": item.get("username"),
+                "message_count": item.get("message_count"),
+            }
+            for item in list(candidate.top_participants_json or [])[:10]
+        ]
+        self._trace(
+            "llm_request_started",
+            stage="weekly_topic_summary",
+            agent="weekly_topic_agent",
+            request_key=request_key,
+            week_key=candidate.week_key,
+            window_index=int(candidate.window_index or 1),
+            request_kind="chat_completion",
+            label=label,
+            prompt_preview=_preview_text(
+                {
+                    "week_key": candidate.week_key,
+                    "window_index": int(candidate.window_index or 1),
+                    "message_count": candidate.message_count,
+                    "participant_count": candidate.participant_count,
+                    "compact_line_count": len(compact_lines),
+                }
+            ),
+        )
+        result = self.client.chat_completion_result(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You summarize one dense Telegram weekly window.\n"
+                        "Return JSON only with this shape:\n"
+                        "{\n"
+                        '  "topics": [\n'
+                        "    {\n"
+                        '      "title": "topic title",\n'
+                        '      "summary": "80-140 Chinese characters",\n'
+                        '      "keywords": ["..."],\n'
+                        '      "subtopics": ["..."],\n'
+                        '      "interaction_patterns": ["..."],\n'
+                        '      "evidence_message_ids": [1, 2],\n'
+                        '      "participants": [\n'
+                        "        {\n"
+                        '          "participant_id": "optional",\n'
+                        '          "display_name": "optional",\n'
+                        '          "role_hint": "optional",\n'
+                        '          "stance_summary": "participant stance in this topic",\n'
+                        '          "message_count": 0,\n'
+                        '          "mention_count": 0,\n'
+                        '          "quote_message_ids": [1, 2]\n'
+                        "        }\n"
+                        "      ]\n"
+                        "    }\n"
+                        "  ]\n"
+                        "}\n"
+                        "Rules:\n"
+                        "- At most 4 topics ranked by importance.\n"
+                        "- Skip weak chatter or noise.\n"
+                        "- Merge duplicates inside the same window.\n"
+                        "- Use only message ids from Compact weekly messages.\n"
+                        "- Do not invent quotes; only cite quote_message_ids.\n"
+                        "- Reuse participant_id from participant_directory whenever possible.\n"
+                        "- All readable text should be Simplified Chinese except JSON keys.\n"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        json.dumps(
+                            {
+                                "project": self.project.name,
+                                "candidate_id": candidate.id,
+                                "week_key": candidate.week_key,
+                                "window_index": int(candidate.window_index or 1),
+                                "start_at": _safe_iso(candidate.start_at),
+                                "end_at": _safe_iso(candidate.end_at),
+                                "start_message_id": candidate.start_message_id,
+                                "end_message_id": candidate.end_message_id,
+                                "message_count": candidate.message_count,
+                                "participant_count": candidate.participant_count,
+                                "top_participants": participant_directory,
+                                "task_hint": "Find multiple distinct topics, add participant stances, and cite quote_message_ids only.",
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                        + "\n\nCompact weekly messages:\n"
+                        + "\n".join(compact_lines)
+                    ),
+                },
+            ],
+            model=self.llm_config.model if self.llm_config else None,
+            temperature=0.2,
+            max_tokens=1600,
+            stream_handler=stream_callback,
+        )
+        flush_callback = getattr(stream_callback, "_flush_remaining", None)
+        if callable(flush_callback):
+            flush_callback()
+        self._add_usage(result.usage)
+        self._trace(
+            "llm_request_completed",
+            stage="weekly_topic_summary",
+            agent="weekly_topic_agent",
+            request_key=request_key,
+            week_key=candidate.week_key,
+            window_index=int(candidate.window_index or 1),
+            request_kind="chat_completion",
+            label=label,
+            usage=result.usage,
+            response_text_preview=_preview_text(result.content),
+        )
+        parsed = parse_json_response(result.content or "", fallback=True)
+        return self._normalize_weekly_topics(candidate, parsed)
+
+    def _normalize_weekly_topics(
+        self,
+        candidate: TelegramPreprocessWeeklyTopicCandidate,
+        parsed: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        sample_messages = list(candidate.sample_messages_json or [])
+        sample_by_id = {
+            int(item["message_id"]): item
+            for item in sample_messages
+            if item.get("message_id") is not None
+        }
+        participant_lookup = {
+            str(item.get("participant_id") or ""): item
+            for item in list(candidate.top_participants_json or [])
+            if str(item.get("participant_id") or "").strip()
+        }
+        participant_name_lookup = {
+            str(item.get("display_name") or "").strip().lower(): str(item.get("participant_id") or "").strip()
+            for item in list(candidate.top_participants_json or [])
+            if str(item.get("display_name") or "").strip() and str(item.get("participant_id") or "").strip()
+        }
+
+        topics: list[dict[str, Any]] = []
+        for raw_index, item in enumerate(parsed.get("topics") or [], start=1):
+            if raw_index > TELEGRAM_WEEKLY_TOPIC_CAP or not isinstance(item, dict):
+                break
+            title = str(item.get("title") or "").strip() or f"{candidate.week_key} topic {raw_index}"
+            summary = str(item.get("summary") or "").strip() or _compact_text(
+                " ".join(str(message.get("text") or "") for message in sample_messages[:12]),
+                limit=140,
+            )
+            evidence_ids = [
+                message_id
+                for message_id in _coerce_message_ids(item.get("evidence_message_ids") or [])
+                if message_id in sample_by_id
+            ][:8]
+            if not evidence_ids:
+                evidence_ids = [
+                    int(message["message_id"])
+                    for message in sample_messages[:3]
+                    if message.get("message_id") is not None
+                ]
+            evidence = [
+                {
+                    "message_id": message_id,
+                    "sender_name": sample_by_id.get(message_id, {}).get("sender_name"),
+                    "sent_at": sample_by_id.get(message_id, {}).get("sent_at"),
+                    "quote": sample_by_id.get(message_id, {}).get("text"),
+                }
+                for message_id in evidence_ids
+                if message_id in sample_by_id
+            ]
+            keywords = _dedupe_strings(list(item.get("keywords") or []), limit=8)
+            if not keywords:
+                keywords = top_terms("\n".join(str(message.get("text") or "") for message in sample_messages), limit=6)
+
+            participants: list[dict[str, Any]] = []
+            participant_quotes: list[dict[str, Any]] = []
+            for participant_item in item.get("participants") or []:
+                if not isinstance(participant_item, dict):
+                    continue
+                participant_id = str(participant_item.get("participant_id") or "").strip()
+                display_name = str(participant_item.get("display_name") or "").strip()
+                if not participant_id and display_name:
+                    participant_id = participant_name_lookup.get(display_name.lower(), "")
+                if not participant_id:
+                    continue
+                fallback = participant_lookup.get(participant_id, {})
+                participants.append(
+                    {
+                        "participant_id": participant_id,
+                        "role_hint": str(participant_item.get("role_hint") or "").strip() or None,
+                        "stance_summary": str(participant_item.get("stance_summary") or "").strip() or None,
+                        "message_count": int(participant_item.get("message_count") or fallback.get("message_count") or 0),
+                        "mention_count": int(participant_item.get("mention_count") or 0),
+                    }
+                )
+                quote_ids = [
+                    message_id
+                    for message_id in _coerce_message_ids(participant_item.get("quote_message_ids") or [])
+                    if message_id in sample_by_id
+                ]
+                filtered_quote_ids = [
+                    message_id
+                    for message_id in quote_ids
+                    if str(sample_by_id.get(message_id, {}).get("participant_id") or "").strip() == participant_id
+                ]
+                if filtered_quote_ids:
+                    quote_ids = filtered_quote_ids
+                for quote_rank, message_id in enumerate(quote_ids[:TELEGRAM_WEEKLY_PARTICIPANT_QUOTE_LIMIT], start=1):
+                    quote_row = sample_by_id.get(message_id, {})
+                    participant_quotes.append(
+                        {
+                            "participant_id": participant_id,
+                            "display_name": display_name or fallback.get("display_name"),
+                            "message_id": message_id,
+                            "sent_at": quote_row.get("sent_at"),
+                            "quote": quote_row.get("text"),
+                            "rank": quote_rank,
+                        }
+                    )
+
+            if not participants and participant_lookup:
+                participants = [
+                    {
+                        "participant_id": participant_id,
+                        "role_hint": None,
+                        "stance_summary": None,
+                        "message_count": int(payload.get("message_count") or 0),
+                        "mention_count": 0,
+                    }
+                    for participant_id, payload in participant_lookup.items()
+                ]
+
+            if not evidence and not participant_quotes:
+                continue
+
+            topics.append(
+                {
+                    "week_key": candidate.week_key,
+                    "week_topic_index": raw_index,
+                    "title": title,
+                    "summary": summary,
+                    "start_at": candidate.start_at,
+                    "end_at": candidate.end_at,
+                    "start_message_id": candidate.start_message_id,
+                    "end_message_id": candidate.end_message_id,
+                    "message_count": candidate.message_count,
+                    "participant_count": max(candidate.participant_count, len(participants)),
+                    "keywords_json": keywords,
+                    "evidence_json": evidence,
+                    "participants": participants,
+                    "participant_quotes": participant_quotes,
+                    "metadata_json": {
+                        "week_key": candidate.week_key,
+                        "window_index": int(candidate.window_index or 1),
+                        "source": "weekly_topic_agent",
+                        "candidate_id": candidate.id,
+                        "subtopics": _dedupe_strings(list(item.get("subtopics") or []), limit=8),
+                        "interaction_patterns": _dedupe_strings(list(item.get("interaction_patterns") or []), limit=8),
+                    },
+                }
+            )
+
+        if not topics and sample_messages:
+            topics.append(
+                {
+                    "week_key": candidate.week_key,
+                    "week_topic_index": 1,
+                    "title": f"{candidate.week_key} dense window {int(candidate.window_index or 1)}",
+                    "summary": _compact_text(
+                        " ".join(str(message.get("text") or "") for message in sample_messages[:12]),
+                        limit=140,
+                    ),
+                    "start_at": candidate.start_at,
+                    "end_at": candidate.end_at,
+                    "start_message_id": candidate.start_message_id,
+                    "end_message_id": candidate.end_message_id,
+                    "message_count": candidate.message_count,
+                    "participant_count": candidate.participant_count,
+                    "keywords_json": top_terms("\n".join(str(message.get("text") or "") for message in sample_messages), limit=6),
+                    "evidence_json": [
+                        {
+                            "message_id": item.get("message_id"),
+                            "sender_name": item.get("sender_name"),
+                            "sent_at": item.get("sent_at"),
+                            "quote": item.get("text"),
+                        }
+                        for item in sample_messages[:3]
+                        if item.get("message_id") is not None
+                    ],
+                    "participants": [
+                        {
+                            "participant_id": participant_id,
+                            "role_hint": None,
+                            "stance_summary": None,
+                            "message_count": int(payload.get("message_count") or 0),
+                            "mention_count": 0,
+                        }
+                        for participant_id, payload in participant_lookup.items()
+                    ],
+                    "participant_quotes": [
+                        {
+                            "participant_id": item.get("participant_id"),
+                            "display_name": item.get("sender_name"),
+                            "message_id": item.get("message_id"),
+                            "sent_at": item.get("sent_at"),
+                            "quote": item.get("text"),
+                            "rank": 1,
+                        }
+                        for item in sample_messages[:4]
+                        if item.get("participant_id") and item.get("message_id") is not None
+                    ],
+                    "metadata_json": {
+                        "week_key": candidate.week_key,
+                        "window_index": int(candidate.window_index or 1),
+                        "source": "weekly_topic_fallback",
+                        "candidate_id": candidate.id,
+                        "subtopics": [],
+                        "interaction_patterns": [],
+                    },
+                }
+            )
+
+        return self._normalize_topic_collection(topics)
+
+    def _development_weekly_topic_summaries(
+        self,
+        candidates: list[TelegramPreprocessWeeklyTopicCandidate],
+    ) -> list[dict[str, Any]]:
+        topics: list[dict[str, Any]] = []
+        for candidate in candidates:
+            sample_messages = list(candidate.sample_messages_json or [])
+            top_participants = list(candidate.top_participants_json or [])
+            summary = "\n".join(str(item.get("text") or "") for item in sample_messages[:24])
+            topics.append(
+                {
+                    "week_key": candidate.week_key,
+                    "week_topic_index": 1,
+                    "title": f"{candidate.week_key} dense window {int(candidate.window_index or 1)}",
+                    "summary": _compact_text(summary, limit=140),
+                    "start_at": candidate.start_at,
+                    "end_at": candidate.end_at,
+                    "start_message_id": candidate.start_message_id,
+                    "end_message_id": candidate.end_message_id,
+                    "message_count": candidate.message_count,
+                    "participant_count": candidate.participant_count,
+                    "keywords_json": top_terms(summary, limit=6),
+                    "evidence_json": [
+                        {
+                            "message_id": item.get("message_id"),
+                            "sender_name": item.get("sender_name"),
+                            "sent_at": item.get("sent_at"),
+                            "quote": item.get("text"),
+                        }
+                        for item in sample_messages[:3]
+                        if item.get("message_id") is not None
+                    ],
+                    "participants": [
+                        {
+                            "participant_id": item.get("participant_id"),
+                            "role_hint": None,
+                            "stance_summary": None,
+                            "message_count": int(item.get("message_count") or 0),
+                            "mention_count": 0,
+                        }
+                        for item in top_participants
+                        if item.get("participant_id")
+                    ],
+                    "participant_quotes": [
+                        {
+                            "participant_id": item.get("participant_id"),
+                            "display_name": item.get("sender_name"),
+                            "message_id": item.get("message_id"),
+                            "sent_at": item.get("sent_at"),
+                            "quote": item.get("text"),
+                            "rank": 1,
+                        }
+                        for item in sample_messages[:4]
+                        if item.get("participant_id") and item.get("message_id") is not None
+                    ],
+                    "metadata_json": {
+                        "week_key": candidate.week_key,
+                        "window_index": int(candidate.window_index or 1),
+                        "source": "weekly_topic_sql_fallback",
+                        "candidate_id": candidate.id,
+                        "subtopics": top_terms(summary, limit=4),
+                        "interaction_patterns": [],
                     },
                 }
             )
@@ -2886,8 +3545,754 @@ class TelegramPreprocessWorker:
         *,
         progress_callback: Callable[[str, int, dict[str, Any] | None], None] | None = None,
     ) -> list[dict[str, Any]]:
-        del run_id, chat_id, top_users, progress_callback
-        return []
+        del run_id, chat_id
+        if not top_users:
+            return []
+        active_users = [self._build_active_user_payload(item) for item in top_users]
+        self._trace(
+            "stage_progress",
+            stage="active_users",
+            message="Built active-user snapshots directly from the SQL top-user materialization.",
+            active_user_count=len(active_users),
+        )
+        self._progress(
+            progress_callback,
+            "active_users",
+            94,
+            {
+                "active_user_count": len(active_users),
+                "usage": dict(self.usage_totals),
+            },
+        )
+        return active_users
+
+    @staticmethod
+    def _active_user_payload_from_model(item: Any) -> dict[str, Any]:
+        return {
+            "rank": int(getattr(item, "rank", 0) or 0),
+            "participant_id": str(getattr(item, "participant_id", "") or "").strip(),
+            "uid": getattr(item, "uid", None),
+            "username": getattr(item, "username", None),
+            "display_name": getattr(item, "display_name", None),
+            "primary_alias": getattr(item, "primary_alias", None),
+            "aliases_json": list(getattr(item, "aliases_json", None) or []),
+            "message_count": int(getattr(item, "message_count", 0) or 0),
+            "first_seen_at": getattr(item, "first_seen_at", None),
+            "last_seen_at": getattr(item, "last_seen_at", None),
+            "evidence_json": list(getattr(item, "evidence_json", None) or []),
+        }
+
+    @staticmethod
+    def _relationship_pair_ids(participant_a_id: str, participant_b_id: str) -> tuple[str, str]:
+        if participant_b_id < participant_a_id:
+            return participant_b_id, participant_a_id
+        return participant_a_id, participant_b_id
+
+    def _build_relationship_reply_context(
+        self,
+        messages: list[TelegramMessage],
+        index_by_message_id: dict[int, int],
+        replied_message_id: int,
+        reply_message_id: int,
+    ) -> dict[str, Any] | None:
+        reply_index = index_by_message_id.get(reply_message_id)
+        replied_index = index_by_message_id.get(replied_message_id)
+        if reply_index is None or replied_index is None:
+            return None
+        start = max(min(reply_index, replied_index) - 1, 0)
+        end = min(max(reply_index, replied_index) + 2, len(messages))
+        window = messages[start:end]
+        anchor = next(
+            (item for item in window if int(item.telegram_message_id or 0) == reply_message_id),
+            None,
+        )
+        replied = next(
+            (item for item in window if int(item.telegram_message_id or 0) == replied_message_id),
+            None,
+        )
+        if not anchor or not replied:
+            return None
+        payload = {
+            "kind": "reply_context",
+            "anchor_message_id": int(anchor.telegram_message_id or 0) or None,
+            "message_ids": [
+                int(item.telegram_message_id or 0)
+                for item in window
+                if int(item.telegram_message_id or 0) > 0
+            ],
+            "summary": f"{anchor.sender_name or 'unknown'} replied to {replied.sender_name or 'unknown'}",
+            "messages": [
+                {
+                    "message_id": int(item.telegram_message_id or 0) or None,
+                    "participant_id": item.participant_id,
+                    "sender_name": item.sender_name,
+                    "sent_at": item.sent_at.isoformat() if item.sent_at else None,
+                    "text": _compact_text(item.text_normalized, limit=220),
+                }
+                for item in window
+            ],
+            "context_text": " ".join(_compact_text(item.text_normalized, limit=160) for item in window if item.text_normalized),
+        }
+        return payload
+
+    def _build_relationship_topic_payload(
+        self,
+        topic: Any,
+        participant_a_id: str,
+        participant_b_id: str,
+    ) -> dict[str, Any]:
+        metadata = dict(getattr(topic, "metadata_json", None) or {})
+        stance_by_id = {
+            str(link.participant_id or "").strip(): str(getattr(link, "stance_summary", None) or "").strip()
+            for link in list(getattr(topic, "participants", None) or [])
+            if str(link.participant_id or "").strip()
+        }
+        quotes = []
+        message_ids: list[int] = []
+        for quote in list(getattr(topic, "quotes", None) or []):
+            if quote.participant_id not in {participant_a_id, participant_b_id}:
+                continue
+            message_id = int(quote.telegram_message_id or 0) or None
+            if message_id is not None:
+                message_ids.append(message_id)
+            quotes.append(
+                {
+                    "participant_id": quote.participant_id,
+                    "display_name": quote.participant.display_name if quote.participant else None,
+                    "message_id": message_id,
+                    "sent_at": quote.sent_at.isoformat() if quote.sent_at else None,
+                    "quote": quote.quote,
+                }
+            )
+        for evidence in list(getattr(topic, "evidence_json", None) or []):
+            if not isinstance(evidence, dict):
+                continue
+            try:
+                message_id = int(evidence.get("message_id"))
+            except (TypeError, ValueError):
+                message_id = None
+            if message_id is not None:
+                message_ids.append(message_id)
+        return {
+            "kind": "topic",
+            "topic_id": getattr(topic, "id", None),
+            "week_key": getattr(topic, "week_key", None) or metadata.get("week_key"),
+            "title": getattr(topic, "title", None),
+            "summary": getattr(topic, "summary", None),
+            "interaction_patterns": [
+                str(item).strip()
+                for item in (metadata.get("interaction_patterns") or [])
+                if str(item).strip()
+            ][:6],
+            "participant_a_stance": stance_by_id.get(participant_a_id) or None,
+            "participant_b_stance": stance_by_id.get(participant_b_id) or None,
+            "message_ids": sorted({item for item in message_ids if item is not None})[:8],
+            "quotes": quotes[:6],
+        }
+
+    def _build_relationship_candidate_metrics(
+        self,
+        *,
+        selected_users: list[dict[str, Any]],
+        topics: list[Any],
+        messages: list[TelegramMessage],
+    ) -> list[dict[str, Any]]:
+        selected_ids = {
+            str(item.get("participant_id") or "").strip(): item
+            for item in selected_users
+            if str(item.get("participant_id") or "").strip()
+        }
+        pairs: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def ensure_pair(participant_a_id: str, participant_b_id: str) -> dict[str, Any]:
+            pair_key = self._relationship_pair_ids(participant_a_id, participant_b_id)
+            if pair_key not in pairs:
+                pairs[pair_key] = {
+                    "participant_a_id": pair_key[0],
+                    "participant_b_id": pair_key[1],
+                    "reply_total": 0,
+                    "reply_a_to_b": 0,
+                    "reply_b_to_a": 0,
+                    "shared_topic_count": 0,
+                    "shared_topics_with_both_quotes": 0,
+                    "topic_evidence": [],
+                    "reply_contexts": [],
+                    "signal_fragments": [],
+                }
+            return pairs[pair_key]
+
+        index_by_message_id = {
+            int(message.telegram_message_id): index
+            for index, message in enumerate(messages)
+            if message.telegram_message_id is not None
+        }
+        message_by_id = {
+            int(message.telegram_message_id): message
+            for message in messages
+            if message.telegram_message_id is not None
+        }
+        for message in messages:
+            participant_id = str(message.participant_id or "").strip()
+            if not participant_id or participant_id not in selected_ids or message.reply_to_message_id is None:
+                continue
+            replied = message_by_id.get(int(message.reply_to_message_id))
+            if not replied:
+                continue
+            replied_participant_id = str(replied.participant_id or "").strip()
+            if not replied_participant_id or replied_participant_id not in selected_ids or replied_participant_id == participant_id:
+                continue
+            pair = ensure_pair(participant_id, replied_participant_id)
+            pair["reply_total"] += 1
+            if participant_id == pair["participant_a_id"]:
+                pair["reply_a_to_b"] += 1
+            else:
+                pair["reply_b_to_a"] += 1
+            context_payload = self._build_relationship_reply_context(
+                messages,
+                index_by_message_id,
+                int(replied.telegram_message_id or 0),
+                int(message.telegram_message_id or 0),
+            )
+            if context_payload:
+                pair["reply_contexts"].append(context_payload)
+                pair["signal_fragments"].append(str(context_payload.get("context_text") or ""))
+
+        for topic in topics:
+            topic_participants = [
+                link
+                for link in list(getattr(topic, "participants", None) or [])
+                if str(link.participant_id or "").strip() in selected_ids
+            ]
+            participant_ids = sorted(
+                {
+                    str(link.participant_id or "").strip()
+                    for link in topic_participants
+                    if str(link.participant_id or "").strip()
+                }
+            )
+            quote_participants = {
+                str(quote.participant_id or "").strip()
+                for quote in list(getattr(topic, "quotes", None) or [])
+                if str(quote.participant_id or "").strip() in selected_ids
+            }
+            for index, participant_a_id in enumerate(participant_ids):
+                for participant_b_id in participant_ids[index + 1 :]:
+                    pair = ensure_pair(participant_a_id, participant_b_id)
+                    pair["shared_topic_count"] += 1
+                    if participant_a_id in quote_participants and participant_b_id in quote_participants:
+                        pair["shared_topics_with_both_quotes"] += 1
+                    topic_payload = self._build_relationship_topic_payload(topic, participant_a_id, participant_b_id)
+                    pair["topic_evidence"].append(topic_payload)
+                    pair["signal_fragments"].append(
+                        " ".join(
+                            [
+                                str(topic_payload.get("summary") or ""),
+                                " ".join(topic_payload.get("interaction_patterns") or []),
+                                str(topic_payload.get("participant_a_stance") or ""),
+                                str(topic_payload.get("participant_b_stance") or ""),
+                                " ".join(str(item.get("quote") or "") for item in topic_payload.get("quotes") or []),
+                            ]
+                        ).strip()
+                    )
+
+        candidates: list[dict[str, Any]] = []
+        for metrics in pairs.values():
+            reply_total = int(metrics["reply_total"] or 0)
+            reply_a_to_b = int(metrics["reply_a_to_b"] or 0)
+            reply_b_to_a = int(metrics["reply_b_to_a"] or 0)
+            shared_topic_count = int(metrics["shared_topic_count"] or 0)
+            if not (
+                reply_total >= 2
+                or (reply_a_to_b >= 1 and reply_b_to_a >= 1)
+                or shared_topic_count >= 2
+            ):
+                continue
+            reply_score = min(reply_total / 6.0, 1.0)
+            shared_topic_score = min(shared_topic_count / 5.0, 1.0)
+            co_quote_score = min(int(metrics["shared_topics_with_both_quotes"] or 0) / 4.0, 1.0)
+            interaction_strength = (0.55 * reply_score) + (0.35 * shared_topic_score) + (0.10 * co_quote_score)
+            metrics.update(
+                {
+                    "reply_score": round(reply_score, 4),
+                    "shared_topic_score": round(shared_topic_score, 4),
+                    "co_quote_score": round(co_quote_score, 4),
+                    "interaction_strength": round(interaction_strength, 4),
+                }
+            )
+            candidates.append(metrics)
+
+        candidates.sort(
+            key=lambda item: (
+                float(item.get("interaction_strength") or 0.0),
+                int(item.get("reply_total") or 0),
+                int(item.get("shared_topic_count") or 0),
+            ),
+            reverse=True,
+        )
+        return candidates
+
+    @staticmethod
+    def _normalize_relationship_label(value: Any) -> str:
+        label = str(value or "").strip().lower()
+        if label in {"friendly", "neutral", "tense", "unclear"}:
+            return label
+        if label in {"hostile", "enemy", "opposed"}:
+            return "tense"
+        return "unclear"
+
+    def _heuristic_relationship_label(self, candidate: dict[str, Any]) -> tuple[str, float]:
+        text = " ".join(str(item or "") for item in (candidate.get("signal_fragments") or [])).lower()
+        positive_keywords = (
+            "agree",
+            "agreed",
+            "support",
+            "supports",
+            "supported",
+            "thanks",
+            "confirm",
+            "aligned",
+            "协作",
+            "支持",
+            "附和",
+            "认同",
+            "配合",
+            "补充支持",
+        )
+        tense_keywords = (
+            "disagree",
+            "argue",
+            "conflict",
+            "oppose",
+            "hostile",
+            "反驳",
+            "冲突",
+            "对立",
+            "拆台",
+            "针锋相对",
+            "质疑",
+        )
+        positive_hits = sum(text.count(keyword) for keyword in positive_keywords)
+        tense_hits = sum(text.count(keyword) for keyword in tense_keywords)
+        interaction_strength = float(candidate.get("interaction_strength") or 0.0)
+        if tense_hits > positive_hits and tense_hits > 0:
+            return "tense", round(min(max(0.58, interaction_strength), 0.82), 4)
+        if positive_hits > tense_hits and positive_hits > 0:
+            return "friendly", round(min(max(0.58, interaction_strength), 0.82), 4)
+        if interaction_strength >= 0.45:
+            return "neutral", round(min(max(0.52, interaction_strength), 0.74), 4)
+        return "unclear", round(min(interaction_strength, 0.55), 4)
+
+    def _summarize_relationship_edge(
+        self,
+        candidate: dict[str, Any],
+        participant_lookup: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not self.client:
+            raise RuntimeError("Relationship edge LLM summary requires a chat client.")
+
+        participant_a = participant_lookup.get(candidate["participant_a_id"], {})
+        participant_b = participant_lookup.get(candidate["participant_b_id"], {})
+        request_key = f"relationship-{candidate['participant_a_id'][:8]}-{candidate['participant_b_id'][:8]}"
+        label = f"Relationship edge {participant_a.get('primary_alias') or participant_a.get('display_name') or candidate['participant_a_id']} / {participant_b.get('primary_alias') or participant_b.get('display_name') or candidate['participant_b_id']}"
+        payload = {
+            "participant_a": {
+                "participant_id": candidate["participant_a_id"],
+                "label": participant_a.get("primary_alias") or participant_a.get("display_name") or participant_a.get("username") or candidate["participant_a_id"],
+                "username": participant_a.get("username"),
+                "message_count": participant_a.get("message_count"),
+            },
+            "participant_b": {
+                "participant_id": candidate["participant_b_id"],
+                "label": participant_b.get("primary_alias") or participant_b.get("display_name") or participant_b.get("username") or candidate["participant_b_id"],
+                "username": participant_b.get("username"),
+                "message_count": participant_b.get("message_count"),
+            },
+            "interaction_strength": candidate.get("interaction_strength"),
+            "metrics": {
+                "reply_total": candidate.get("reply_total"),
+                "reply_a_to_b": candidate.get("reply_a_to_b"),
+                "reply_b_to_a": candidate.get("reply_b_to_a"),
+                "shared_topic_count": candidate.get("shared_topic_count"),
+                "shared_topics_with_both_quotes": candidate.get("shared_topics_with_both_quotes"),
+                "heuristic_label": candidate.get("heuristic_label"),
+            },
+            "shared_topics": list(candidate.get("topic_evidence") or [])[:TELEGRAM_RELATIONSHIP_MAX_TOPIC_EVIDENCE],
+            "reply_contexts": list(candidate.get("reply_contexts") or [])[:TELEGRAM_RELATIONSHIP_MAX_REPLY_CONTEXTS],
+            "counterevidence": list(candidate.get("counterevidence_json") or [])[:TELEGRAM_RELATIONSHIP_MAX_COUNTEREVIDENCE],
+        }
+        self._trace(
+            "llm_request_started",
+            stage="relationship_snapshot",
+            agent="relationship_edge_agent",
+            request_key=request_key,
+            label=label,
+            prompt_preview=_preview_text(payload),
+        )
+        result = self.client.chat_completion_result(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are the Telegram relationship snapshot agent.\n"
+                        "Judge the relationship between two Telegram participants from structured evidence.\n"
+                        "Return JSON only with keys relation_label, confidence, summary, supporting_signals, counter_signals, evidence_message_ids.\n"
+                        "Allowed relation_label values: friendly, neutral, tense, unclear.\n"
+                        "friendly means repeated support, collaboration, or constructive handoff.\n"
+                        "neutral means interaction is stable but not clearly close or hostile.\n"
+                        "tense means repeated contradiction, confrontation, or adversarial pushback.\n"
+                        "unclear means the evidence is mixed or insufficient.\n"
+                        "Do not invent evidence."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(payload, ensure_ascii=False, indent=2),
+                },
+            ],
+            model=self.llm_config.model if self.llm_config else None,
+            temperature=0.1,
+            max_tokens=520,
+        )
+        self._add_usage(result.usage)
+        self._trace(
+            "llm_request_completed",
+            stage="relationship_snapshot",
+            agent="relationship_edge_agent",
+            request_key=request_key,
+            label=label,
+            usage=result.usage,
+            response_text_preview=_preview_text(result.content),
+        )
+        parsed = parse_json_response(str(result.content or ""), fallback=True)
+        try:
+            confidence = float(parsed.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = float(candidate.get("interaction_strength") or 0.0)
+        return {
+            "relation_label": self._normalize_relationship_label(parsed.get("relation_label")),
+            "confidence": round(min(max(confidence, 0.0), 1.0), 4),
+            "summary": str(parsed.get("summary") or "").strip() or None,
+            "supporting_signals": _dedupe_strings(list(parsed.get("supporting_signals") or []), limit=6),
+            "counter_signals": _dedupe_strings(list(parsed.get("counter_signals") or []), limit=6),
+            "evidence_message_ids": _coerce_message_ids(parsed.get("evidence_message_ids") or [])[:8],
+        }
+
+    def build_relationship_snapshot(
+        self,
+        run: TelegramPreprocessRun,
+        *,
+        progress_callback: Callable[[str, int, dict[str, Any] | None], None] | None = None,
+    ) -> dict[str, Any]:
+        top_users = repository.list_telegram_preprocess_top_users(self.session, self.project.id, run_id=run.id)
+        existing_active_users = repository.list_telegram_preprocess_active_users(self.session, self.project.id, run_id=run.id)
+        active_users = (
+            [self._active_user_payload_from_model(item) for item in existing_active_users]
+            if existing_active_users
+            else self._build_active_users(run.id, run.chat_id or "", top_users, progress_callback=progress_callback)
+        )
+        if not existing_active_users and active_users:
+            repository.replace_telegram_preprocess_active_users(
+                self.session,
+                run_id=run.id,
+                project_id=self.project.id,
+                chat_id=run.chat_id,
+                active_users=active_users,
+            )
+            self.session.flush()
+
+        selected_users = active_users[:TELEGRAM_RELATIONSHIP_USER_LIMIT]
+        snapshot = repository.create_or_replace_telegram_relationship_snapshot(
+            self.session,
+            run_id=run.id,
+            project_id=self.project.id,
+            chat_id=run.chat_id,
+            status="running",
+            analyzed_user_count=len(selected_users),
+            candidate_pair_count=0,
+            llm_pair_count=0,
+            started_at=utcnow(),
+            summary_json={
+                "friendly_count": 0,
+                "neutral_count": 0,
+                "tense_count": 0,
+                "unclear_count": 0,
+                "edge_count": 0,
+                "central_users": [],
+                "isolated_users": [
+                    {
+                        "participant_id": item.get("participant_id"),
+                        "label": item.get("primary_alias") or item.get("display_name") or item.get("username") or item.get("participant_id"),
+                    }
+                    for item in selected_users
+                ],
+                "snapshot_notes": [],
+            },
+        )
+        self._trace(
+            "agent_started",
+            stage="relationship_snapshot",
+            agent="relationship_snapshot_agent",
+            message=f"Building Telegram relationship snapshot for {len(selected_users)} active users.",
+            analyzed_user_count=len(selected_users),
+        )
+        if not selected_users:
+            snapshot.status = "completed"
+            snapshot.finished_at = utcnow()
+            snapshot.summary_json = {
+                **dict(snapshot.summary_json or {}),
+                "snapshot_notes": ["No active users were available for relationship analysis."],
+            }
+            self.session.flush()
+            self._progress(
+                progress_callback,
+                "relationship_snapshot",
+                98,
+                {
+                    "active_user_count": 0,
+                    "relationship_snapshot_id": snapshot.id,
+                    "relationship_status": snapshot.status,
+                    "relationship_edge_count": 0,
+                },
+            )
+            return {
+                "snapshot_id": snapshot.id,
+                "status": snapshot.status,
+                "active_user_count": 0,
+                "candidate_pair_count": 0,
+                "edge_count": 0,
+                "summary": dict(snapshot.summary_json or {}),
+            }
+
+        topics = repository.list_telegram_preprocess_topics(self.session, self.project.id, run_id=run.id)
+        messages = repository.list_telegram_messages(
+            self.session,
+            self.project.id,
+            chat_id=run.chat_id,
+            ascending=True,
+        )
+        participant_lookup = {
+            str(item.get("participant_id") or "").strip(): item
+            for item in selected_users
+            if str(item.get("participant_id") or "").strip()
+        }
+        candidate_pairs = self._build_relationship_candidate_metrics(
+            selected_users=selected_users,
+            topics=topics,
+            messages=messages,
+        )
+        filtered_pairs = [
+            item
+            for item in candidate_pairs
+            if float(item.get("interaction_strength") or 0.0) >= TELEGRAM_RELATIONSHIP_MIN_STRENGTH
+        ]
+        llm_candidates = filtered_pairs[:TELEGRAM_RELATIONSHIP_LLM_EDGE_LIMIT]
+        llm_candidate_keys = {
+            (item["participant_a_id"], item["participant_b_id"])
+            for item in llm_candidates
+        }
+        partial_snapshot = False
+        snapshot_notes: list[str] = []
+        edge_payloads: list[dict[str, Any]] = []
+        for candidate in filtered_pairs:
+            heuristic_label, heuristic_confidence = self._heuristic_relationship_label(candidate)
+            candidate["heuristic_label"] = heuristic_label
+            evidence_pool = (list(candidate.get("topic_evidence") or [])[:TELEGRAM_RELATIONSHIP_MAX_TOPIC_EVIDENCE]) + (
+                list(candidate.get("reply_contexts") or [])[:TELEGRAM_RELATIONSHIP_MAX_REPLY_CONTEXTS]
+            )
+            counterevidence_pool = list(candidate.get("reply_contexts") or [])[TELEGRAM_RELATIONSHIP_MAX_REPLY_CONTEXTS:]
+            if len(counterevidence_pool) < TELEGRAM_RELATIONSHIP_MAX_COUNTEREVIDENCE:
+                counterevidence_pool.extend(list(candidate.get("topic_evidence") or [])[TELEGRAM_RELATIONSHIP_MAX_TOPIC_EVIDENCE:])
+            counterevidence_pool = counterevidence_pool[:TELEGRAM_RELATIONSHIP_MAX_COUNTEREVIDENCE]
+            candidate["counterevidence_json"] = counterevidence_pool
+            message_evidence_by_id: dict[int, dict[str, Any]] = {}
+            for item in evidence_pool:
+                for message_id in item.get("message_ids") or []:
+                    try:
+                        normalized_message_id = int(message_id)
+                    except (TypeError, ValueError):
+                        continue
+                    message_evidence_by_id.setdefault(normalized_message_id, item)
+                anchor_message_id = item.get("anchor_message_id")
+                if anchor_message_id is not None:
+                    try:
+                        message_evidence_by_id.setdefault(int(anchor_message_id), item)
+                    except (TypeError, ValueError):
+                        pass
+
+            relation_label = heuristic_label
+            confidence = heuristic_confidence
+            summary = None
+            supporting_signals: list[str] = []
+            counter_signals: list[str] = []
+            if (candidate["participant_a_id"], candidate["participant_b_id"]) in llm_candidate_keys:
+                if self.client:
+                    try:
+                        llm_payload = self._summarize_relationship_edge(candidate, participant_lookup)
+                        relation_label = llm_payload["relation_label"] or heuristic_label
+                        confidence = llm_payload["confidence"] or heuristic_confidence
+                        summary = llm_payload["summary"]
+                        supporting_signals = list(llm_payload.get("supporting_signals") or [])
+                        counter_signals = list(llm_payload.get("counter_signals") or [])
+                        evidence_ids = list(llm_payload.get("evidence_message_ids") or [])
+                        if evidence_ids:
+                            selected_evidence: list[dict[str, Any]] = []
+                            seen_evidence: set[int] = set()
+                            for message_id in evidence_ids:
+                                item = message_evidence_by_id.get(message_id)
+                                if not item or id(item) in seen_evidence:
+                                    continue
+                                seen_evidence.add(id(item))
+                                selected_evidence.append(item)
+                            if selected_evidence:
+                                evidence_pool = selected_evidence
+                    except Exception as exc:
+                        partial_snapshot = True
+                        relation_label = "unclear"
+                        confidence = round(min(float(candidate.get("interaction_strength") or 0.0), 0.6), 4)
+                        summary = None
+                        snapshot_notes.append(
+                            f"LLM summary fallback for pair {candidate['participant_a_id']} / {candidate['participant_b_id']}: {exc}"
+                        )
+                        self._trace(
+                            "agent_retry",
+                            stage="relationship_snapshot",
+                            agent="relationship_edge_agent",
+                            participant_a_id=candidate["participant_a_id"],
+                            participant_b_id=candidate["participant_b_id"],
+                            message="Relationship edge summary fell back to rule-only handling.",
+                            error=str(exc),
+                        )
+                else:
+                    partial_snapshot = True
+                    relation_label = "unclear"
+                    confidence = round(min(float(candidate.get("interaction_strength") or 0.0), 0.6), 4)
+                    snapshot_notes.append("Chat LLM was unavailable; top relationship edges fell back to rule-only evidence.")
+
+            edge_payloads.append(
+                {
+                    "participant_a_id": candidate["participant_a_id"],
+                    "participant_b_id": candidate["participant_b_id"],
+                    "interaction_strength": round(float(candidate.get("interaction_strength") or 0.0), 4),
+                    "confidence": confidence,
+                    "relation_label": self._normalize_relationship_label(relation_label),
+                    "summary": summary,
+                    "evidence_json": evidence_pool[:8],
+                    "counterevidence_json": counterevidence_pool,
+                    "metrics_json": {
+                        "reply_total": int(candidate.get("reply_total") or 0),
+                        "reply_a_to_b": int(candidate.get("reply_a_to_b") or 0),
+                        "reply_b_to_a": int(candidate.get("reply_b_to_a") or 0),
+                        "shared_topic_count": int(candidate.get("shared_topic_count") or 0),
+                        "shared_topics_with_both_quotes": int(candidate.get("shared_topics_with_both_quotes") or 0),
+                        "reply_score": float(candidate.get("reply_score") or 0.0),
+                        "shared_topic_score": float(candidate.get("shared_topic_score") or 0.0),
+                        "co_quote_score": float(candidate.get("co_quote_score") or 0.0),
+                        "heuristic_label": heuristic_label,
+                        "supporting_signals": supporting_signals,
+                        "counter_signals": counter_signals,
+                    },
+                }
+            )
+
+        repository.replace_telegram_relationship_edges(
+            self.session,
+            snapshot_id=snapshot.id,
+            project_id=self.project.id,
+            edges=edge_payloads,
+        )
+
+        relationship_counts = {"friendly": 0, "neutral": 0, "tense": 0, "unclear": 0}
+        weighted_degree: dict[str, float] = defaultdict(float)
+        edge_count_by_participant: dict[str, int] = defaultdict(int)
+        connected_ids: set[str] = set()
+        for edge in edge_payloads:
+            relation_label = self._normalize_relationship_label(edge.get("relation_label"))
+            relationship_counts[relation_label] += 1
+            participant_a_id = edge["participant_a_id"]
+            participant_b_id = edge["participant_b_id"]
+            connected_ids.update({participant_a_id, participant_b_id})
+            weight = float(edge.get("interaction_strength") or 0.0)
+            weighted_degree[participant_a_id] += weight
+            weighted_degree[participant_b_id] += weight
+            edge_count_by_participant[participant_a_id] += 1
+            edge_count_by_participant[participant_b_id] += 1
+
+        central_users = sorted(
+            (
+                {
+                    "participant_id": participant_id,
+                    "label": participant_lookup.get(participant_id, {}).get("primary_alias")
+                    or participant_lookup.get(participant_id, {}).get("display_name")
+                    or participant_lookup.get(participant_id, {}).get("username")
+                    or participant_id,
+                    "weighted_degree": round(score, 4),
+                    "edge_count": edge_count_by_participant.get(participant_id, 0),
+                }
+                for participant_id, score in weighted_degree.items()
+            ),
+            key=lambda item: (float(item.get("weighted_degree") or 0.0), int(item.get("edge_count") or 0)),
+            reverse=True,
+        )[:5]
+        isolated_users = [
+            {
+                "participant_id": participant_id,
+                "label": participant_lookup.get(participant_id, {}).get("primary_alias")
+                or participant_lookup.get(participant_id, {}).get("display_name")
+                or participant_lookup.get(participant_id, {}).get("username")
+                or participant_id,
+            }
+            for participant_id in participant_lookup
+            if participant_id not in connected_ids
+        ]
+        if not edge_payloads:
+            snapshot_notes.append("No participant pairs met the minimum interaction threshold.")
+
+        snapshot.status = "partial" if partial_snapshot else "completed"
+        snapshot.finished_at = utcnow()
+        snapshot.analyzed_user_count = len(selected_users)
+        snapshot.candidate_pair_count = len(candidate_pairs)
+        snapshot.llm_pair_count = len(llm_candidates) if self.client else 0
+        snapshot.error_message = None
+        snapshot.summary_json = {
+            "friendly_count": relationship_counts["friendly"],
+            "neutral_count": relationship_counts["neutral"],
+            "tense_count": relationship_counts["tense"],
+            "unclear_count": relationship_counts["unclear"],
+            "edge_count": len(edge_payloads),
+            "central_users": central_users,
+            "isolated_users": isolated_users,
+            "snapshot_notes": _dedupe_strings(snapshot_notes, limit=8),
+        }
+        self._trace(
+            "agent_completed",
+            stage="relationship_snapshot",
+            agent="relationship_snapshot_agent",
+            message=f"Built Telegram relationship snapshot with {len(edge_payloads)} edges.",
+            relationship_snapshot_id=snapshot.id,
+            relationship_status=snapshot.status,
+            relationship_edge_count=len(edge_payloads),
+        )
+        self._progress(
+            progress_callback,
+            "relationship_snapshot",
+            98,
+            {
+                "active_user_count": len(selected_users),
+                "relationship_snapshot_id": snapshot.id,
+                "relationship_status": snapshot.status,
+                "relationship_edge_count": len(edge_payloads),
+                "relationship_summary": dict(snapshot.summary_json or {}),
+                "usage": dict(self.usage_totals),
+            },
+        )
+        return {
+            "snapshot_id": snapshot.id,
+            "status": snapshot.status,
+            "active_user_count": len(selected_users),
+            "candidate_pair_count": len(candidate_pairs),
+            "edge_count": len(edge_payloads),
+            "summary": dict(snapshot.summary_json or {}),
+        }
 
     def _add_usage(self, usage: dict[str, Any] | None) -> None:
         for key in (
@@ -3026,6 +4431,11 @@ class TelegramPreprocessManager:
                         "active_agents": 0,
                         "completed_week_count": 0,
                         "remaining_week_count": 0,
+                        "active_user_count": 0,
+                        "relationship_snapshot_id": None,
+                        "relationship_status": None,
+                        "relationship_edge_count": 0,
+                        "relationship_summary": {},
                         "trace_events": [],
                         "trace_event_count": 0,
                         "resume_count": 0,
@@ -3161,6 +4571,7 @@ class TelegramPreprocessManager:
                             summary.get("weekly_candidate_count") or summary.get("window_count") or live_run.window_count or 0
                         )
                         live_run.topic_count = int(summary.get("topic_count") or live_run.topic_count or 0)
+                        live_run.active_user_count = int(summary.get("active_user_count") or live_run.active_user_count or 0)
                         live_run.summary_json = self._touch_summary(summary)
                         session.commit()
                         self._publish_snapshot(run_id)
@@ -3176,7 +4587,56 @@ class TelegramPreprocessManager:
                         chat_id=live_run.chat_id,
                         topics=list(result.get("topics") or []),
                     )
-                    usage = result.get("usage") or {}
+                    try:
+                        relationship_result = worker.build_relationship_snapshot(
+                            live_run,
+                            progress_callback=progress,
+                        )
+                    except Exception as exc:
+                        fallback_snapshot = repository.create_or_replace_telegram_relationship_snapshot(
+                            session,
+                            run_id=live_run.id,
+                            project_id=project.id,
+                            chat_id=live_run.chat_id,
+                            status="failed",
+                            analyzed_user_count=0,
+                            candidate_pair_count=0,
+                            llm_pair_count=0,
+                            started_at=utcnow(),
+                            finished_at=utcnow(),
+                            error_message=str(exc),
+                            summary_json={
+                                "friendly_count": 0,
+                                "neutral_count": 0,
+                                "tense_count": 0,
+                                "unclear_count": 0,
+                                "edge_count": 0,
+                                "central_users": [],
+                                "isolated_users": [],
+                                "snapshot_notes": [str(exc)],
+                            },
+                        )
+                        relationship_result = {
+                            "snapshot_id": fallback_snapshot.id,
+                            "status": "failed",
+                            "active_user_count": 0,
+                            "candidate_pair_count": 0,
+                            "edge_count": 0,
+                            "summary": dict(fallback_snapshot.summary_json or {}),
+                        }
+                        self._record_trace(
+                            session,
+                            run_id,
+                            {
+                                "timestamp": utcnow().isoformat(),
+                                "kind": "run_failed",
+                                "stage": "relationship_snapshot",
+                                "message": "Relationship snapshot generation failed, but Telegram preprocess completed with weekly topics intact.",
+                                "error": str(exc),
+                            },
+                            persist=True,
+                        )
+                    usage = dict(worker.usage_totals)
                     live_run.status = "completed"
                     live_run.finished_at = utcnow()
                     live_run.progress_percent = 100
@@ -3188,6 +4648,7 @@ class TelegramPreprocessManager:
                     live_run.cache_read_tokens = int(usage.get("cache_read_tokens", 0) or 0)
                     live_run.window_count = int(result.get("window_count", 0) or 0)
                     live_run.topic_count = len(final_topics)
+                    live_run.active_user_count = int(relationship_result.get("active_user_count") or 0)
                     live_run.summary_json = {
                         **dict(live_run.summary_json or {}),
                         "current_stage": "completed",
@@ -3201,6 +4662,11 @@ class TelegramPreprocessManager:
                         ),
                         "bootstrap": result.get("bootstrap") or {},
                         "usage": usage,
+                        "active_user_count": int(relationship_result.get("active_user_count") or 0),
+                        "relationship_snapshot_id": relationship_result.get("snapshot_id"),
+                        "relationship_status": relationship_result.get("status"),
+                        "relationship_edge_count": int(relationship_result.get("edge_count") or 0),
+                        "relationship_summary": dict(relationship_result.get("summary") or {}),
                         "resume_available": False,
                         "current_topic_index": int(result.get("current_topic_index") or 0),
                         "current_topic_total": int(result.get("current_topic_total") or 0),
@@ -3215,7 +4681,7 @@ class TelegramPreprocessManager:
                             "timestamp": utcnow().isoformat(),
                             "kind": "run_completed",
                             "stage": "completed",
-                            "message": f"Telegram preprocess completed with {live_run.topic_count} weekly topics.",
+                            "message": f"Telegram preprocess completed with {live_run.topic_count} weekly topics and {int(relationship_result.get('edge_count') or 0)} relationship edges.",
                         },
                         persist=True,
                     )

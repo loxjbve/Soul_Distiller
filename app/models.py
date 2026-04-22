@@ -51,7 +51,10 @@ class Project(Base, TimestampMixin):
     telegram_preprocess_top_users: Mapped[list["TelegramPreprocessTopUser"]] = relationship(back_populates="project")
     telegram_preprocess_weekly_topic_candidates: Mapped[list["TelegramPreprocessWeeklyTopicCandidate"]] = relationship(back_populates="project")
     telegram_preprocess_topics: Mapped[list["TelegramPreprocessTopic"]] = relationship(back_populates="project")
+    telegram_preprocess_topic_quotes: Mapped[list["TelegramPreprocessTopicQuote"]] = relationship(back_populates="project")
     telegram_preprocess_active_users: Mapped[list["TelegramPreprocessActiveUser"]] = relationship(back_populates="project")
+    telegram_relationship_snapshots: Mapped[list["TelegramRelationshipSnapshot"]] = relationship(back_populates="project")
+    telegram_relationship_edges: Mapped[list["TelegramRelationshipEdge"]] = relationship(back_populates="project")
 
 
 class DocumentRecord(Base, TimestampMixin):
@@ -251,6 +254,7 @@ class TelegramChat(Base, TimestampMixin):
     preprocess_weekly_topic_candidates: Mapped[list["TelegramPreprocessWeeklyTopicCandidate"]] = relationship(back_populates="chat")
     preprocess_topics: Mapped[list["TelegramPreprocessTopic"]] = relationship(back_populates="chat")
     preprocess_active_users: Mapped[list["TelegramPreprocessActiveUser"]] = relationship(back_populates="chat")
+    relationship_snapshots: Mapped[list["TelegramRelationshipSnapshot"]] = relationship(back_populates="chat")
 
 
 class TelegramParticipant(Base, TimestampMixin):
@@ -273,6 +277,7 @@ class TelegramParticipant(Base, TimestampMixin):
     chat: Mapped[TelegramChat] = relationship(back_populates="participants")
     messages: Mapped[list["TelegramMessage"]] = relationship(back_populates="participant")
     preprocess_topic_links: Mapped[list["TelegramPreprocessTopicParticipant"]] = relationship(back_populates="participant")
+    preprocess_topic_quotes: Mapped[list["TelegramPreprocessTopicQuote"]] = relationship(back_populates="participant")
     preprocess_active_users: Mapped[list["TelegramPreprocessActiveUser"]] = relationship(back_populates="participant")
 
 
@@ -367,7 +372,12 @@ class TelegramPreprocessRun(Base, TimestampMixin):
     top_users: Mapped[list["TelegramPreprocessTopUser"]] = relationship(back_populates="run")
     weekly_topic_candidates: Mapped[list["TelegramPreprocessWeeklyTopicCandidate"]] = relationship(back_populates="run")
     topics: Mapped[list["TelegramPreprocessTopic"]] = relationship(back_populates="run")
+    topic_quotes: Mapped[list["TelegramPreprocessTopicQuote"]] = relationship(back_populates="run")
     active_users: Mapped[list["TelegramPreprocessActiveUser"]] = relationship(back_populates="run")
+    relationship_snapshot: Mapped["TelegramRelationshipSnapshot | None"] = relationship(
+        back_populates="run",
+        uselist=False,
+    )
 
 
 class TelegramPreprocessTopUser(Base, TimestampMixin):
@@ -401,6 +411,7 @@ class TelegramPreprocessWeeklyTopicCandidate(Base, TimestampMixin):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     chat_id: Mapped[str | None] = mapped_column(ForeignKey("telegram_chats.id"), nullable=True, index=True)
     week_key: Mapped[str] = mapped_column(String(32), index=True)
+    window_index: Mapped[int] = mapped_column(Integer, default=1)
     start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     end_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     start_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
@@ -423,7 +434,9 @@ class TelegramPreprocessTopic(Base, TimestampMixin):
     run_id: Mapped[str] = mapped_column(ForeignKey("telegram_preprocess_runs.id"), index=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
     chat_id: Mapped[str | None] = mapped_column(ForeignKey("telegram_chats.id"), nullable=True, index=True)
+    week_key: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     topic_index: Mapped[int] = mapped_column(Integer, default=0)
+    week_topic_index: Mapped[int] = mapped_column(Integer, default=0)
     title: Mapped[str] = mapped_column(String(255))
     summary: Mapped[str] = mapped_column(Text)
     start_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -440,6 +453,7 @@ class TelegramPreprocessTopic(Base, TimestampMixin):
     project: Mapped[Project] = relationship(back_populates="telegram_preprocess_topics")
     chat: Mapped[TelegramChat | None] = relationship(back_populates="preprocess_topics")
     participants: Mapped[list["TelegramPreprocessTopicParticipant"]] = relationship(back_populates="topic")
+    quotes: Mapped[list["TelegramPreprocessTopicQuote"]] = relationship(back_populates="topic")
 
 
 class TelegramPreprocessTopicParticipant(Base, TimestampMixin):
@@ -450,11 +464,30 @@ class TelegramPreprocessTopicParticipant(Base, TimestampMixin):
     topic_id: Mapped[str] = mapped_column(ForeignKey("telegram_preprocess_topics.id"), index=True)
     participant_id: Mapped[str] = mapped_column(ForeignKey("telegram_participants.id"), index=True)
     role_hint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    stance_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     mention_count: Mapped[int] = mapped_column(Integer, default=0)
 
     topic: Mapped[TelegramPreprocessTopic] = relationship(back_populates="participants")
     participant: Mapped[TelegramParticipant] = relationship(back_populates="preprocess_topic_links")
+
+class TelegramPreprocessTopicQuote(Base, TimestampMixin):
+    __tablename__ = "telegram_preprocess_topic_quotes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("telegram_preprocess_runs.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    topic_id: Mapped[str] = mapped_column(ForeignKey("telegram_preprocess_topics.id"), index=True)
+    participant_id: Mapped[str] = mapped_column(ForeignKey("telegram_participants.id"), index=True)
+    rank: Mapped[int] = mapped_column(Integer, default=1)
+    telegram_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    quote: Mapped[str] = mapped_column(Text)
+
+    run: Mapped[TelegramPreprocessRun] = relationship(back_populates="topic_quotes")
+    project: Mapped[Project] = relationship(back_populates="telegram_preprocess_topic_quotes")
+    topic: Mapped[TelegramPreprocessTopic] = relationship(back_populates="quotes")
+    participant: Mapped[TelegramParticipant] = relationship(back_populates="preprocess_topic_quotes")
 
 
 class TelegramPreprocessActiveUser(Base, TimestampMixin):
@@ -480,6 +513,49 @@ class TelegramPreprocessActiveUser(Base, TimestampMixin):
     project: Mapped[Project] = relationship(back_populates="telegram_preprocess_active_users")
     chat: Mapped[TelegramChat | None] = relationship(back_populates="preprocess_active_users")
     participant: Mapped[TelegramParticipant] = relationship(back_populates="preprocess_active_users")
+
+
+class TelegramRelationshipSnapshot(Base, TimestampMixin):
+    __tablename__ = "telegram_relationship_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("telegram_preprocess_runs.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    chat_id: Mapped[str | None] = mapped_column(ForeignKey("telegram_chats.id"), nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="running", index=True)
+    analyzed_user_count: Mapped[int] = mapped_column(Integer, default=0)
+    candidate_pair_count: Mapped[int] = mapped_column(Integer, default=0)
+    llm_pair_count: Mapped[int] = mapped_column(Integer, default=0)
+    label_scheme: Mapped[str] = mapped_column(String(64), default="friendly|neutral|tense|unclear")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    run: Mapped[TelegramPreprocessRun] = relationship(back_populates="relationship_snapshot")
+    project: Mapped[Project] = relationship(back_populates="telegram_relationship_snapshots")
+    chat: Mapped[TelegramChat | None] = relationship(back_populates="relationship_snapshots")
+    edges: Mapped[list["TelegramRelationshipEdge"]] = relationship(back_populates="snapshot")
+
+
+class TelegramRelationshipEdge(Base, TimestampMixin):
+    __tablename__ = "telegram_relationship_edges"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("telegram_relationship_snapshots.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    participant_a_id: Mapped[str] = mapped_column(ForeignKey("telegram_participants.id"), index=True)
+    participant_b_id: Mapped[str] = mapped_column(ForeignKey("telegram_participants.id"), index=True)
+    interaction_strength: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    relation_label: Mapped[str] = mapped_column(String(32), default="unclear", index=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    counterevidence_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    metrics_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    snapshot: Mapped[TelegramRelationshipSnapshot] = relationship(back_populates="edges")
+    project: Mapped[Project] = relationship(back_populates="telegram_relationship_edges")
 
 
 class AppSetting(Base, TimestampMixin):

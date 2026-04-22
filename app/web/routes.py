@@ -26,6 +26,7 @@ from app.models import (
     AnalysisRun,
     DocumentRecord,
     GeneratedArtifact,
+    TelegramRelationshipSnapshot,
     TelegramPreprocessActiveUser,
     TelegramPreprocessTopUser,
     TelegramPreprocessRun,
@@ -1337,6 +1338,37 @@ def list_telegram_preprocess_active_users_api(project_id: str, run_id: str, sess
     )
 
 
+@router.get("/api/projects/{project_id}/relationships/latest")
+def get_latest_telegram_relationship_snapshot_api(project_id: str, session: SessionDep):
+    _ensure_project(session, project_id)
+    source_project_id = repository.get_target_project_id(session, project_id)
+    latest_run = repository.get_latest_successful_telegram_preprocess_run(session, source_project_id)
+    if not latest_run:
+        return _ok_response(
+            "Telegram relationship snapshot is not ready yet.",
+            snapshot=None,
+            users=[],
+            edges=[],
+        )
+    snapshot = repository.get_telegram_relationship_snapshot_for_run(session, latest_run.id)
+    if not snapshot:
+        return _ok_response(
+            "Telegram relationship snapshot is not ready yet.",
+            snapshot=None,
+            users=[],
+            edges=[],
+        )
+    bundle = _serialize_telegram_relationship_bundle(session, source_project_id, snapshot)
+    return _ok_response("Returned the latest Telegram relationship snapshot.", **bundle)
+
+
+@router.get("/api/projects/{project_id}/relationships/{snapshot_id}")
+def get_telegram_relationship_snapshot_api(project_id: str, snapshot_id: str, session: SessionDep):
+    snapshot = _resolve_telegram_relationship_snapshot(session, project_id, snapshot_id)
+    bundle = _serialize_telegram_relationship_bundle(session, snapshot.project_id, snapshot)
+    return _ok_response("Returned Telegram relationship snapshot details.", **bundle)
+
+
 @router.get("/api/projects/{project_id}/analysis")
 def get_analysis_api(
     project_id: str,
@@ -1929,7 +1961,23 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
         if latest_successful_preprocess_run
         else []
     )
+    telegram_active_users = (
+        repository.list_telegram_preprocess_active_users(session, telegram_data_project_id, run_id=latest_successful_preprocess_run.id)
+        if latest_successful_preprocess_run
+        else []
+    )
+    latest_relationship_snapshot = (
+        repository.get_telegram_relationship_snapshot_for_run(session, latest_successful_preprocess_run.id)
+        if latest_successful_preprocess_run
+        else None
+    )
+    latest_relationship_bundle = (
+        _serialize_telegram_relationship_bundle(session, telegram_data_project_id, latest_relationship_snapshot)
+        if latest_relationship_snapshot
+        else None
+    )
     serialized_top_users = [_serialize_telegram_preprocess_top_user(item) for item in telegram_top_users]
+    serialized_active_users = [_serialize_telegram_preprocess_active_user(item) for item in telegram_active_users]
     top_user_lookup = {
         item["participant_id"]: item
         for item in serialized_top_users
@@ -1986,7 +2034,9 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
                     "is_child_persona": telegram_is_child_persona,
                     "can_create_persona": bool(latest_successful_preprocess_run),
                     "top_users": serialized_top_users,
+                    "active_users": serialized_active_users,
                     "current_binding": current_binding,
+                    "relationships": latest_relationship_bundle,
                     "profiles": [
                         {
                             "id": item["id"],
@@ -2019,8 +2069,10 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
         "latest_run": latest_run,
         "latest_preprocess_run": latest_preprocess_run,
         "latest_successful_preprocess_run": latest_successful_preprocess_run,
+        "latest_relationship_snapshot": latest_relationship_snapshot,
+        "telegram_relationship_bundle": latest_relationship_bundle,
         "telegram_top_users": serialized_top_users,
-        "telegram_active_users": serialized_top_users,
+        "telegram_active_users": serialized_active_users,
         "telegram_binding": current_binding,
         "telegram_is_parent_workspace": telegram_is_parent_workspace,
         "telegram_is_child_persona": telegram_is_child_persona,
@@ -2136,6 +2188,21 @@ def _resolve_telegram_preprocess_run(session: Session, project_id: str, run_id: 
     if not run or run.project_id != source_project_id:
         raise HTTPException(status_code=404, detail="Telegram preprocess run not found.")
     return run
+
+
+def _resolve_telegram_relationship_snapshot(
+    session: Session,
+    project_id: str,
+    snapshot_id: str,
+) -> TelegramRelationshipSnapshot:
+    project = _ensure_project(session, project_id)
+    if project.mode != "telegram":
+        raise HTTPException(status_code=400, detail="Only Telegram projects use relationship snapshots.")
+    source_project_id = repository.get_target_project_id(session, project_id)
+    snapshot = repository.get_telegram_relationship_snapshot(session, snapshot_id)
+    if not snapshot or snapshot.project_id != source_project_id:
+        raise HTTPException(status_code=404, detail="Telegram relationship snapshot not found.")
+    return snapshot
 
 
 def _enqueue_analysis(
@@ -3057,6 +3124,11 @@ def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, 
         "active_agents": int(summary.get("active_agents") or 0),
         "completed_week_count": completed_week_count,
         "remaining_week_count": remaining_week_count,
+        "active_user_count": int(summary.get("active_user_count") or run.active_user_count or 0),
+        "relationship_snapshot_id": summary.get("relationship_snapshot_id"),
+        "relationship_status": summary.get("relationship_status"),
+        "relationship_edge_count": int(summary.get("relationship_edge_count") or 0),
+        "relationship_summary": dict(summary.get("relationship_summary") or {}),
         "current_topic_index": max(current_topic_index, 0),
         "current_topic_total": max(current_topic_total, 0),
         "current_topic_label": str(summary.get("current_topic_label") or "").strip(),
@@ -3098,6 +3170,7 @@ def _serialize_telegram_preprocess_weekly_candidate(candidate: TelegramPreproces
         "id": candidate.id,
         "run_id": candidate.run_id,
         "week_key": candidate.week_key,
+        "window_index": int(candidate.window_index or 1),
         "start_at": candidate.start_at.isoformat() if candidate.start_at else None,
         "end_at": candidate.end_at.isoformat() if candidate.end_at else None,
         "start_message_id": candidate.start_message_id,
@@ -3112,9 +3185,33 @@ def _serialize_telegram_preprocess_weekly_candidate(candidate: TelegramPreproces
 
 def _serialize_telegram_preprocess_topic(topic: TelegramPreprocessTopic) -> dict[str, Any]:
     metadata = dict(topic.metadata_json or {})
+    quotes = sorted(
+        list(topic.quotes or []),
+        key=lambda item: (
+            item.participant_id or "",
+            int(item.rank or 0),
+            int(item.telegram_message_id or 0),
+        ),
+    )
+    quotes_by_participant: dict[str, list[dict[str, Any]]] = {}
+    flat_quotes: list[dict[str, Any]] = []
+    for quote in quotes:
+        payload = {
+            "participant_id": quote.participant_id,
+            "display_name": quote.participant.display_name if quote.participant else None,
+            "username": quote.participant.username if quote.participant else None,
+            "rank": int(quote.rank or 0),
+            "message_id": quote.telegram_message_id,
+            "sent_at": quote.sent_at.isoformat() if quote.sent_at else None,
+            "quote": quote.quote,
+        }
+        flat_quotes.append(payload)
+        quotes_by_participant.setdefault(quote.participant_id, []).append(payload)
     return {
         "id": topic.id,
         "topic_index": topic.topic_index,
+        "week_key": topic.week_key or metadata.get("week_key"),
+        "week_topic_index": int(topic.week_topic_index or 0),
         "title": topic.title,
         "summary": topic.summary,
         "start_at": topic.start_at.isoformat() if topic.start_at else None,
@@ -3136,6 +3233,7 @@ def _serialize_telegram_preprocess_topic(topic: TelegramPreprocessTopic) -> dict
             for item in (metadata.get("participant_viewpoints") or [])
             if isinstance(item, dict)
         ],
+        "participant_quotes": flat_quotes,
         "metadata": metadata,
         "participants": [
             {
@@ -3143,8 +3241,10 @@ def _serialize_telegram_preprocess_topic(topic: TelegramPreprocessTopic) -> dict
                 "display_name": link.participant.display_name if link.participant else None,
                 "username": link.participant.username if link.participant else None,
                 "role_hint": link.role_hint,
+                "stance_summary": link.stance_summary,
                 "message_count": link.message_count,
                 "mention_count": link.mention_count,
+                "quotes": quotes_by_participant.get(link.participant_id, []),
             }
             for link in topic.participants
         ],
@@ -3169,6 +3269,140 @@ def _serialize_telegram_preprocess_active_user(user: TelegramPreprocessActiveUse
     }
 
 
+def _serialize_telegram_relationship_snapshot(snapshot: TelegramRelationshipSnapshot) -> dict[str, Any]:
+    return {
+        "id": snapshot.id,
+        "run_id": snapshot.run_id,
+        "project_id": snapshot.project_id,
+        "chat_id": snapshot.chat_id,
+        "status": snapshot.status,
+        "analyzed_user_count": int(snapshot.analyzed_user_count or 0),
+        "candidate_pair_count": int(snapshot.candidate_pair_count or 0),
+        "llm_pair_count": int(snapshot.llm_pair_count or 0),
+        "label_scheme": snapshot.label_scheme,
+        "error_message": snapshot.error_message,
+        "started_at": snapshot.started_at.isoformat() if snapshot.started_at else None,
+        "finished_at": snapshot.finished_at.isoformat() if snapshot.finished_at else None,
+        "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
+        "updated_at": snapshot.updated_at.isoformat() if snapshot.updated_at else None,
+        "summary": dict(snapshot.summary_json or {}),
+    }
+
+
+def _serialize_telegram_relationship_bundle(
+    session: Session,
+    project_id: str,
+    snapshot: TelegramRelationshipSnapshot,
+) -> dict[str, Any]:
+    active_users = repository.list_telegram_preprocess_active_users(session, project_id, run_id=snapshot.run_id)
+    if active_users:
+        participant_lookup = {
+            item.participant_id: {
+                "participant_id": item.participant_id,
+                "label": item.primary_alias or item.display_name or item.username or item.uid or item.participant_id,
+                "message_count": int(item.message_count or 0),
+                "username": item.username,
+                "uid": item.uid,
+                "rank": int(item.rank or 0),
+            }
+            for item in active_users
+        }
+        participant_rows = [
+            {
+                "participant_id": item.participant_id,
+                "label": item.primary_alias or item.display_name or item.username or item.uid or item.participant_id,
+                "message_count": int(item.message_count or 0),
+                "username": item.username,
+                "uid": item.uid,
+                "rank": int(item.rank or 0),
+            }
+            for item in active_users
+        ]
+    else:
+        top_users = repository.list_telegram_preprocess_top_users(session, project_id, run_id=snapshot.run_id)
+        participant_lookup = {
+            item.participant_id: {
+                "participant_id": item.participant_id,
+                "label": item.display_name or item.username or item.uid or item.participant_id,
+                "message_count": int(item.message_count or 0),
+                "username": item.username,
+                "uid": item.uid,
+                "rank": int(item.rank or 0),
+            }
+            for item in top_users
+        }
+        participant_rows = list(participant_lookup.values())
+
+    edges = []
+    edges_by_participant: dict[str, list[dict[str, Any]]] = {}
+    for edge in repository.list_telegram_relationship_edges(session, snapshot.id):
+        participant_a = participant_lookup.get(edge.participant_a_id, {})
+        participant_b = participant_lookup.get(edge.participant_b_id, {})
+        payload = {
+            "id": edge.id,
+            "participant_a_id": edge.participant_a_id,
+            "participant_b_id": edge.participant_b_id,
+            "participant_a_label": participant_a.get("label") or edge.participant_a_id,
+            "participant_b_label": participant_b.get("label") or edge.participant_b_id,
+            "relation_label": edge.relation_label,
+            "interaction_strength": round(float(edge.interaction_strength or 0.0), 4),
+            "confidence": round(float(edge.confidence or 0.0), 4),
+            "summary": edge.summary,
+            "evidence": list(edge.evidence_json or []),
+            "counterevidence": list(edge.counterevidence_json or []),
+            "metrics": dict(edge.metrics_json or {}),
+        }
+        edges.append(payload)
+        edges_by_participant.setdefault(edge.participant_a_id, []).append(payload)
+        edges_by_participant.setdefault(edge.participant_b_id, []).append(payload)
+
+    users = []
+    for participant in participant_rows:
+        participant_id = str(participant.get("participant_id") or "").strip()
+        relation_edges = sorted(
+            list(edges_by_participant.get(participant_id, [])),
+            key=lambda item: (float(item.get("interaction_strength") or 0.0), float(item.get("confidence") or 0.0)),
+            reverse=True,
+        )
+        strongest_edges = []
+        for edge in relation_edges[:3]:
+            counterpart_id = edge["participant_b_id"] if edge["participant_a_id"] == participant_id else edge["participant_a_id"]
+            counterpart_label = edge["participant_b_label"] if edge["participant_a_id"] == participant_id else edge["participant_a_label"]
+            strongest_edges.append(
+                {
+                    "counterpart_id": counterpart_id,
+                    "counterpart_label": counterpart_label,
+                    "relation_label": edge["relation_label"],
+                    "interaction_strength": edge["interaction_strength"],
+                    "confidence": edge["confidence"],
+                }
+            )
+        users.append(
+            {
+                "participant_id": participant_id,
+                "label": participant.get("label") or participant_id,
+                "message_count": int(participant.get("message_count") or 0),
+                "ally_count": sum(1 for edge in relation_edges if edge.get("relation_label") == "friendly"),
+                "tense_count": sum(1 for edge in relation_edges if edge.get("relation_label") == "tense"),
+                "strongest_edges": strongest_edges,
+                "relations": relation_edges,
+            }
+        )
+
+    users.sort(
+        key=lambda item: (
+            int(item.get("ally_count") or 0) + int(item.get("tense_count") or 0),
+            int(item.get("message_count") or 0),
+        ),
+        reverse=True,
+    )
+    return {
+        "snapshot": _serialize_telegram_relationship_snapshot(snapshot),
+        "users": users,
+        "edges": edges,
+    }
+
+
 def _serialize_telegram_preprocess_detail(
     session: Session,
     project_id: str,
@@ -3190,6 +3424,12 @@ def _serialize_telegram_preprocess_detail(
     ]
     payload["active_users"] = [_serialize_telegram_preprocess_active_user(item) for item in active_users]
     payload["active_user_count"] = len(active_users)
+    relationship_snapshot = repository.get_telegram_relationship_snapshot_for_run(session, run.id)
+    payload["relationship_snapshot"] = (
+        _serialize_telegram_relationship_snapshot(relationship_snapshot)
+        if relationship_snapshot
+        else None
+    )
     return payload
 
 

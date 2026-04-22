@@ -378,6 +378,50 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                 },
             ],
         )
+        repository.replace_telegram_preprocess_active_users(
+            session,
+            run_id=run.id,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            active_users=[
+                {
+                    "rank": 1,
+                    "participant_id": bob.id,
+                    "uid": bob.telegram_user_id,
+                    "username": bob.username,
+                    "display_name": bob.display_name,
+                    "primary_alias": "Bob",
+                    "message_count": 1,
+                    "first_seen_at": bob.first_seen_at,
+                    "last_seen_at": bob.last_seen_at,
+                    "evidence_json": [],
+                },
+                {
+                    "rank": 2,
+                    "participant_id": alice.id,
+                    "uid": alice.telegram_user_id,
+                    "username": alice.username,
+                    "display_name": alice.display_name,
+                    "primary_alias": "Alice",
+                    "message_count": 1,
+                    "first_seen_at": alice.first_seen_at,
+                    "last_seen_at": alice.last_seen_at,
+                    "evidence_json": [],
+                },
+                {
+                    "rank": 3,
+                    "participant_id": carol.id,
+                    "uid": carol.telegram_user_id,
+                    "username": carol.username,
+                    "display_name": carol.display_name,
+                    "primary_alias": "Carol",
+                    "message_count": 1,
+                    "first_seen_at": carol.first_seen_at,
+                    "last_seen_at": carol.last_seen_at,
+                    "evidence_json": [],
+                },
+            ],
+        )
         repository.replace_telegram_preprocess_weekly_topic_candidates(
             session,
             run_id=run.id,
@@ -430,9 +474,14 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                         }
                     ],
                     "participants": [
-                        {"participant_id": alice.id, "role_hint": "initiator", "message_count": 1, "mention_count": 0},
-                        {"participant_id": bob.id, "role_hint": "proposer", "message_count": 1, "mention_count": 0},
-                        {"participant_id": carol.id, "role_hint": "supporter", "message_count": 1, "mention_count": 0},
+                        {"participant_id": alice.id, "role_hint": "initiator", "stance_summary": "提出要先补齐 Telegram mode。", "message_count": 1, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "proposer", "stance_summary": "主张移除 embeddings，改成 agent + SQL。", "message_count": 1, "mention_count": 0},
+                        {"participant_id": carol.id, "role_hint": "supporter", "stance_summary": "补充支持先看报告再回原始证据。", "message_count": 1, "mention_count": 0},
+                    ],
+                    "participant_quotes": [
+                        {"participant_id": alice.id, "message_id": 1, "sent_at": "2025-01-01T10:00:00", "quote": "We should add a Telegram mode first.", "rank": 1},
+                        {"participant_id": bob.id, "message_id": 2, "sent_at": "2025-01-01T10:02:00", "quote": "I think we should remove embeddings and rely on agents plus SQL.", "rank": 1},
+                        {"participant_id": carol.id, "message_id": 4, "sent_at": "2025-01-01T10:05:00", "quote": "Agreed. Later analysis can use reports first and fetch evidence from DB.", "rank": 1},
                     ],
                     "metadata_json": {
                         "week_key": "2025-W01",
@@ -460,10 +509,133 @@ def _seed_preprocess_tables(app, project_id: str) -> str:
                 }
             ],
         )
+        relationship_snapshot = repository.create_or_replace_telegram_relationship_snapshot(
+            session,
+            run_id=run.id,
+            project_id=project_id,
+            chat_id=chat.id if chat else None,
+            status="completed",
+            analyzed_user_count=3,
+            candidate_pair_count=2,
+            llm_pair_count=2,
+            summary_json={
+                "friendly_count": 1,
+                "neutral_count": 1,
+                "tense_count": 0,
+                "unclear_count": 0,
+                "edge_count": 2,
+                "central_users": [
+                    {"participant_id": bob.id, "label": "Bob", "weighted_degree": 1.03, "edge_count": 2},
+                    {"participant_id": carol.id, "label": "Carol", "weighted_degree": 0.61, "edge_count": 1},
+                    {"participant_id": alice.id, "label": "Alice", "weighted_degree": 0.42, "edge_count": 1},
+                ],
+                "isolated_users": [],
+                "snapshot_notes": [],
+            },
+        )
+        repository.replace_telegram_relationship_edges(
+            session,
+            snapshot_id=relationship_snapshot.id,
+            project_id=project_id,
+            edges=[
+                {
+                    "participant_a_id": alice.id,
+                    "participant_b_id": bob.id,
+                    "interaction_strength": 0.42,
+                    "confidence": 0.56,
+                    "relation_label": "neutral",
+                    "summary": "Alice and Bob keep working through the same rollout topic without obvious warmth or friction.",
+                    "evidence_json": [
+                        {
+                            "kind": "topic",
+                            "title": "Telegram mode discussion",
+                            "summary": "Alice starts the topic and Bob responds with a competing implementation idea.",
+                            "interaction_patterns": ["Alice opens the topic and Bob reframes the implementation plan."],
+                            "participant_a_stance": "Pushes to ship Telegram mode first.",
+                            "participant_b_stance": "Prefers an agent plus SQL workflow.",
+                            "quotes": [
+                                {"participant_id": alice.id, "display_name": "Alice", "quote": "We should add a Telegram mode first."},
+                                {"participant_id": bob.id, "display_name": "Bob", "quote": "I think we should remove embeddings and rely on agents plus SQL."},
+                            ],
+                        }
+                    ],
+                    "counterevidence_json": [],
+                    "metrics_json": {
+                        "reply_total": 0,
+                        "reply_a_to_b": 0,
+                        "reply_b_to_a": 0,
+                        "shared_topic_count": 1,
+                        "shared_topics_with_both_quotes": 1,
+                        "reply_score": 0.0,
+                        "shared_topic_score": 0.2,
+                        "co_quote_score": 0.25,
+                        "heuristic_label": "neutral",
+                        "supporting_signals": ["Repeated topic overlap."],
+                        "counter_signals": [],
+                    },
+                },
+                {
+                    "participant_a_id": bob.id,
+                    "participant_b_id": carol.id,
+                    "interaction_strength": 0.61,
+                    "confidence": 0.74,
+                    "relation_label": "friendly",
+                    "summary": "Carol directly backs Bob's proposal and extends it with a compatible next step.",
+                    "evidence_json": [
+                        {
+                            "kind": "reply_context",
+                            "anchor_message_id": 4,
+                            "summary": "Carol replied to Bob",
+                            "messages": [
+                                {"message_id": 2, "participant_id": bob.id, "sender_name": "Bob", "text": "I think we should remove embeddings and rely on agents plus SQL."},
+                                {"message_id": 4, "participant_id": carol.id, "sender_name": "Carol", "text": "Agreed. Later analysis can use reports first and fetch evidence from DB."},
+                            ],
+                        },
+                        {
+                            "kind": "topic",
+                            "title": "Telegram mode discussion",
+                            "summary": "Carol reinforces Bob's SQL-first direction and adds a retrieval plan.",
+                            "interaction_patterns": ["Bob proposes and Carol reinforces the same path."],
+                            "participant_a_stance": "Prefers an agent plus SQL workflow.",
+                            "participant_b_stance": "Supports the report-first workflow and DB evidence lookup.",
+                            "quotes": [
+                                {"participant_id": bob.id, "display_name": "Bob", "quote": "I think we should remove embeddings and rely on agents plus SQL."},
+                                {"participant_id": carol.id, "display_name": "Carol", "quote": "Agreed. Later analysis can use reports first and fetch evidence from DB."},
+                            ],
+                        },
+                    ],
+                    "counterevidence_json": [],
+                    "metrics_json": {
+                        "reply_total": 1,
+                        "reply_a_to_b": 0,
+                        "reply_b_to_a": 1,
+                        "shared_topic_count": 1,
+                        "shared_topics_with_both_quotes": 1,
+                        "reply_score": 0.1667,
+                        "shared_topic_score": 0.2,
+                        "co_quote_score": 0.25,
+                        "heuristic_label": "friendly",
+                        "supporting_signals": ["Direct agreement in reply.", "Shared topic with aligned quotes."],
+                        "counter_signals": [],
+                    },
+                },
+            ],
+        )
         run.window_count = 1
         run.topic_count = 1
+        run.top_user_count = 2
+        run.weekly_candidate_count = 1
+        run.active_user_count = 3
         run.progress_percent = 100
         run.current_stage = "completed"
+        run.summary_json = {
+            **(run.summary_json or {}),
+            "active_user_count": 3,
+            "relationship_snapshot_id": relationship_snapshot.id,
+            "relationship_status": "completed",
+            "relationship_edge_count": 2,
+            "relationship_summary": dict(relationship_snapshot.summary_json or {}),
+        }
         return run.id
 
 
@@ -591,8 +763,13 @@ def _seed_two_week_preprocess_tables(app, project_id: str) -> tuple[str, str]:
                         }
                     ],
                     "participants": [
-                        {"participant_id": alice.id, "role_hint": "planner", "message_count": 2, "mention_count": 0},
-                        {"participant_id": bob.id, "role_hint": "sql advocate", "message_count": 1, "mention_count": 0},
+                        {"participant_id": alice.id, "role_hint": "planner", "stance_summary": "负责规划和收束周内推进节奏。", "message_count": 2, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "sql advocate", "stance_summary": "明确支持 SQL-first 的预处理方案。", "message_count": 1, "mention_count": 0},
+                    ],
+                    "participant_quotes": [
+                        {"participant_id": alice.id, "message_id": 1, "sent_at": "2025-01-01T09:00:00", "quote": "Week one planning starts here.", "rank": 1},
+                        {"participant_id": bob.id, "message_id": 2, "sent_at": "2025-01-01T09:01:00", "quote": "Week one prefers SQL-first preprocessing.", "rank": 1},
+                        {"participant_id": alice.id, "message_id": 3, "sent_at": "2025-01-02T10:00:00", "quote": "Week one wraps up with a checkpoint.", "rank": 2},
                     ],
                     "metadata_json": {
                         "week_key": "2025-W01",
@@ -638,8 +815,13 @@ def _seed_two_week_preprocess_tables(app, project_id: str) -> tuple[str, str]:
                         }
                     ],
                     "participants": [
-                        {"participant_id": alice.id, "role_hint": "planner", "message_count": 1, "mention_count": 0},
-                        {"participant_id": bob.id, "role_hint": "resume advocate", "message_count": 2, "mention_count": 0},
+                        {"participant_id": alice.id, "role_hint": "planner", "stance_summary": "认同续跑方案，补充剩余总结即可。", "message_count": 1, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "resume advocate", "stance_summary": "强调从已保存 checkpoint 继续，而不是整体重来。", "message_count": 2, "mention_count": 0},
+                    ],
+                    "participant_quotes": [
+                        {"participant_id": bob.id, "message_id": 4, "sent_at": "2025-01-08T09:00:00", "quote": "Week two resumes from the saved checkpoint.", "rank": 1},
+                        {"participant_id": alice.id, "message_id": 5, "sent_at": "2025-01-08T09:02:00", "quote": "Week two only needs the remaining summary.", "rank": 1},
+                        {"participant_id": bob.id, "message_id": 6, "sent_at": "2025-01-09T11:00:00", "quote": "Week two finishes without starting over.", "rank": 2},
                     ],
                     "metadata_json": {
                         "week_key": "2025-W02",
@@ -762,10 +944,15 @@ def test_telegram_preprocess_run_persists_topics_top_users_and_new_counts(client
     topics_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/topics").json()
     top_users_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/top-users").json()
     active_users_payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{payload['id']}/active-users").json()
+    relationship_payload = client.get(f"/api/projects/{project_id}/relationships/latest").json()
 
     assert topics_payload["topics"][0]["title"] == "Telegram mode discussion"
     assert top_users_payload["top_users"][0]["display_name"] == "Alice"
-    assert active_users_payload["active_users"] == []
+    assert len(active_users_payload["active_users"]) == 1
+    assert active_users_payload["active_users"][0]["display_name"] == "Alice"
+    assert relationship_payload["snapshot"]["status"] == "completed"
+    assert relationship_payload["snapshot"]["analyzed_user_count"] == 1
+    assert relationship_payload["snapshot"]["summary"]["edge_count"] == 0
 
 
 def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app, monkeypatch):
@@ -1204,6 +1391,225 @@ def test_telegram_profile_children_share_parent_preprocess_and_run_independently
     assert 'data-telegram-target-picker' not in rebound_child_page.text
     assert 'data-top-user-card' not in rebound_child_page.text
     assert 'name="concurrency"' in rebound_child_page.text
+
+
+def test_telegram_relationship_latest_api_returns_snapshot_bundle(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    preprocess_run_id = _seed_preprocess_tables(app, project_id)
+
+    latest_payload = client.get(f"/api/projects/{project_id}/relationships/latest").json()
+
+    assert latest_payload["snapshot"]["run_id"] == preprocess_run_id
+    assert latest_payload["snapshot"]["status"] == "completed"
+    assert latest_payload["snapshot"]["summary"]["friendly_count"] == 1
+    assert latest_payload["snapshot"]["summary"]["edge_count"] == 2
+    assert {item["label"] for item in latest_payload["users"]} >= {"Alice", "Bob", "Carol"}
+    assert any(edge["relation_label"] == "friendly" for edge in latest_payload["edges"])
+    assert any(edge["relation_label"] == "neutral" for edge in latest_payload["edges"])
+
+    snapshot_id = latest_payload["snapshot"]["id"]
+    snapshot_payload = client.get(f"/api/projects/{project_id}/relationships/{snapshot_id}").json()
+
+    assert snapshot_payload["snapshot"]["id"] == snapshot_id
+    assert len(snapshot_payload["edges"]) == 2
+
+
+def test_telegram_relationship_latest_api_resolves_parent_snapshot_for_child_persona(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    preprocess_run_id = _seed_preprocess_tables(app, project_id)
+
+    profile_response = client.post(
+        f"/projects/{project_id}/profiles",
+        data={"name": "Bob Persona", "description": "bound child"},
+        follow_redirects=False,
+    )
+    assert profile_response.status_code == 303
+
+    with app.state.db.session() as session:
+        child = repository.list_child_projects(session, project_id)[0]
+
+    payload = client.get(f"/api/projects/{child.id}/relationships/latest").json()
+
+    assert payload["snapshot"]["project_id"] == project_id
+    assert payload["snapshot"]["run_id"] == preprocess_run_id
+    assert payload["snapshot"]["status"] == "completed"
+    assert len(payload["edges"]) == 2
+
+
+def test_telegram_project_detail_renders_relationship_panel(client, app, monkeypatch):
+    project_id = _create_ingested_telegram_project(client, app, monkeypatch)
+    _seed_preprocess_tables(app, project_id)
+
+    response = client.get(f"/projects/{project_id}")
+
+    assert response.status_code == 200
+    assert 'id="telegram-relationship-panel"' in response.text
+    assert 'id="telegram-relationship-member-select"' in response.text
+    assert 'id="telegram-relationship-friendly-list"' in response.text
+    assert 'id="telegram-relationship-tense-list"' in response.text
+    assert 'class="persona-top-user-card' in response.text
+
+
+def test_telegram_preprocess_relationship_snapshot_llm_failure_degrades_to_partial(client, app, monkeypatch):
+    export_payload = {
+        "name": "Relationship Failure Group",
+        "type": "supergroup",
+        "id": 333444555,
+        "messages": [
+            {
+                "id": 1,
+                "type": "message",
+                "date": "2025-01-01T10:00:00",
+                "date_unixtime": "1735725600",
+                "from": "Alice",
+                "from_id": "alice",
+                "text": "Let's ship Telegram mode first.",
+            },
+            {
+                "id": 2,
+                "type": "message",
+                "date": "2025-01-01T10:01:00",
+                "date_unixtime": "1735725660",
+                "from": "Bob",
+                "from_id": "bob",
+                "reply_to_message_id": 1,
+                "text": "We should wire SQL-backed evidence into it.",
+            },
+            {
+                "id": 3,
+                "type": "message",
+                "date": "2025-01-01T10:02:00",
+                "date_unixtime": "1735725720",
+                "from": "Alice",
+                "from_id": "alice",
+                "reply_to_message_id": 2,
+                "text": "That works if the rollout stays simple.",
+            },
+            {
+                "id": 4,
+                "type": "message",
+                "date": "2025-01-01T10:03:00",
+                "date_unixtime": "1735725780",
+                "from": "Bob",
+                "from_id": "bob",
+                "reply_to_message_id": 3,
+                "text": "Agreed, we can keep the first pass narrow.",
+            },
+        ],
+    }
+    project_id = _ingest_export_bytes(
+        client,
+        app,
+        monkeypatch,
+        _telegram_export_bytes(export_payload),
+        project_name="Relationship Failure Workspace",
+    )
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    def fake_process(self, run, *, progress_callback=None):
+        del progress_callback
+        participants = repository.list_telegram_participants(self.session, self.project.id, limit=10)
+        alice = next(item for item in participants if item.display_name == "Alice")
+        bob = next(item for item in participants if item.display_name == "Bob")
+        repository.replace_telegram_preprocess_top_users(
+            self.session,
+            run_id=run.id,
+            project_id=self.project.id,
+            chat_id=run.chat_id,
+            top_users=[
+                {
+                    "rank": 1,
+                    "participant_id": bob.id,
+                    "uid": bob.telegram_user_id,
+                    "username": bob.username,
+                    "display_name": bob.display_name,
+                    "message_count": bob.message_count,
+                    "first_seen_at": bob.first_seen_at,
+                    "last_seen_at": bob.last_seen_at,
+                    "metadata_json": {"source": "test"},
+                },
+                {
+                    "rank": 2,
+                    "participant_id": alice.id,
+                    "uid": alice.telegram_user_id,
+                    "username": alice.username,
+                    "display_name": alice.display_name,
+                    "message_count": alice.message_count,
+                    "first_seen_at": alice.first_seen_at,
+                    "last_seen_at": alice.last_seen_at,
+                    "metadata_json": {"source": "test"},
+                },
+            ],
+        )
+        return {
+            "bootstrap": {"message_count": 4},
+            "window_count": 1,
+            "top_user_count": 2,
+            "weekly_candidate_count": 1,
+            "topic_count": 1,
+            "topics": [
+                {
+                    "topic_index": 1,
+                    "title": "Telegram rollout debate",
+                    "summary": "Alice and Bob align on a narrow Telegram rollout with SQL-backed evidence.",
+                    "start_message_id": 1,
+                    "end_message_id": 4,
+                    "message_count": 4,
+                    "participant_count": 2,
+                    "keywords_json": ["telegram", "sql"],
+                    "evidence_json": [
+                        {"message_id": 1, "quote": "Let's ship Telegram mode first."},
+                        {"message_id": 4, "quote": "Agreed, we can keep the first pass narrow."},
+                    ],
+                    "participants": [
+                        {"participant_id": alice.id, "role_hint": "initiator", "stance_summary": "Wants the first rollout to stay focused.", "message_count": 2, "mention_count": 0},
+                        {"participant_id": bob.id, "role_hint": "builder", "stance_summary": "Pushes SQL-backed evidence while staying aligned on scope.", "message_count": 2, "mention_count": 0},
+                    ],
+                    "participant_quotes": [
+                        {"participant_id": alice.id, "message_id": 1, "sent_at": "2025-01-01T10:00:00", "quote": "Let's ship Telegram mode first.", "rank": 1},
+                        {"participant_id": bob.id, "message_id": 4, "sent_at": "2025-01-01T10:03:00", "quote": "Agreed, we can keep the first pass narrow.", "rank": 1},
+                    ],
+                    "metadata_json": {
+                        "week_key": "2025-W01",
+                        "interaction_patterns": ["Alice and Bob keep replying directly while refining the same plan."],
+                        "participant_viewpoints": [
+                            {"participant_id": alice.id, "display_name": "Alice", "stance_summary": "Keep the rollout focused.", "notable_points": ["wants a narrow first pass"], "evidence_message_ids": [1, 3]},
+                            {"participant_id": bob.id, "display_name": "Bob", "stance_summary": "Add SQL-backed evidence without expanding scope.", "notable_points": ["keeps replying directly"], "evidence_message_ids": [2, 4]},
+                        ],
+                    },
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 8,
+                "total_tokens": 18,
+                "cache_creation_tokens": 0,
+                "cache_read_tokens": 0,
+            },
+        }
+
+    def fail_relationship_summary(self, candidate, participant_lookup):
+        del self, candidate, participant_lookup
+        raise RuntimeError("relationship llm boom")
+
+    monkeypatch.setattr("app.telegram_preprocess.TelegramPreprocessWorker.process", fake_process)
+    monkeypatch.setattr(
+        "app.telegram_preprocess.TelegramPreprocessWorker._summarize_relationship_edge",
+        fail_relationship_summary,
+    )
+
+    response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert response.status_code == 200
+    payload = _wait_for_preprocess(client, project_id, response.json()["id"])
+    relationship_payload = client.get(f"/api/projects/{project_id}/relationships/latest").json()
+
+    assert payload["status"] == "completed"
+    assert payload["relationship_status"] == "partial"
+    assert payload["relationship_edge_count"] == 1
+    assert relationship_payload["snapshot"]["status"] == "partial"
+    assert relationship_payload["snapshot"]["summary"]["unclear_count"] == 1
+    assert relationship_payload["edges"][0]["relation_label"] == "unclear"
+    assert relationship_payload["edges"][0]["summary"] is None
 
 
 def test_telegram_parent_persona_studio_auto_analyzes_and_redirects(client, app, monkeypatch):
@@ -1645,8 +2051,13 @@ def test_telegram_preprocess_run_detail_includes_intermediate_tables_and_trace(c
     assert payload["weekly_candidate_count"] == 1
     assert payload["weekly_candidates"][0]["week_key"] == "2025-W01"
     assert payload["top_users"][0]["display_name"] == "Bob"
-    assert payload["active_user_count"] == 0
-    assert payload["active_users"] == []
+    assert payload["active_user_count"] == 3
+    assert payload["active_users"][0]["display_name"] == "Bob"
+    assert payload["relationship_snapshot"]["status"] == "completed"
+    assert payload["relationship_snapshot"]["summary"]["friendly_count"] == 1
+    assert payload["relationship_snapshot_id"]
+    assert payload["relationship_status"] == "completed"
+    assert payload["relationship_edge_count"] == 2
     assert payload["topics"][0]["title"] == "Telegram mode discussion"
     assert payload["topics"][0]["participant_viewpoints"][0]["stance_summary"] == "提出要先补齐 Telegram mode。"
     assert payload["topics"][0]["subtopics"] == ["Telegram mode", "SQL evidence"]
@@ -1685,7 +2096,7 @@ def test_telegram_preprocess_top_users_excludes_bot_accounts(client, app, monkey
     assert top_users[0].display_name == "Bob"
 
 
-def test_telegram_weekly_candidates_select_densest_300_messages(client, app, monkeypatch):
+def test_telegram_weekly_candidates_select_up_to_two_densest_250_message_windows(client, app, monkeypatch):
     export_bytes = _dense_week_export()
     project_id = _ingest_export_bytes(client, app, monkeypatch, export_bytes, project_name="Dense Week Workspace")
     _ensure_service_config(app, "chat_service", model="demo-model")
@@ -1706,9 +2117,12 @@ def test_telegram_weekly_candidates_select_densest_300_messages(client, app, mon
         candidates = repository.list_telegram_preprocess_weekly_topic_candidates(session, project_id, run_id=run.id)
 
     densest = max(candidates, key=lambda item: item.message_count)
-    assert densest.message_count == 300
-    assert densest.start_message_id == 21
-    assert densest.end_message_id == 320
+    densest_week_candidates = [item for item in candidates if item.week_key == densest.week_key]
+    assert len(densest_week_candidates) == 2
+    assert densest.message_count == 250
+    assert sum(item.message_count for item in densest_week_candidates) <= 500
+    assert all(item.message_count <= 250 for item in densest_week_candidates)
+    assert sorted(item.window_index for item in densest_week_candidates) == [1, 2]
 
 
 def test_telegram_preprocess_failure_keeps_sql_intermediate_tables_without_final_results(client, app, monkeypatch):
@@ -1794,8 +2208,28 @@ def test_telegram_preprocess_resumes_existing_failed_run_from_checkpoint(client,
                     "message_count": first_candidate.message_count,
                     "participant_count": first_candidate.participant_count,
                     "keywords_json": ["第一周", "checkpoint"],
-                    "evidence_json": [],
+                    "evidence_json": [
+                        {
+                            "message_id": item["message_id"],
+                            "sender_name": item["sender_name"],
+                            "sent_at": item["sent_at"],
+                            "quote": item["text"],
+                        }
+                        for item in list(first_candidate.sample_messages_json or [])[:1]
+                        if item.get("message_id") is not None
+                    ],
                     "participants": first_participants,
+                    "participant_quotes": [
+                        {
+                            "participant_id": item["participant_id"],
+                            "message_id": item["message_id"],
+                            "sent_at": item["sent_at"],
+                            "quote": item["text"],
+                            "rank": 1,
+                        }
+                        for item in list(first_candidate.sample_messages_json or [])[:1]
+                        if item.get("participant_id") and item.get("message_id") is not None
+                    ],
                     "metadata_json": {
                         "week_key": first_candidate.week_key,
                         "source": "weekly_topic_agent",
@@ -1810,37 +2244,61 @@ def test_telegram_preprocess_resumes_existing_failed_run_from_checkpoint(client,
 
     called_weeks: list[str] = []
 
-    def fake_weekly_agent(self, run_id, candidate, topic_index, *, attempt):
+    def fake_weekly_agent(self, run_id, candidate, *, attempt):
         del self, run_id, attempt
         called_weeks.append(candidate.week_key)
-        return {
-            "topic_index": topic_index,
-            "title": f"{candidate.week_key} 周话题",
-            "summary": f"{candidate.week_key} 只补完剩余周，不重新扫描已完成周。",
-            "start_at": candidate.start_at,
-            "end_at": candidate.end_at,
-            "start_message_id": candidate.start_message_id,
-            "end_message_id": candidate.end_message_id,
-            "message_count": candidate.message_count,
-            "participant_count": candidate.participant_count,
-            "keywords_json": ["续跑", "checkpoint"],
-            "evidence_json": [],
-            "participants": [
-                {
-                    "participant_id": item["participant_id"],
-                    "role_hint": None,
-                    "message_count": int(item.get("message_count") or 0),
-                    "mention_count": 0,
-                }
-                for item in list(candidate.top_participants_json or [])
-                if item.get("participant_id")
-            ],
-            "metadata_json": {
+        return [
+            {
                 "week_key": candidate.week_key,
-                "source": "weekly_topic_agent",
-                "candidate_id": candidate.id,
-            },
-        }
+                "week_topic_index": 1,
+                "title": f"{candidate.week_key} 周话题",
+                "summary": f"{candidate.week_key} 只补完剩余周，不重新扫描已完成周。",
+                "start_at": candidate.start_at,
+                "end_at": candidate.end_at,
+                "start_message_id": candidate.start_message_id,
+                "end_message_id": candidate.end_message_id,
+                "message_count": candidate.message_count,
+                "participant_count": candidate.participant_count,
+                "keywords_json": ["续跑", "checkpoint"],
+                "evidence_json": [
+                    {
+                        "message_id": item["message_id"],
+                        "sender_name": item["sender_name"],
+                        "sent_at": item["sent_at"],
+                        "quote": item["text"],
+                    }
+                    for item in list(candidate.sample_messages_json or [])[:1]
+                    if item.get("message_id") is not None
+                ],
+                "participants": [
+                    {
+                        "participant_id": item["participant_id"],
+                        "role_hint": None,
+                        "stance_summary": None,
+                        "message_count": int(item.get("message_count") or 0),
+                        "mention_count": 0,
+                    }
+                    for item in list(candidate.top_participants_json or [])
+                    if item.get("participant_id")
+                ],
+                "participant_quotes": [
+                    {
+                        "participant_id": item["participant_id"],
+                        "message_id": item["message_id"],
+                        "sent_at": item["sent_at"],
+                        "quote": item["text"],
+                        "rank": 1,
+                    }
+                    for item in list(candidate.sample_messages_json or [])[:1]
+                    if item.get("participant_id") and item.get("message_id") is not None
+                ],
+                "metadata_json": {
+                    "week_key": candidate.week_key,
+                    "source": "weekly_topic_agent",
+                    "candidate_id": candidate.id,
+                },
+            }
+        ]
 
     monkeypatch.setattr(TelegramPreprocessWorker, "_run_weekly_topic_agent", fake_weekly_agent)
 

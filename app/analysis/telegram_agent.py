@@ -1158,7 +1158,7 @@ class TelegramAnalysisAgent:
         return callback
 
     def _topic_week_key(self, topic: Any) -> str | None:
-        week_key = str((getattr(topic, "metadata_json", None) or {}).get("week_key") or "").strip()
+        week_key = str(getattr(topic, "week_key", None) or (getattr(topic, "metadata_json", None) or {}).get("week_key") or "").strip()
         return week_key or None
 
     def _sort_topics_chronologically(self, topics: list[Any]) -> list[Any]:
@@ -1201,11 +1201,63 @@ class TelegramAnalysisAgent:
 
     def _topic_participant_viewpoints(self, topic: Any, limit: int = 6) -> list[dict[str, Any]]:
         metadata = self._topic_metadata(topic)
+        metadata_viewpoints_by_id = {
+            str(item.get("participant_id") or "").strip(): item
+            for item in (metadata.get("participant_viewpoints") or [])
+            if isinstance(item, dict) and str(item.get("participant_id") or "").strip()
+        }
+        quotes_by_participant: dict[str, list[dict[str, Any]]] = {}
+        for quote in sorted(
+            list(getattr(topic, "quotes", None) or []),
+            key=lambda item: (
+                item.participant_id or "",
+                int(item.rank or 0),
+                int(item.telegram_message_id or 0),
+            ),
+        ):
+            participant_id = str(quote.participant_id or "").strip()
+            if not participant_id:
+                continue
+            quotes_by_participant.setdefault(participant_id, []).append(
+                {
+                    "message_id": int(quote.telegram_message_id or 0) or None,
+                    "quote": quote.quote,
+                    "sent_at": quote.sent_at.isoformat() if quote.sent_at else None,
+                }
+            )
+
         viewpoints: list[dict[str, Any]] = []
+        for link in list(getattr(topic, "participants", None) or []):
+            participant_id = str(link.participant_id or "").strip()
+            if not participant_id:
+                continue
+            viewpoints.append(
+                {
+                    "participant_id": participant_id,
+                    "display_name": link.participant.display_name if link.participant else None,
+                    "stance_summary": (
+                        str(getattr(link, "stance_summary", None) or "").strip()
+                        or str(metadata_viewpoints_by_id.get(participant_id, {}).get("stance_summary") or "").strip()
+                        or None
+                    ),
+                    "notable_points": [],
+                    "evidence_message_ids": [
+                        int(item.get("message_id"))
+                        for item in quotes_by_participant.get(participant_id, [])
+                        if item.get("message_id") is not None
+                    ][:6],
+                }
+            )
+            if len(viewpoints) >= limit:
+                break
+
+        if viewpoints:
+            return viewpoints[:limit]
+        fallback_viewpoints: list[dict[str, Any]] = []
         for item in metadata.get("participant_viewpoints") or []:
             if not isinstance(item, dict):
                 continue
-            viewpoints.append(
+            fallback_viewpoints.append(
                 {
                     "participant_id": str(item.get("participant_id") or "").strip() or None,
                     "display_name": str(item.get("display_name") or "").strip() or None,
@@ -1222,9 +1274,109 @@ class TelegramAnalysisAgent:
                     ][:6],
                 }
             )
-            if len(viewpoints) >= limit:
+            if len(fallback_viewpoints) >= limit:
                 break
-        return viewpoints
+        return fallback_viewpoints
+
+    def _topic_quote_payloads(
+        self,
+        topic: Any,
+        *,
+        participant_id: str | None = None,
+        limit: int = 16,
+    ) -> list[dict[str, Any]]:
+        quotes = sorted(
+            list(getattr(topic, "quotes", None) or []),
+            key=lambda item: (
+                0 if participant_id and item.participant_id == participant_id else 1,
+                item.participant_id or "",
+                int(item.rank or 0),
+                int(item.telegram_message_id or 0),
+            ),
+        )
+        payloads: list[dict[str, Any]] = []
+        for quote in quotes:
+            payloads.append(
+                {
+                    "participant_id": quote.participant_id,
+                    "display_name": quote.participant.display_name if quote.participant else None,
+                    "username": quote.participant.username if quote.participant else None,
+                    "rank": int(quote.rank or 0),
+                    "message_id": int(quote.telegram_message_id or 0) or None,
+                    "sent_at": quote.sent_at.isoformat() if quote.sent_at else None,
+                    "quote": quote.quote,
+                }
+            )
+            if len(payloads) >= limit:
+                break
+        return payloads
+
+    def _serialize_related_topic(
+        self,
+        topic: Any,
+        *,
+        participant_id: str,
+    ) -> dict[str, Any]:
+        metadata = self._topic_metadata(topic)
+        participant_quotes = self._topic_quote_payloads(topic, participant_id=participant_id, limit=16)
+        quotes_by_participant: dict[str, list[dict[str, Any]]] = {}
+        for quote in participant_quotes:
+            quote_participant_id = str(quote.get("participant_id") or "").strip()
+            if not quote_participant_id:
+                continue
+            quotes_by_participant.setdefault(quote_participant_id, []).append(quote)
+        participants = sorted(
+            list(topic.participants or []),
+            key=lambda link: (
+                0 if link.participant_id == participant_id else 1,
+                int(link.message_count or 0) * -1,
+                link.participant_id or "",
+            ),
+        )
+        return {
+            "topic_id": topic.id,
+            "title": topic.title,
+            "summary": topic.summary,
+            "week_key": self._topic_week_key(topic),
+            "week_topic_index": int(getattr(topic, "week_topic_index", 0) or 0),
+            "start_at": topic.start_at.isoformat() if topic.start_at else None,
+            "end_at": topic.end_at.isoformat() if topic.end_at else None,
+            "start_message_id": topic.start_message_id,
+            "end_message_id": topic.end_message_id,
+            "message_count": topic.message_count,
+            "participant_count": topic.participant_count,
+            "keywords": list(topic.keywords_json or [])[:8],
+            "evidence_message_ids": [
+                int(item.get("message_id"))
+                for item in (topic.evidence_json or [])
+                if isinstance(item, dict) and item.get("message_id") is not None
+            ][:8],
+            "participants": [
+                {
+                    "participant_id": link.participant_id,
+                    "display_name": link.participant.display_name if link.participant else None,
+                    "username": link.participant.username if link.participant else None,
+                    "role_hint": link.role_hint,
+                    "stance_summary": getattr(link, "stance_summary", None),
+                    "message_count": link.message_count,
+                    "mention_count": link.mention_count,
+                    "quotes": quotes_by_participant.get(link.participant_id, []),
+                }
+                for link in participants
+            ],
+            "participant_quotes": participant_quotes,
+            "subtopics": [
+                str(item).strip()
+                for item in (metadata.get("subtopics") or [])
+                if str(item).strip()
+            ][:8],
+            "interaction_patterns": [
+                str(item).strip()
+                for item in (metadata.get("interaction_patterns") or [])
+                if str(item).strip()
+            ][:8],
+            "participant_viewpoints": self._topic_participant_viewpoints(topic, limit=6),
+        }
 
     def _build_topic_catalog_preview(self, topics: list[Any], limit: int = 6) -> list[dict[str, Any]]:
         preview: list[dict[str, Any]] = []
@@ -1265,15 +1417,14 @@ class TelegramAnalysisAgent:
         query: str | None = None,
     ) -> list[Any]:
         query_lower = str(query or "").strip().lower()
-        topics = repository.list_telegram_preprocess_topics(
+        topics = repository.list_telegram_preprocess_topics_for_participant(
             self.session,
             self.project.id,
             run_id=preprocess_run_id,
+            participant_id=participant_id,
         )
         matched: list[Any] = []
         for topic in topics:
-            if not any(link.participant_id == participant_id for link in topic.participants):
-                continue
             if query_lower:
                 haystacks = [
                     str(topic.title or "").lower(),
@@ -1283,6 +1434,10 @@ class TelegramAnalysisAgent:
                     " ".join(
                         str(item.get("stance_summary") or "")
                         for item in self._topic_participant_viewpoints(topic, limit=8)
+                    ).lower(),
+                    " ".join(
+                        str(item.get("quote") or "")
+                        for item in self._topic_quote_payloads(topic, participant_id=participant_id, limit=12)
                     ).lower(),
                 ]
                 if not any(query_lower in haystack for haystack in haystacks):
@@ -1415,45 +1570,7 @@ class TelegramAnalysisAgent:
             )
             page = matched_topics[offset: offset + limit]
             serialized = [
-                {
-                    "topic_id": topic.id,
-                    "title": topic.title,
-                    "summary": topic.summary,
-                    "week_key": self._topic_week_key(topic),
-                    "start_at": topic.start_at.isoformat() if topic.start_at else None,
-                    "end_at": topic.end_at.isoformat() if topic.end_at else None,
-                    "start_message_id": topic.start_message_id,
-                    "end_message_id": topic.end_message_id,
-                    "message_count": topic.message_count,
-                    "participant_count": topic.participant_count,
-                    "keywords": list(topic.keywords_json or [])[:8],
-                    "evidence_message_ids": [
-                        int(item.get("message_id"))
-                        for item in (topic.evidence_json or [])
-                        if isinstance(item, dict) and item.get("message_id") is not None
-                    ][:8],
-                    "participants": [
-                        {
-                            "participant_id": link.participant_id,
-                            "display_name": link.participant.display_name if link.participant else None,
-                            "role_hint": link.role_hint,
-                            "message_count": link.message_count,
-                            "mention_count": link.mention_count,
-                        }
-                        for link in topic.participants
-                    ],
-                    "subtopics": [
-                        str(item).strip()
-                        for item in (self._topic_metadata(topic).get("subtopics") or [])
-                        if str(item).strip()
-                    ][:8],
-                    "interaction_patterns": [
-                        str(item).strip()
-                        for item in (self._topic_metadata(topic).get("interaction_patterns") or [])
-                        if str(item).strip()
-                    ][:8],
-                    "participant_viewpoints": self._topic_participant_viewpoints(topic, limit=6),
-                }
+                self._serialize_related_topic(topic, participant_id=participant_id)
                 for topic in page
             ]
             return {
@@ -1469,6 +1586,10 @@ class TelegramAnalysisAgent:
         if name == "query_telegram_messages":
             participant_id = str(args.get("participant_id") or target_user["participant_id"]).strip()
             topic_ids = [str(item) for item in (args.get("topic_ids") or []) if str(item).strip()]
+            if not topic_ids:
+                return {
+                    "error": "query_telegram_messages requires topic_ids from list_related_topics."
+                }, {}
             messages, scoped_topics = self._collect_topic_scoped_messages(
                 preprocess_run_id=preprocess_run_id,
                 participant_id=participant_id,
@@ -1669,7 +1790,7 @@ class TelegramAnalysisAgent:
                 "type": "function",
                 "function": {
                     "name": "list_related_topics",
-                    "description": "Step 1: read topic summaries for the target user before deciding whether raw messages are needed.",
+                    "description": "Step 1: read all related topic summaries, participant stances, and exact quotes for the target user before deciding whether raw messages are needed.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -1685,7 +1806,7 @@ class TelegramAnalysisAgent:
                 "type": "function",
                 "function": {
                     "name": "query_telegram_messages",
-                    "description": "Step 2: fetch a small balanced raw-message sample only after topic summaries show that deeper evidence is needed.",
+                    "description": "Step 2: fetch a small balanced raw-message sample for selected topic_ids only after topic summaries show that deeper evidence is needed.",
                     "parameters": {
                         "type": "object",
                         "properties": {
