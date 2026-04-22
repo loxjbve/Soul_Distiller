@@ -27,7 +27,9 @@
         <div class="page-banner__meta analysis-banner__meta">
             <div class="page-banner__signal-row analysis-banner__board">
                 <span class="page-banner__label">{{ ui.banner_lanes_label }}</span>
+                {% if not (project.mode == "telegram" and project.parent_id) %}
                 <span class="page-banner__label">{{ ui.banner_diagnostics_label }}</span>
+                {% endif %}
             </div>
         </div>
     </section>
@@ -108,6 +110,7 @@
                 </div>
             </article>
 
+            {% if not (project.mode == "telegram" and project.parent_id) %}
             <article class="panel-shell analysis-diagnostics-panel">
                 <div class="panel-header panel-header--slim">
                     <div>
@@ -120,6 +123,7 @@
                     <div id="analysis-diagnostics-list" class="event-stream panel-scroll analysis-event-lines" data-panel-scroll></div>
                 </div>
             </article>
+            {% endif %}
         </section>
     {% else %}
         <section class="panel-shell">
