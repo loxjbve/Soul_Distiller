@@ -177,6 +177,13 @@
         gap: 10px;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 28px rgba(3, 8, 20, 0.18);
         overflow: hidden;
+        transition: transform var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard);
+    }
+
+    .persona-stage-card:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.12);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 18px 32px rgba(3, 8, 20, 0.24);
     }
 
     .persona-stage-card::before,
@@ -305,7 +312,8 @@
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)),
             rgba(12, 17, 28, 0.6);
-        transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
+        cursor: pointer;
     }
 
     .persona-top-user-card:hover {
@@ -314,6 +322,7 @@
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
             rgba(16, 21, 36, 0.8);
+        box-shadow: 0 4px 12px rgba(97, 168, 255, 0.08);
     }
 
     .persona-top-user-card strong {
@@ -374,6 +383,14 @@
         flex-direction: column;
         gap: 8px;
         overflow: hidden;
+        transition: transform var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard);
+    }
+
+    .telegram-binding-card:hover,
+    .persona-rail-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.15);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
     }
 
     .persona-rail-card--focus {
@@ -492,6 +509,13 @@
             rgba(10, 15, 25, 0.84);
         display: grid;
         gap: 6px;
+        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
+    }
+
+    .telegram-relationship-metric:hover {
+        transform: translateY(-2px);
+        border-color: rgba(255, 255, 255, 0.15);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
     }
 
     .telegram-relationship-metric span {
@@ -577,6 +601,16 @@
         display: grid;
         gap: 8px;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
+    }
+
+    .telegram-relationship-item:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.12);
+        background:
+            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+            rgba(12, 17, 28, 0.9);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.15);
     }
 
     .telegram-relationship-item__head {
@@ -930,12 +964,14 @@
         padding: 8px 12px;
         font: 600 0.76rem/1 var(--font-mono);
         cursor: pointer;
-        transition: border-color var(--motion-base) var(--easing-standard), color var(--motion-base) var(--easing-standard), background var(--motion-base) var(--easing-standard);
+        transition: border-color var(--motion-fast) var(--easing-standard), color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), transform var(--motion-fast) var(--easing-standard);
     }
 
     .asset-editor-tab:hover {
         border-color: rgba(97, 168, 255, 0.28);
+        background: rgba(97, 168, 255, 0.08);
         color: var(--text);
+        transform: translateY(-1px);
     }
 
     .asset-editor-tab.is-active {

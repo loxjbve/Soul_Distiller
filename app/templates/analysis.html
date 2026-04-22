@@ -139,6 +139,6 @@
 
 {% block extra_scripts %}
 {% if run %}
-<script type="module" src="{{ request.url_for('static', path='analysis.js') }}?v=20260420d"></script>
+<script type="module" defer src="{{ request.url_for('static', path='analysis.js') }}?v=20260420d"></script>
 {% endif %}
 {% endblock %}

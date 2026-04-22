@@ -9,6 +9,8 @@ import {
     setStatusTone,
     shouldAutoScroll,
     updateText,
+    debounce,
+    throttle,
 } from "./shared.js";
 
 const bootstrap = safeParseJson(document.getElementById("analysis-page-bootstrap")?.textContent, {});
@@ -65,6 +67,22 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
     setLiveState(state.payload?.status && isRunning(state.payload.status) ? "live" : "idle");
     connectStream();
 
+    let renderQueued = false;
+    const scheduleRender = throttle((payload) => {
+        if (renderQueued) return;
+        renderQueued = true;
+        window.requestAnimationFrame(() => {
+            renderQueued = false;
+            if (state.payload === payload) {
+                render(payload);
+                setLiveState(isRunning(payload.status) ? "live" : "idle");
+                if (!isRunning(payload.status)) {
+                    stopStream();
+                }
+            }
+        });
+    }, 100);
+
     function connectStream() {
         stopStream();
         setLiveState("connecting");
@@ -76,11 +94,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 return;
             }
             state.payload = payload;
-            render(payload);
-            setLiveState(isRunning(payload.status) ? "live" : "idle");
-            if (!isRunning(payload.status)) {
-                stopStream();
-            }
+            scheduleRender(payload);
         });
 
         state.stream.addEventListener("trace", (event) => {
@@ -238,6 +252,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             return;
         }
 
+        const fragment = document.createDocumentFragment();
         facets.forEach((facet) => {
             const findings = facet.findings || {};
             const status = normalizeStatus(facet.status || "queued");
@@ -259,8 +274,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             button.addEventListener("click", () => {
                 setSelectedFacet(facet.facet_key || null);
             });
-            elements.laneStrip.appendChild(button);
+            fragment.appendChild(button);
         });
+        elements.laneStrip.appendChild(fragment);
     }
 
     function renderFacetQueue(facets, runStatus) {
@@ -269,6 +285,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         }
         elements.facetList.innerHTML = "";
 
+        const fragment = document.createDocumentFragment();
         sortFacetsForQueue(facets).forEach((facet) => {
             const findings = facet.findings || {};
             const status = normalizeStatus(facet.status || "queued");
@@ -292,8 +309,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                     <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>Rerun Facet</button>
                 </div>
             `;
-            elements.facetList.appendChild(card);
+            fragment.appendChild(card);
         });
+        elements.facetList.appendChild(fragment);
 
         bindFacetRerunActions();
     }
@@ -309,7 +327,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             return;
         }
 
-        events.forEach((event) => {
+        const fragment = document.createDocumentFragment();
+        events.slice(0, 200).forEach((event) => {
             const line = document.createElement("div");
             const text = [
                 event.event_type || "event",
@@ -323,8 +342,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 <span class="analysis-event-line__text">${escapeHtml(text)}</span>
                 <span class="analysis-event-line__time">${escapeHtml(formatDateTime(event.created_at))}</span>
             `;
-            elements.diagnosticsList.appendChild(line);
+            fragment.appendChild(line);
         });
+        elements.diagnosticsList.appendChild(fragment);
     }
 
     function renderResults(facets, runStatus) {
@@ -351,6 +371,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const activeFacet = orderedFacets[activeIndex] || orderedFacets[0];
 
         if (elements.resultNav) {
+            const navFragment = document.createDocumentFragment();
             orderedFacets.forEach((facet, index) => {
                 const findings = facet.findings || {};
                 const status = normalizeStatus(facet.status || "queued");
@@ -368,8 +389,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                 button.addEventListener("click", () => {
                     setSelectedFacet(facet.facet_key || null);
                 });
-                elements.resultNav.appendChild(button);
+                navFragment.appendChild(button);
             });
+            elements.resultNav.appendChild(navFragment);
         }
 
         elements.resultList.appendChild(buildResultDetail(activeFacet, runStatus, activeIndex, orderedFacets));
@@ -544,13 +566,15 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
         const shouldStick = shouldAutoScroll(elements.feed);
         elements.feed.innerHTML = "";
-        elements.feed.appendChild(buildTaskBubble(payload));
+        
+        const fragment = document.createDocumentFragment();
+        fragment.appendChild(buildTaskBubble(payload));
 
         const items = buildLiveFeedItems(payload);
         const normalizedItems = items.length ? items : buildStaticSnapshotItems(payload);
 
         if (!normalizedItems.length) {
-            elements.feed.appendChild(buildContextBubble({
+            fragment.appendChild(buildContextBubble({
                 text: payload.summary?.current_stage || "Waiting for agent activity",
                 meta: payload.status || "queued",
                 active: isRunBusy(payload.status),
@@ -558,16 +582,18 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         } else {
             normalizedItems.forEach((item) => {
                 if (item.type === "assistant") {
-                    elements.feed.appendChild(buildAssistantBubble(item));
+                    fragment.appendChild(buildAssistantBubble(item));
                     return;
                 }
                 if (item.type === "tool") {
-                    elements.feed.appendChild(buildToolBubble(item));
+                    fragment.appendChild(buildToolBubble(item));
                     return;
                 }
-                elements.feed.appendChild(buildContextBubble(item));
+                fragment.appendChild(buildContextBubble(item));
             });
         }
+        
+        elements.feed.appendChild(fragment);
 
         if (shouldStick) {
             elements.feed.scrollTop = elements.feed.scrollHeight;

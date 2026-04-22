@@ -129,16 +129,16 @@
     }
 
     .primary-button {
-        color: #05070b;
-        background:
-            linear-gradient(135deg, var(--accent-blue), #dbe6ff 45%, #f6b8ff 100%);
-        box-shadow: 0 12px 28px rgba(97, 168, 255, 0.35);
+        color: var(--bg-base);
+        background: var(--accent-cyan);
+        box-shadow: none;
         transition: all var(--motion-fast) var(--easing-standard);
     }
     
     .primary-button:hover {
-        box-shadow: 0 15px 35px rgba(97, 168, 255, 0.5), 0 0 20px rgba(246, 184, 255, 0.4);
-        transform: translateY(-2px);
+        background: var(--accent-blue);
+        box-shadow: 0 4px 12px rgba(168, 199, 250, 0.2);
+        transform: translateY(-1px);
     }
 
     .ghost-button,
@@ -160,12 +160,26 @@
     .secondary-button {
         background: rgba(97, 168, 255, 0.08);
         border-color: rgba(97, 168, 255, 0.18);
+        transition: all var(--motion-fast) var(--easing-standard);
+    }
+
+    .secondary-button:hover {
+        background: rgba(97, 168, 255, 0.16);
+        border-color: rgba(97, 168, 255, 0.3);
+        box-shadow: 0 4px 12px rgba(97, 168, 255, 0.15);
     }
 
     .danger-button {
         color: #ffdce7;
         background: rgba(255, 110, 147, 0.12);
         border-color: rgba(255, 110, 147, 0.24);
+        transition: all var(--motion-fast) var(--easing-standard);
+    }
+
+    .danger-button:hover {
+        background: rgba(255, 110, 147, 0.2);
+        border-color: rgba(255, 110, 147, 0.4);
+        box-shadow: 0 4px 12px rgba(255, 110, 147, 0.15);
     }
 
     .icon-button {
@@ -339,6 +353,13 @@
     .metric-card {
         padding: 16px 16px 14px;
         justify-content: space-between;
+        transition: transform var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard);
+    }
+
+    .metric-card:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-elevated);
+        border-color: rgba(255, 255, 255, 0.15);
     }
 
     .metric-card span {
@@ -371,6 +392,11 @@
         border-radius: var(--radius-sm);
         background: rgba(255, 255, 255, 0.03);
         border: 1px solid rgba(255, 255, 255, 0.05);
+        transition: background var(--motion-fast) var(--easing-standard);
+    }
+
+    .metric-row:hover {
+        background: rgba(255, 255, 255, 0.06);
     }
 
     .empty-panel,
@@ -402,11 +428,15 @@
         padding: 18px;
         min-height: 144px;
         text-align: center;
-        border-radius: var(--radius-sm);
-        border: 1px dashed rgba(97, 168, 255, 0.28);
-        background:
-            linear-gradient(135deg, rgba(97, 168, 255, 0.08), rgba(141, 107, 255, 0.08)),
-            rgba(255, 255, 255, 0.02);
+        border-radius: var(--radius-md);
+        border: 1px dashed var(--line-accent);
+        background: var(--bg-hover);
+        transition: border-color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
+    }
+
+    .dropzone:hover {
+        border-color: rgba(97, 168, 255, 0.4);
+        background: rgba(97, 168, 255, 0.04);
     }
 
     .dropzone input[type="file"] {
@@ -463,9 +493,23 @@
         flex-direction: column;
         gap: 10px;
         padding: 14px;
-        border-radius: var(--radius-sm);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(255, 255, 255, 0.03);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--line-subtle);
+        background: var(--bg-soft);
+        transition: transform var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard);
+    }
+
+    .document-card:hover,
+    .project-card:hover,
+    .profile-card:hover,
+    .persona-profile-card:hover,
+    .version-card:hover,
+    .context-item:hover,
+    .artifact-card:hover,
+    .session-item:hover {
+        transform: translateY(-2px);
+        box-shadow: var(--shadow-elevated);
+        border-color: rgba(255, 255, 255, 0.15);
     }
 
     .project-card__title-row,
@@ -551,11 +595,9 @@
         position: relative;
         min-height: 132px;
         padding: 16px;
-        border-radius: var(--radius-sm);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
-            rgba(9, 12, 18, 0.72);
+        border-radius: var(--radius-md);
+        border: 1px solid var(--line-subtle);
+        background: var(--bg-soft);
         overflow: hidden;
     }
 
@@ -740,10 +782,10 @@
 
     .code-block,
     .md-code {
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--line-subtle);
         border-radius: var(--radius-sm);
         overflow: hidden;
-        background: #090c14;
+        background: var(--bg-base);
     }
 
     .code-block__header,
@@ -923,9 +965,9 @@
 
     .trace-box,
     pre.trace-box {
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid var(--line-subtle);
         border-radius: var(--radius-sm);
-        background: #090c14;
+        background: var(--bg-base);
     }
 
     .analysis-diagnostics {
@@ -995,10 +1037,8 @@
     }
 
     .chat-bubble--user {
-        background:
-            linear-gradient(135deg, rgba(97, 168, 255, 0.18), rgba(141, 107, 255, 0.12)),
-            rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(97, 168, 255, 0.18);
+        background: var(--bg-soft);
+        border: 1px solid var(--line-subtle);
     }
 
     .chat-bubble--assistant {
@@ -1034,11 +1074,9 @@
         display: flex;
         flex-direction: column;
         gap: var(--space-3);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: var(--radius-md);
-        background:
-            var(--glass-sheen),
-            linear-gradient(180deg, rgba(17, 19, 30, 0.96), rgba(10, 12, 20, 0.96));
+        border: 1px solid var(--line-subtle);
+        border-radius: var(--radius-lg);
+        background: var(--bg-elevated);
         box-shadow: var(--shadow-hard);
         overflow: hidden;
     }

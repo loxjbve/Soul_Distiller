@@ -98,6 +98,6 @@
 
 {% block extra_scripts %}
 {% if version %}
-<script type="module" src="{{ request.url_for('static', path='playground.js') }}"></script>
+<script type="module" defer src="{{ request.url_for('static', path='playground.js') }}"></script>
 {% endif %}
 {% endblock %}
