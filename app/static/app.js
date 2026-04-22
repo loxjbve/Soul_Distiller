@@ -2,25 +2,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDropUploads();
     setupAnalysisMonitor();
     setupAssetGenerator();
-    setupCursorGlow();
-});
-
-function setupCursorGlow() {
-    const cursorGlow = document.getElementById("cursor-glow");
-    if (!cursorGlow) return;
-
-    document.addEventListener("mousemove", (e) => {
-        cursorGlow.style.left = `${e.clientX}px`;
-        cursorGlow.style.top = `${e.clientY}px`;
-        if (!cursorGlow.classList.contains("active")) {
-            cursorGlow.classList.add("active");
-        }
-    });
-
-    document.addEventListener("mouseleave", () => {
-        cursorGlow.classList.remove("active");
-    });
-}
+})
 
 function setupDropUploads() {
     document.querySelectorAll("[data-drop-upload]").forEach((form) => {

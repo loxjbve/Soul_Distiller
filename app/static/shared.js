@@ -275,27 +275,6 @@ function bindShellMode() {
 }
 
 function bindCursorGlow() {
-    const glow = document.getElementById("cursor-glow");
-    if (!(glow instanceof HTMLElement)) {
-        return;
-    }
-
-    const moveGlow = (event) => {
-        if (!document.body.classList.contains("theme-ambient")) {
-            return;
-        }
-        if (cursorGlowFrame) {
-            window.cancelAnimationFrame(cursorGlowFrame);
-        }
-        const { clientX, clientY } = event;
-        cursorGlowFrame = window.requestAnimationFrame(() => {
-            glow.style.transform = `translate3d(${clientX}px, ${clientY}px, 0)`;
-            glow.classList.add("is-visible");
-        });
-    };
-
-    document.addEventListener("pointermove", moveGlow, { passive: true });
-    document.addEventListener("pointerleave", () => glow.classList.remove("is-visible"));
 }
 
 function bindModals(root = document) {
