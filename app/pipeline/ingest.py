@@ -78,6 +78,14 @@ class DocumentIngestService:
         source = source_type or self._infer_source_type(filename)
         if project and project.mode == "telegram" and Path(filename).suffix.lower() == ".json":
             source = "telegram_export"
+            try:
+                import json
+                data = json.loads(content.decode("utf-8", errors="ignore"))
+                group_name = data.get("name")
+                if group_name and project.name == "未命名 Telegram 项目":
+                    project.name = group_name
+            except Exception:
+                pass
         document_id = str(uuid4())
         storage_path = self._store_upload(project_id, document_id, filename, content)
 

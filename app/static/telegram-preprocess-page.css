@@ -271,6 +271,23 @@
     min-height: clamp(320px, 46vh, 560px);
 }
 
+.page-telegram-preprocess details.telegram-preprocess-topic-board {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    padding: 14px;
+}
+
+.page-telegram-preprocess details.telegram-preprocess-topic-board > summary {
+    cursor: pointer;
+    list-style: none;
+    outline: none;
+}
+
+.page-telegram-preprocess details.telegram-preprocess-topic-board > summary::-webkit-details-marker {
+    display: none;
+}
+
 .page-telegram-preprocess .telegram-preprocess-topic-board__head {
     display: flex;
     align-items: flex-end;
@@ -365,26 +382,7 @@
     box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.12);
 }
 
-.page-telegram-preprocess .telegram-preprocess-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-}
 
-.page-telegram-preprocess .telegram-preprocess-metric-card {
-    padding: 12px 14px;
-    border-radius: 16px;
-    gap: 4px;
-}
-
-.page-telegram-preprocess .telegram-preprocess-metric-card strong {
-    font-size: 1.16rem;
-}
-
-.page-telegram-preprocess .telegram-preprocess-metric-card small {
-    color: var(--text-secondary);
-    font-size: 0.78rem;
-}
 
 .page-telegram-preprocess .telegram-preprocess-error {
     margin-top: -2px;
