@@ -2034,6 +2034,8 @@ def test_telegram_preprocess_page_renders_compact_hub(client, app, monkeypatch):
     assert "telegram_preprocess.js" in response.text
     assert 'id="telegram-preprocess-live-pill"' in response.text
     assert 'id="telegram-preprocess-topic-lamps"' in response.text
+    assert 'id="telegram-preprocess-agent-list"' in response.text
+    assert 'id="telegram-preprocess-agent-modal"' in response.text
     assert "Weekly Candidates" not in response.text
     assert "Top Users" not in response.text
     assert "Active Users" not in response.text

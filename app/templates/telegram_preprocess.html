@@ -3,7 +3,7 @@
 {% block page_class %}page-telegram-preprocess{% endblock %}
 {% block title %}{{ project.name }} | {{ ui.title }}{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260421b">
+<link rel="stylesheet" href="{{ request.url_for('static', path='telegram-preprocess-page.css') }}?v=20260422a">
 {% endblock %}
 
 {% block content %}
@@ -77,6 +77,25 @@
                         </div>
                         <div class="progress-track">
                             <div class="progress-fill" id="telegram-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="telegram-preprocess-agent-monitor">
+                    <div class="telegram-preprocess-agent-monitor__head">
+                        <div>
+                            <p class="eyebrow">LLM Monitor</p>
+                            <h3>Active Agents & Requests</h3>
+                        </div>
+                        <p class="helper-text" id="telegram-preprocess-agent-note">等待新的 LLM 请求开始。</p>
+                    </div>
+                    <div
+                        id="telegram-preprocess-agent-list"
+                        class="telegram-preprocess-agent-list panel-scroll"
+                        data-panel-scroll
+                    >
+                        <div class="empty-panel">
+                            <strong>等待新的 LLM 请求开始。</strong>
                         </div>
                     </div>
                 </section>
@@ -160,8 +179,24 @@
         </article>
     </section>
 </div>
+
+<div class="modal-overlay" id="telegram-preprocess-agent-modal" hidden>
+    <div class="modal-dialog modal-dialog--wide telegram-trace-modal">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">LLM Monitor</p>
+                <h3 id="telegram-preprocess-agent-modal-title">Agent Detail</h3>
+                <p class="section-note" id="telegram-preprocess-agent-modal-note">实时查看当前 agent 的请求、工具调用和输出。</p>
+            </div>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <div class="modal-body">
+            <div id="telegram-preprocess-agent-modal-body" class="telegram-trace-modal__body"></div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260421b"></script>
+<script type="module" src="{{ request.url_for('static', path='telegram_preprocess.js') }}?v=20260422a"></script>
 {% endblock %}
