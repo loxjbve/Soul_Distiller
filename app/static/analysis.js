@@ -191,7 +191,6 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const total = Number(summary.total_facets || facets.length || 0);
         const completed = Number(summary.completed_facets || counts.completed || 0);
 
-        updateText(elements.percent, `${percent}%`);
         updateText(elements.stage, summary.current_stage || ui.waiting || "Waiting");
         updateText(elements.requestedConcurrency, requestedConcurrency);
         updateText(elements.concurrency, requestedConcurrency);
@@ -225,6 +224,31 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         renderResults(facets, payload.status);
         renderAgentLanes(payload);
         renderAgentCenter(payload);
+        syncDynamicContent(facets);
+    }
+
+    function syncDynamicContent(facets) {
+        const feedContainer = document.getElementById("analysis-feed-container");
+        const resultContainer = document.getElementById("analysis-result-list");
+        if (!feedContainer || !resultContainer) return;
+
+        const activeFacetKey = state.selectedFacetKey;
+        if (!activeFacetKey) {
+            feedContainer.style.display = "flex";
+            resultContainer.style.display = "none";
+            return;
+        }
+
+        const activeFacet = facets.find(f => f.facet_key === activeFacetKey);
+        const status = normalizeStatus(activeFacet?.status || "queued");
+
+        if (status === "completed" || status === "failed") {
+            feedContainer.style.display = "none";
+            resultContainer.style.display = "flex";
+        } else {
+            feedContainer.style.display = "flex";
+            resultContainer.style.display = "none";
+        }
     }
 
     function renderAgentLanes(payload) {
@@ -233,22 +257,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         }
         elements.laneStrip.innerHTML = "";
 
-        const summary = payload?.summary || {};
         const facets = sortFacetsForQueue(payload?.facets || []);
-        const requestedConcurrency = Number(summary.requested_concurrency || summary.concurrency || 1);
-        const effectiveConcurrency = Number(summary.effective_concurrency || requestedConcurrency || 1);
 
         if (!facets.length) {
-            const placeholder = document.createElement("div");
-            placeholder.className = "agent-lamp agent-lamp--empty";
-            placeholder.innerHTML = `
-                <strong>No active lanes</strong>
-                <p>Requested ${escapeHtml(String(requestedConcurrency))} · Effective ${escapeHtml(String(effectiveConcurrency))}</p>
-            `;
-            const placeholderMeta = document.createElement("span");
-            placeholderMeta.textContent = `Requested ${requestedConcurrency} | Effective ${effectiveConcurrency}`;
-            placeholder.querySelector("p")?.replaceWith(placeholderMeta);
-            elements.laneStrip.appendChild(placeholder);
             return;
         }
 
@@ -258,15 +269,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             const status = normalizeStatus(facet.status || "queued");
             const button = document.createElement("button");
             button.type = "button";
-            button.className = `agent-lamp status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}${summary.current_facet === facet.facet_key ? " is-current" : ""}`;
+            button.className = `agent-lamp status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}`;
             button.dataset.facetSelect = facet.facet_key || "";
-            button.title = [
-                findings.label || facet.facet_key || "Facet",
-                statusLabel(status),
-                phaseLabel(findings.phase || status),
-                buildAgentLampMeta(facet),
-            ].filter(Boolean).join(" | ");
-            button.setAttribute("aria-pressed", state.selectedFacetKey === facet.facet_key ? "true" : "false");
             button.innerHTML = `
                 <span class="agent-lamp__label">${escapeHtml(findings.label || facet.facet_key || "Facet")}</span>
                 <span class="agent-lamp__dot" aria-hidden="true"></span>
@@ -351,18 +355,11 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (!elements.resultList) {
             return;
         }
-        if (elements.resultNav) {
-            elements.resultNav.innerHTML = "";
-        }
         elements.resultList.innerHTML = "";
 
         const orderedFacets = sortFacetsForQueue(facets);
         if (!orderedFacets.length) {
-            const empty = `<div class="empty-panel"><strong>${escapeHtml(ui.empty || "No analysis results yet.")}</strong></div>`;
-            if (elements.resultNav) {
-                elements.resultNav.innerHTML = empty;
-            }
-            elements.resultList.innerHTML = empty;
+            elements.resultList.innerHTML = `<div class="empty-panel"><strong>${escapeHtml(ui.empty || "No analysis results yet.")}</strong></div>`;
             return;
         }
 
@@ -370,76 +367,19 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const activeIndex = Math.max(0, orderedFacets.findIndex((facet) => facet.facet_key === state.selectedFacetKey));
         const activeFacet = orderedFacets[activeIndex] || orderedFacets[0];
 
-        if (elements.resultNav) {
-            const navFragment = document.createDocumentFragment();
-            orderedFacets.forEach((facet, index) => {
-                const findings = facet.findings || {};
-                const status = normalizeStatus(facet.status || "queued");
-                const button = document.createElement("button");
-                button.type = "button";
-                button.className = `analysis-result-tab status-${escapeHtml(status)}${facet.facet_key === state.selectedFacetKey ? " is-active" : ""}`;
-                button.title = trimText(findings.summary || buildFacetLead(facet), 220);
-                button.innerHTML = `
-                    <span class="analysis-result-tab__head">
-                        <span class="analysis-result-tab__index">${escapeHtml(String(index + 1).padStart(2, "0"))}</span>
-                        <strong>${escapeHtml(findings.label || facet.facet_key || "Facet")}</strong>
-                    </span>
-                    <span class="analysis-result-tab__dot" aria-hidden="true"></span>
-                `;
-                button.addEventListener("click", () => {
-                    setSelectedFacet(facet.facet_key || null);
-                });
-                navFragment.appendChild(button);
-            });
-            elements.resultNav.appendChild(navFragment);
-        }
-
-        elements.resultList.appendChild(buildResultDetail(activeFacet, runStatus, activeIndex, orderedFacets));
+        elements.resultList.appendChild(buildResultDetail(activeFacet, runStatus, orderedFacets));
 
         bindFacetRerunActions();
     }
 
-    function buildResultDetail(facet, runStatus, activeIndex, orderedFacets) {
+    function buildResultDetail(facet, runStatus, orderedFacets) {
         const findings = facet.findings || {};
         const status = normalizeStatus(facet.status || "queued");
-        const total = orderedFacets.length;
-        const previousFacet = activeIndex > 0 ? orderedFacets[activeIndex - 1] : null;
-        const nextFacet = activeIndex < total - 1 ? orderedFacets[activeIndex + 1] : null;
         const panel = document.createElement("article");
         panel.className = `facet-result-card facet-result-card--detail status-${escapeHtml(status)}`;
         panel.innerHTML = `
-            <div class="facet-result-card__summary facet-result-card__summary--detail">
-                <div class="facet-result-card__summary-main">
-                    <div class="facet-result-card__summary-meta">
-                        <p class="eyebrow">${escapeHtml(facet.facet_key || "")}</p>
-                        <span class="analysis-result-page">${escapeHtml(`${activeIndex + 1} / ${total}`)}</span>
-                    </div>
-                    <h3>${escapeHtml(findings.label || facet.facet_key || "Facet")}</h3>
-                    <p class="facet-summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 220))}</p>
-                </div>
-                <div class="facet-result-card__status">
-                    <span class="status-chip tone-${escapeHtml(statusTone(status))}">${escapeHtml(statusLabel(status))}</span>
-                    <span class="facet-inline-tag">${escapeHtml(phaseLabel(findings.phase || status))}</span>
-                </div>
-            </div>
-            <div class="analysis-result-pager">
-                <button type="button" class="ghost-button" data-facet-page="prev" ${previousFacet ? "" : "disabled"}>上一页</button>
-                <span class="analysis-result-pager__label">${escapeHtml(`第 ${activeIndex + 1} / ${total} 页`)}</span>
-                <button type="button" class="ghost-button" data-facet-page="next" ${nextFacet ? "" : "disabled"}>下一页</button>
-            </div>
             <div class="facet-result-card__body facet-result-card__body--detail"></div>
         `;
-
-        panel.querySelector('[data-facet-page="prev"]')?.addEventListener("click", () => {
-            if (previousFacet?.facet_key) {
-                setSelectedFacet(previousFacet.facet_key);
-            }
-        });
-        panel.querySelector('[data-facet-page="next"]')?.addEventListener("click", () => {
-            if (nextFacet?.facet_key) {
-                setSelectedFacet(nextFacet.facet_key);
-            }
-        });
 
         const body = panel.querySelector(".facet-result-card__body");
         const summaryNode = document.createElement("div");
@@ -557,6 +497,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         state.selectedFacetKey = facetKey;
         renderAgentLanes(state.payload);
         renderResults(state.payload.facets || [], state.payload.status);
+        renderAgentCenter(state.payload);
+        syncDynamicContent(state.payload.facets || []);
     }
 
     function renderAgentCenter(payload) {
@@ -571,16 +513,31 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         fragment.appendChild(buildTaskBubble(payload));
 
         const items = buildLiveFeedItems(payload);
-        const normalizedItems = items.length ? items : buildStaticSnapshotItems(payload);
+        const snapshotItems = buildStaticSnapshotItems(payload);
+        
+        // Filter items by selected facet if one is selected
+        const filterFacet = state.selectedFacetKey;
+        const filteredItems = [...items, ...snapshotItems].filter(item => {
+            if (!filterFacet) return true;
+            // Check if item meta or label matches facet key
+            return (item.meta && item.meta.includes(filterFacet)) || 
+                   (item.label && item.label.includes(filterFacet)) ||
+                   (item.key && item.key.includes(filterFacet));
+        });
 
-        if (!normalizedItems.length) {
+        if (!filteredItems.length) {
             fragment.appendChild(buildContextBubble({
-                text: payload.summary?.current_stage || "Waiting for agent activity",
+                text: filterFacet ? `No activity recorded for agent: ${filterFacet}` : (payload.summary?.current_stage || "Waiting for agent activity"),
                 meta: payload.status || "queued",
                 active: isRunBusy(payload.status),
             }));
         } else {
-            normalizedItems.forEach((item) => {
+            // De-duplicate items by key if they have one
+            const seenKeys = new Set();
+            filteredItems.forEach((item) => {
+                if (item.key && seenKeys.has(item.key)) return;
+                if (item.key) seenKeys.add(item.key);
+
                 if (item.type === "assistant") {
                     fragment.appendChild(buildAssistantBubble(item));
                     return;

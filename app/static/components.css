@@ -25,9 +25,9 @@
         align-items: center;
         gap: var(--space-2);
         color: var(--accent-blue);
-        font-size: 0.76rem;
+        font-size: 0.72rem;
         font-weight: 700;
-        letter-spacing: 0.18em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
     }
 
@@ -50,16 +50,17 @@
     .chat-meta,
     .artifact-card small {
         color: var(--text-secondary);
+        font-size: 0.84rem;
     }
 
     h2 {
-        font-size: clamp(1.02rem, 0.9vw + 0.92rem, 1.36rem);
+        font-size: clamp(0.96rem, 0.8vw + 0.84rem, 1.24rem);
         line-height: 1.16;
         letter-spacing: -0.02em;
     }
 
     h3 {
-        font-size: 0.96rem;
+        font-size: 0.88rem;
         line-height: 1.2;
         letter-spacing: -0.01em;
     }
@@ -72,7 +73,7 @@
     .facet-status-flags {
         display: flex;
         flex-wrap: wrap;
-        gap: var(--space-2);
+        gap: var(--space-1);
     }
 
     .button-row--end {
@@ -118,14 +119,21 @@
         align-items: center;
         justify-content: center;
         gap: var(--space-2);
-        min-height: 38px;
-        padding: 0 14px;
+        min-height: 32px;
+        padding: 0 12px;
         border-radius: var(--radius-pill);
         border: 1px solid transparent;
-        font-size: 0.84rem;
+        font-size: 0.8rem;
         font-weight: 600;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.02em;
         white-space: nowrap;
+    }
+
+    .ghost-button--small,
+    .danger-button--small {
+        min-height: 28px;
+        padding: 0 10px;
+        font-size: 0.74rem;
     }
 
     .primary-button {

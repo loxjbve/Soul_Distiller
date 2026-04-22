@@ -30,6 +30,7 @@ if (bootstrap?.project_id) {
         chunkCount: document.getElementById("asset-chunk-count"),
         charCount: document.getElementById("asset-char-count"),
         lockChip: document.getElementById("asset-editor-lock-chip"),
+        activeDocument: document.getElementById("asset-active-document"),
         docStatus: document.getElementById("asset-document-status"),
         jsonPayload: document.getElementById("asset-json-payload"),
         promptText: document.getElementById("asset-prompt-text"),
@@ -53,6 +54,8 @@ if (bootstrap?.project_id) {
         locked: false,
         chunkCount: 0,
         charCount: 0,
+        activePage: splitDocumentKeys[0] || (elements.singleMarkdown ? "markdown" : ""),
+        activeStreamDocument: "",
         documents: splitDocumentKeys.reduce((accumulator, key) => {
             accumulator[key] = { markdown: String(documentEditors[key]?.value || "") };
             return accumulator;
@@ -184,10 +187,13 @@ if (bootstrap?.project_id) {
         if (splitDocumentKeys.length) {
             const key = splitDocumentKeys.includes(documentKey) ? documentKey : "skill";
             if (documentEditors[key]) {
+                state.activeStreamDocument = key;
+                activateEditorPage(key, { scrollTab: true });
                 documentEditors[key].value += chunk;
                 state.documents[key].markdown = documentEditors[key].value;
             }
         } else if (elements.singleMarkdown) {
+            state.activeStreamDocument = "markdown";
             elements.singleMarkdown.value += chunk;
         }
         state.chunkCount += 1;
@@ -200,6 +206,7 @@ if (bootstrap?.project_id) {
     function resetStreamingState() {
         state.chunkCount = 0;
         state.charCount = 0;
+        state.activeStreamDocument = "";
         updateCounts();
         if (splitDocumentKeys.length) {
             splitDocumentKeys.forEach((key) => {
@@ -208,7 +215,9 @@ if (bootstrap?.project_id) {
                 }
                 state.documents[key] = { markdown: "" };
             });
+            activateEditorPage(splitDocumentKeys[0] || "skill");
         } else if (elements.singleMarkdown) {
+            state.activePage = "markdown";
             elements.singleMarkdown.value = "";
         }
         if (elements.promptText) {
@@ -234,15 +243,23 @@ if (bootstrap?.project_id) {
         });
     }
 
-    function activateEditorPage(pageKey) {
-        editorTabs.forEach((button) => {
-            const isActive = button.dataset.editorTabTrigger === pageKey;
-            button.classList.toggle("is-active", isActive);
-            button.setAttribute("aria-selected", isActive ? "true" : "false");
-        });
+    function activateEditorPage(pageKey, options = {}) {
+        if (!pageKey) {
+            return;
+        }
+        state.activePage = pageKey;
         editorPages.forEach((page) => {
             page.classList.toggle("is-active", page.dataset.editorPage === pageKey);
         });
+        renderDocumentStatus();
+        updateActiveDocumentLabel();
+
+        if (options.scrollTab && elements.docStatus) {
+            const activePill = elements.docStatus.querySelector(`[data-document-jump="${pageKey}"]`);
+            if (activePill) {
+                activePill.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+            }
+        }
     }
 
     function bindDraftSync() {
@@ -323,6 +340,11 @@ if (bootstrap?.project_id) {
                 elements.jsonPayload.value = JSON.stringify(draft.json_payload || {}, null, 2);
             }
         }
+        if (splitDocumentKeys.length) {
+            activateEditorPage(state.activeStreamDocument || state.activePage || splitDocumentKeys[0] || "skill");
+        } else {
+            updateActiveDocumentLabel();
+        }
         if (elements.draftPlaceholder) {
             elements.draftPlaceholder.hidden = true;
         }
@@ -343,7 +365,7 @@ if (bootstrap?.project_id) {
         });
         if (elements.lockChip) {
             elements.lockChip.className = `status-chip ${locked ? "tone-warning" : "tone-ready"}`;
-            elements.lockChip.textContent = locked ? "LOCKED" : "READY";
+            elements.lockChip.textContent = locked ? "输出锁定" : "可编辑";
         }
         if (elements.saveButton) {
             elements.saveButton.disabled = locked || !state.draftId;
@@ -436,37 +458,105 @@ if (bootstrap?.project_id) {
             return;
         }
         if (!splitDocumentKeys.length) {
+            const hasContent = Boolean(elements.singleMarkdown?.value);
             elements.docStatus.innerHTML = `
-                <article class="document-card compact-card asset-doc-card ${elements.singleMarkdown?.value ? "is-ready" : "is-missing"}">
-                    <div class="document-card__head">
-                        <strong>${escapeHtml(assetKind === "profile_report" ? "profile_report.md" : "draft.md")}</strong>
-                        <span class="status-chip ${elements.singleMarkdown?.value ? "tone-ready" : "tone-warning"}">${elements.singleMarkdown?.value ? "ready" : "missing"}</span>
+                <button
+                    type="button"
+                    class="asset-track-pill ${hasContent ? "is-ready" : "is-missing"} ${state.activePage === "markdown" ? "is-active" : ""}"
+                    data-document-jump="markdown"
+                >
+                    <div class="asset-track-pill__info">
+                        <span class="asset-track-pill__dot"></span>
+                        <strong class="asset-track-pill__name">${escapeHtml(assetKind === "profile_report" ? "profile_report.md" : "draft.md")}</strong>
                     </div>
-                    <p class="helper-text">${escapeHtml(`${(elements.singleMarkdown?.value || "").length} chars`)}</p>
-                </article>
+                    <span class="asset-track-pill__meta">${escapeHtml(`${(elements.singleMarkdown?.value || "").length} chars`)}</span>
+                </button>
             `;
+            bindDocumentStatusActions();
+            updateActiveDocumentLabel();
             return;
         }
 
-        elements.docStatus.innerHTML = splitDocumentKeys.map((key) => {
+        const documentPills = splitDocumentKeys.map((key) => {
             const markdown = String(documentEditors[key]?.value || "");
             const filename = resolveDocumentFilename(key);
+            const isActive = state.activePage === key;
+            const isStreaming = state.activeStreamDocument === key && state.locked;
+            const statusClass = markdown.trim() ? "is-ready" : "is-missing";
+
             return `
-                <article class="document-card compact-card asset-doc-card ${markdown.trim() ? "is-ready" : "is-missing"}">
-                    <div class="document-card__head">
-                        <strong>${escapeHtml(filename)}</strong>
-                        <span class="status-chip ${markdown.trim() ? "tone-ready" : "tone-warning"}">${markdown.trim() ? "ready" : "missing"}</span>
+                <button
+                    type="button"
+                    class="asset-track-pill ${statusClass} ${isActive ? "is-active" : ""} ${isStreaming ? "is-streaming" : ""}"
+                    data-document-jump="${escapeHtml(key)}"
+                >
+                    <div class="asset-track-pill__info">
+                        <span class="asset-track-pill__dot"></span>
+                        <strong class="asset-track-pill__name">${escapeHtml(filename)}</strong>
                     </div>
-                    <p class="helper-text">${escapeHtml(`${markdown.length} chars`)}</p>
-                    <p class="helper-text">${escapeHtml((markdown || "当前文档为空。").slice(0, 180))}</p>
-                    ${state.draftId && markdown.trim() ? `
-                        <div class="button-row top-gap">
-                            <a class="ghost-button" href="/api/projects/${projectId}/assets/${state.draftId}/exports/${encodeURIComponent(key)}">导出</a>
-                        </div>
-                    ` : ""}
-                </article>
+                    <span class="asset-track-pill__meta">${escapeHtml(`${markdown.length} chars`)}</span>
+                </button>
             `;
         }).join("");
+
+        const extraTabs = [
+            { key: "json", label: ui.field_json || "JSON Payload" },
+            { key: "prompt", label: ui.field_prompt || "Prompt 文本" },
+            { key: "notes", label: ui.field_notes || "备注" }
+        ].map(tab => {
+            const isActive = state.activePage === tab.key;
+            return `
+                <button
+                    type="button"
+                    class="asset-track-pill is-ready ${isActive ? "is-active" : ""}"
+                    data-document-jump="${escapeHtml(tab.key)}"
+                    style="min-width: auto; flex: 0 0 auto;"
+                >
+                    <div class="asset-track-pill__info">
+                        <strong class="asset-track-pill__name">${escapeHtml(tab.label)}</strong>
+                    </div>
+                </button>
+            `;
+        }).join("");
+
+        elements.docStatus.innerHTML = documentPills + extraTabs;
+        bindDocumentStatusActions();
+        updateActiveDocumentLabel();
+    }
+
+    function bindDocumentStatusActions() {
+        elements.docStatus?.querySelectorAll("[data-document-jump]").forEach((button) => {
+            if (button.dataset.bound === "1") {
+                return;
+            }
+            button.dataset.bound = "1";
+            button.addEventListener("click", () => {
+                const pageKey = button.dataset.documentJump || "";
+                if (pageKey === "markdown" && !splitDocumentKeys.length) {
+                    state.activePage = "markdown";
+                    renderDocumentStatus();
+                    updateActiveDocumentLabel();
+                    return;
+                }
+                activateEditorPage(pageKey);
+            });
+        });
+    }
+
+    function updateActiveDocumentLabel() {
+        if (!elements.activeDocument) {
+            return;
+        }
+        const currentKey = state.activeStreamDocument || state.activePage;
+        if (!currentKey) {
+            updateText(elements.activeDocument, "当前输出文件：等待开始");
+            return;
+        }
+        const label = currentKey === "markdown"
+            ? (assetKind === "profile_report" ? "profile_report.md" : "draft.md")
+            : resolveDocumentFilename(currentKey);
+        const prefix = state.activeStreamDocument ? "当前输出文件" : "当前查看文件";
+        updateText(elements.activeDocument, `${prefix}：${label}`);
     }
 
     function resolveDocumentFilename(key) {

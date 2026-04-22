@@ -85,6 +85,7 @@ if (bootstrap.project?.id) {
         elements.retryAll?.addEventListener("click", () => runProjectAction("retry-all", elements.retryAll, state.ui.retry_success));
         elements.stopProcessing?.addEventListener("click", () => runProjectAction("stop-processing", elements.stopProcessing, state.ui.stop_success));
         initTelegramTargetPickers();
+        initPersonaCollapsibles();
 
         if (elements.dropzone && elements.fileInput) {
             ["dragenter", "dragover"].forEach((eventName) => {
@@ -398,6 +399,19 @@ if (bootstrap.project?.id) {
         if (elements.analyzeSubmit) {
             elements.analyzeSubmit.disabled = Number(state.stats.ready_count || 0) <= 0;
         }
+    }
+
+    function initPersonaCollapsibles() {
+        const cards = [...document.querySelectorAll("[data-persona-card]")];
+        cards.forEach((card) => {
+            const toggle = card.querySelector("[data-persona-toggle]");
+            toggle?.addEventListener("click", () => {
+                const isExpanded = card.classList.contains("is-expanded");
+                // Optional: close others
+                // cards.forEach(c => c.classList.remove('is-expanded'));
+                card.classList.toggle("is-expanded", !isExpanded);
+            });
+        });
     }
 
     const scheduleRender = throttle(() => {

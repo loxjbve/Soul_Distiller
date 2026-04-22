@@ -10,25 +10,22 @@
 <div class="page-frame">
     <section class="page-banner page-banner--analysis-compact">
         <div class="page-banner__main">
-            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
+                <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
                 <h1>{{ project.name }} | {{ ui.title }}</h1>
-                <span class="page-banner__label">{{ ui.banner_title_label }}</span>
             </div>
-            <p>{{ ui.hero_note }}</p>
+            <p class="truncate">{{ ui.hero_note }}</p>
+        </div>
+        <div class="page-banner__actions-row">
+            <div class="page-banner__chip-row">
+                <span class="status-chip" id="analysis-status-chip">...</span>
+                <span class="analysis-live-pill" id="analysis-live-pill">LIVE</span>
+            </div>
             <div class="page-banner__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=cc_skill">{{ ui.open_assets }}</a>
                 {% if run and run.status in ["completed", "partial_failed"] %}
                     <a class="primary-button" href="/projects/{{ project.id }}/analysis/export?run_id={{ run.id }}">{{ ui.export_zip }}</a>
-                {% endif %}
-            </div>
-        </div>
-        <div class="page-banner__meta analysis-banner__meta">
-            <div class="page-banner__signal-row analysis-banner__board">
-                <span class="page-banner__label">{{ ui.banner_lanes_label }}</span>
-                {% if not (project.mode == "telegram" and project.parent_id) %}
-                <span class="page-banner__label">{{ ui.banner_diagnostics_label }}</span>
                 {% endif %}
             </div>
         </div>
@@ -45,70 +42,59 @@
         </script>
 
         <section class="page-content">
-            <article class="panel-shell analysis-center-panel">
-                <div class="panel-header panel-header--slim analysis-center-panel__header">
-                    <div>
-                        <p class="eyebrow">{{ ui.agent_center_eyebrow }}</p>
-                        <h2>{{ ui.agent_center_title }}</h2>
-                    </div>
-                    <div class="analysis-center-panel__status">
-                        <span class="status-chip tone-processing" id="analysis-status-chip">{{ run.status }}</span>
-                        <span class="analysis-live-pill" id="analysis-live-pill">{{ ui.live_connecting }}</span>
-                    </div>
-                </div>
-                <div class="panel-body analysis-center-panel__body">
-                    <div class="analysis-progress-spotlight__header analysis-progress-spotlight__header--compact">
-                        <div>
-                            <p class="eyebrow">{{ ui.run_pulse_eyebrow }}</p>
-                            <h3 id="analysis-hero-stage">{{ summary.get("current_stage", ui.waiting) }}</h3>
-                            <p class="section-note" id="analysis-hero-note">{{ summary.get("current_facet") or ui.waiting }}</p>
-                        </div>
-                        <div class="analysis-signal-chip-row analysis-signal-chip-row--compact">
-                            <span class="analysis-signal-chip" id="analysis-percent-chip">{{ summary.get("progress_percent", 0) }}%</span>
-                            <span class="analysis-signal-chip" id="analysis-completed-count">{{ ui.completed }} {{ summary.get("completed_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-running-count">{{ ui.running }} {{ summary.get("active_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-queued-count">{{ ui.queued }} {{ summary.get("queued_facets", 0) }}</span>
-                            <span class="analysis-signal-chip" id="analysis-failed-count">{{ ui.failed }} {{ summary.get("failed_facets", 0) }}</span>
-                        </div>
+            <div class="analysis-center-panel telegram-preprocess-hub">
+                <div class="telegram-preprocess-hub__header">
+                    <div class="telegram-preprocess-hub__title">
+                        <h3>{{ ui.analysis_running_monitor or "分析运行监控" }}</h3>
+                        <span class="status-chip tone-ready" id="analysis-percent-chip">0%</span>
                     </div>
                     <div class="progress-shell progress-shell--slim">
-                        <div class="progress-labels">
-                            <strong id="analysis-progress-label">{{ summary.get("current_stage", ui.waiting) }}</strong>
-                            <span id="analysis-progress-caption">{{ summary.get("completed_facets", 0) }} / {{ summary.get("total_facets", 0) }}</span>
-                        </div>
                         <div class="progress-track">
-                            <div id="analysis-progress-fill" class="progress-fill" style="width: {{ summary.get('progress_percent', 0) }}%"></div>
+                            <div class="progress-fill" id="analysis-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <div class="progress-meta">
+                            <strong id="analysis-stage">...</strong>
+                            <span id="analysis-progress-caption">0 / 0</span>
                         </div>
                     </div>
-                    <div class="analysis-agent-strip">
-                        <div class="analysis-agent-strip__head">
-                            <p class="eyebrow">{{ ui.banner_lanes_label }}</p>
-                            <p class="section-note">{{ ui.current_facet }}</p>
-                        </div>
-                        <div class="agent-lane-strip panel-scroll" id="analysis-agent-lanes" data-lane-strip data-panel-scroll>
-                            <div class="empty-panel">
-                                <strong>{{ ui.no_active_agents }}</strong>
-                            </div>
-                        </div>
-                    </div>
-                    <div id="analysis-feed" class="agent-center-feed panel-scroll" data-live-feed data-panel-scroll></div>
                 </div>
-            </article>
 
-            <article class="panel-shell analysis-results-panel">
-                <div class="panel-header panel-header--slim">
-                    <div>
-                        <p class="eyebrow">Results</p>
-                        <h2>{{ ui.result_title }}</h2>
+                <div class="telegram-preprocess-hub__body">
+                    <div class="hub-monitor-grid">
+                        <!-- Left: Agent Monitor (combined list) -->
+                        <section class="telegram-preprocess-agent-monitor">
+                            <div class="telegram-preprocess-agent-monitor__head">
+                                <h3>{{ ui.active_agents_title or "智能分析中心" }}</h3>
+                                <div class="chip-row">
+                                    <span class="status-chip" id="analysis-completed-count">Completed 0</span>
+                                    <span class="status-chip tone-processing" id="analysis-running-count">Running 0</span>
+                                    <span class="status-chip tone-queued" id="analysis-queued-count">Queued 0</span>
+                                    <span class="status-chip tone-failed" id="analysis-failed-count">Failed 0</span>
+                                </div>
+                            </div>
+                            <div class="telegram-preprocess-agent-list panel-scroll" id="analysis-agent-lanes">
+                                <!-- Agent lamps will be injected here -->
+                            </div>
+                        </section>
+
+                        <!-- Right: Dynamic Area (Feed or Results) -->
+                        <section class="analysis-dynamic-area">
+                            <div class="analysis-feed-section" id="analysis-feed-container" style="display: none;">
+                                <div class="analysis-feed-header">
+                                    <h3>{{ ui.agent_activity_title or "Agent 执行流" }}</h3>
+                                </div>
+                                <div class="analysis-feed panel-scroll" id="analysis-feed" data-auto-scroll="true">
+                                    <!-- Activity bubbles will be injected here -->
+                                </div>
+                            </div>
+
+                            <div class="analysis-result-detail" id="analysis-result-list" style="display: none;">
+                                <!-- Detailed result will be injected here -->
+                            </div>
+                        </section>
                     </div>
                 </div>
-                <div class="panel-body panel-body--tight">
-                    <div class="analysis-results-browser">
-                        <div id="analysis-result-nav" class="analysis-result-nav panel-scroll" data-panel-scroll></div>
-                        <div id="analysis-result-list" class="analysis-result-detail panel-scroll" data-panel-scroll></div>
-                    </div>
-                </div>
-            </article>
+            </div>
 
             {% if not (project.mode == "telegram" and project.parent_id) %}
             <article class="panel-shell analysis-diagnostics-panel">

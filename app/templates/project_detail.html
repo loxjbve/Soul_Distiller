@@ -6,28 +6,23 @@
 <div class="page-frame">
     <section class="page-banner">
         <div class="page-banner__main">
-            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
             <div class="page-banner__title-row">
+                <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
                 <h1>{{ project.name }}</h1>
-                <span class="page-banner__label">{{ ui.task_bridge_label }}</span>
             </div>
-            <p>{{ project.description or ui.no_project_description }}</p>
+            <p class="truncate">{{ project.description or ui.no_project_description }}</p>
+        </div>
+        <div class="page-banner__actions-row">
             <div class="page-banner__chip-row">
                 <span class="status-chip tone-processing">{{ stats.document_count }} {{ ui.docs_suffix }}</span>
                 <span class="status-chip tone-ready">{{ stats.ready_count }} {{ ui.ready_suffix }}</span>
                 <span class="status-chip {{ 'tone-warning' if latest_run else 'tone-queued' }}">
                     {{ ui.latest_analysis }} · {{ latest_run.status if latest_run else ui.not_analyzed }}
                 </span>
-                <span class="status-chip {{ 'tone-ready' if latest_version else 'tone-queued' }}">
-                    {{ ui.latest_release }} · {% if latest_version %}v{{ latest_version.version_number }}{% else %}{{ ui.unreleased }}{% endif %}
-                </span>
             </div>
             <div class="page-banner__actions">
                 {% if parent_project %}
                     <a class="ghost-button" href="/projects/{{ parent_project.id }}">{{ ui.back_to_parent }}</a>
-                {% endif %}
-                {% if latest_run and not telegram_is_parent_workspace %}
-                    <a class="ghost-button" href="/projects/{{ project.id }}/analysis?run_id={{ latest_run.id }}">{{ ui.common.back_to_analysis }}</a>
                 {% endif %}
                 {% if telegram_is_parent_workspace %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/relationships">{{ ui.telegram_relationship_title or '群组关系分析' }}</a>
@@ -36,24 +31,6 @@
                 <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
                 <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
                 <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
-                <form method="post" action="/projects/{{ project.id }}/delete">
-                    <button type="submit" class="danger-button" data-confirm="{{ ui.common.confirm_delete_project }}">{{ ui.common.delete }}</button>
-                </form>
-            </div>
-        </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
-                <span class="page-banner__label">
-                    {% if project.mode == 'group' %}
-                        {{ ui.group_mode }}
-                    {% elif project.mode == 'telegram' %}
-                        {{ ui.telegram_mode }}
-                    {% else %}
-                        {{ ui.single_mode }}
-                    {% endif %}
-                </span>
-                <span class="page-banner__label">{{ ui.upload_title }}</span>
             </div>
         </div>
     </section>
@@ -131,13 +108,12 @@
                             <input type="hidden" name="auto_analyze" value="1">
 
                             <div class="persona-studio-main">
-                                <div class="persona-stage-stack">
-                                    <section class="persona-stage-card persona-stage-card--target">
+                                <section class="persona-stage-card persona-stage-card--unified">
+                                    <div class="persona-stage-step persona-stage-step--target">
                                         <div class="persona-step__head">
                                             <span class="persona-step__index">01</span>
                                             <div>
                                                 <strong>{{ ui.telegram_persona_step01_title }}</strong>
-                                                <p>{{ ui.telegram_persona_step01_note }}</p>
                                             </div>
                                         </div>
                                         <div class="panel-scroll" data-panel-scroll>
@@ -153,91 +129,69 @@
                                                         data-username="{{ user.username or '' }}"
                                                         data-uid="{{ user.uid or '' }}"
                                                     >
-                                                        <span class="persona-top-user-card__rank">{{ ui.telegram_persona_top_prefix }} {{ user.rank }}</span>
-                                                        <strong>{{ user_label }}</strong>
-                                                        <small>
-                                                            {{ user.message_count }} {{ ui.telegram_persona_messages_suffix }}
-                                                            {% if user.username %} · @{{ user.username }}{% endif %}
-                                                            {% if user.uid %} · {{ user.uid }}{% endif %}
-                                                        </small>
+                                                        <span class="persona-top-user-card__rank">{{ user.rank }}</span>
+                                                        <div class="persona-top-user-card__info">
+                                                            <strong>{{ user_label }}</strong>
+                                                            <small>{{ user.message_count }} msg</small>
+                                                        </div>
                                                     </button>
                                                 {% endfor %}
                                             </div>
                                         </div>
-                                        <label>
-                                            <span>{{ ui.telegram_persona_manual_fallback_label }}</span>
-                                            <input
-                                                type="text"
-                                                name="target_user_query"
-                                                value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
-                                                placeholder="{{ ui.telegram_persona_target_query_placeholder }}"
-                                                data-target-query-input
-                                            >
-                                        </label>
-                                    </section>
+                                        <div class="persona-manual-row">
+                                            <label class="inline-label">
+                                                <span>{{ ui.telegram_persona_manual_fallback_label }}</span>
+                                                <input
+                                                    type="text"
+                                                    name="target_user_query"
+                                                    value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
+                                                    placeholder="{{ ui.telegram_persona_target_query_placeholder }}"
+                                                    data-target-query-input
+                                                >
+                                            </label>
+                                        </div>
+                                    </div>
 
-                                    <section class="persona-stage-card persona-stage-card--context">
+                                    <div class="persona-stage-divider"></div>
+
+                                    <div class="persona-stage-step persona-stage-step--config">
                                         <div class="persona-step__head">
                                             <span class="persona-step__index">02</span>
                                             <div>
                                                 <strong>{{ ui.telegram_persona_step02_title }}</strong>
-                                                <p>{{ ui.telegram_persona_step02_note }}</p>
                                             </div>
                                         </div>
-                                        <label>
-                                            <span>{{ ui.telegram_persona_persona_name_label }}</span>
-                                            <input
-                                                type="text"
-                                                name="name"
-                                                value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
-                                                placeholder="{{ ui.telegram_persona_persona_name_placeholder }}"
-                                                data-persona-name-input
-                                                required
-                                            >
-                                        </label>
-                                        <label>
-                                            <span>{{ ui.analysis_context }}</span>
-                                            <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
-                                        </label>
-                                    </section>
-
-                                    <section class="persona-stage-card persona-stage-card--launch">
-                                        <div class="persona-step__head">
-                                            <span class="persona-step__index">03</span>
-                                            <div>
-                                                <strong>{{ ui.telegram_persona_step03_title }}</strong>
-                                                <p>{{ ui.telegram_persona_step03_note }}</p>
+                                        <div class="persona-config-form">
+                                            <label>
+                                                <span>{{ ui.telegram_persona_persona_name_label }}</span>
+                                                <input
+                                                    type="text"
+                                                    name="name"
+                                                    value="{{ analysis_defaults.target_user_query if analysis_defaults.participant_id else '' }}"
+                                                    placeholder="{{ ui.telegram_persona_persona_name_placeholder }}"
+                                                    data-persona-name-input
+                                                    required
+                                                >
+                                            </label>
+                                            <label>
+                                                <span>{{ ui.analysis_context }}</span>
+                                                <textarea name="analysis_context" rows="3">{{ analysis_defaults.analysis_context }}</textarea>
+                                            </label>
+                                            <div class="persona-config-row">
+                                                <label>
+                                                    <span>{{ ui.analysis_concurrency }}</span>
+                                                    <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
+                                                </label>
+                                                <div class="button-row button-row--end">
+                                                    <button type="submit" class="primary-button" data-target-submit {% if not can_analyze %}disabled{% endif %}>
+                                                        {{ ui.telegram_persona_submit_create_and_analyze }}
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
-                                        <p class="section-note">{{ ui.telegram_persona_step03_policy_note }}</p>
-                                        <label>
-                                            <span>{{ ui.analysis_concurrency }}</span>
-                                            <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
-                                        </label>
-                                        <div class="button-row button-row--end">
-                                            <button type="submit" class="primary-button" data-target-submit {% if not can_analyze %}disabled{% endif %}>
-                                                {{ ui.telegram_persona_submit_create_and_analyze }}
-                                            </button>
-                                        </div>
-                                    </section>
-                                </div>
-                            </div>
-
-                            <aside class="persona-studio-rail">
-                                <div class="persona-rail-card telegram-binding-card telegram-binding-card--summary" data-target-summary>
-                                    <span class="status-chip tone-processing">{{ ui.telegram_persona_waiting_chip }}</span>
-                                    <strong>{{ ui.telegram_persona_select_user_first }}</strong>
-                                    <p>{{ ui.telegram_persona_target_summary_note }}</p>
-                                </div>
-                                <div class="persona-rail-card">
-                                    <p class="eyebrow">{{ ui.telegram_persona_run_policy_title }}</p>
-                                    <div class="persona-rail-status">
-                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_top_users }}</span><strong>{{ telegram_top_users | length }}</strong></div>
-                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_auto_analyze }}</span><strong>{{ ui.telegram_persona_policy_enabled }}</strong></div>
-                                        <div class="metric-row"><span>{{ ui.telegram_persona_policy_binding_source }}</span><strong>{{ ui.telegram_persona_policy_latest_preprocess }}</strong></div>
                                     </div>
-                                </div>
-                            </aside>
+                                </section>
+                            </div>
                         </form>
                     {% else %}
                         <div class="empty-panel" data-empty-state>
@@ -363,40 +317,38 @@
                             >
                                 <input type="hidden" name="participant_id" value="{{ analysis_defaults.participant_id }}" data-participant-input>
                                 <div class="persona-studio-main">
-                                    <div class="persona-stage-stack">
-                                        <section class="persona-stage-card persona-stage-card--target">
-                                            <div class="persona-step__head">
-                                                <span class="persona-step__index">01</span>
-                                                <div>
-                                                    <strong>{{ ui.telegram_child_bind_step01_title }}</strong>
-                                                    <p>{{ ui.telegram_child_bind_step01_note }}</p>
-                                                </div>
+                                    <section class="persona-stage-card persona-stage-card--unified">
+                                    <div class="persona-stage-step persona-stage-step--target">
+                                        <div class="persona-step__head">
+                                            <span class="persona-step__index">01</span>
+                                            <div>
+                                                <strong>{{ ui.telegram_child_bind_step01_title }}</strong>
                                             </div>
-                                            <div class="panel-scroll" data-panel-scroll>
-                                                <div class="persona-top-user-grid">
-                                                    {% for user in telegram_top_users %}
-                                                        {% set user_label = user.label or user.primary_alias or user.display_name or user.username or user.uid or user.participant_id %}
-                                                        <button
-                                                            type="button"
-                                                            class="persona-top-user-card {% if analysis_defaults.participant_id == user.participant_id %}is-selected{% endif %}"
-                                                            data-top-user-card
-                                                            data-participant-id="{{ user.participant_id }}"
-                                                            data-label="{{ user_label }}"
-                                                            data-username="{{ user.username or '' }}"
-                                                            data-uid="{{ user.uid or '' }}"
-                                                        >
-                                                            <span class="persona-top-user-card__rank">{{ ui.telegram_persona_top_prefix }} {{ user.rank }}</span>
+                                        </div>
+                                        <div class="panel-scroll" data-panel-scroll>
+                                            <div class="persona-top-user-grid">
+                                                {% for user in telegram_top_users %}
+                                                    {% set user_label = user.label or user.primary_alias or user.display_name or user.username or user.uid or user.participant_id %}
+                                                    <button
+                                                        type="button"
+                                                        class="persona-top-user-card {% if analysis_defaults.participant_id == user.participant_id %}is-selected{% endif %}"
+                                                        data-top-user-card
+                                                        data-participant-id="{{ user.participant_id }}"
+                                                        data-label="{{ user_label }}"
+                                                        data-username="{{ user.username or '' }}"
+                                                        data-uid="{{ user.uid or '' }}"
+                                                    >
+                                                        <span class="persona-top-user-card__rank">{{ user.rank }}</span>
+                                                        <div class="persona-top-user-card__info">
                                                             <strong>{{ user_label }}</strong>
-                                                            <small>
-                                                                {{ user.message_count }} {{ ui.telegram_persona_messages_suffix }}
-                                                                {% if user.username %} · @{{ user.username }}{% endif %}
-                                                                {% if user.uid %} · {{ user.uid }}{% endif %}
-                                                            </small>
-                                                        </button>
-                                                    {% endfor %}
-                                                </div>
+                                                            <small>{{ user.message_count }} msg</small>
+                                                        </div>
+                                                    </button>
+                                                {% endfor %}
                                             </div>
-                                            <label>
+                                        </div>
+                                        <div class="persona-manual-row">
+                                            <label class="inline-label">
                                                 <span>{{ ui.telegram_persona_manual_fallback_label }}</span>
                                                 <input
                                                     type="text"
@@ -406,43 +358,39 @@
                                                     data-target-query-input
                                                 >
                                             </label>
-                                        </section>
+                                        </div>
+                                    </div>
 
-                                        <section class="persona-stage-card persona-stage-card--context">
-                                            <div class="persona-step__head">
-                                                <span class="persona-step__index">02</span>
-                                                <div>
-                                                    <strong>{{ ui.telegram_child_bind_step02_title }}</strong>
-                                                    <p>{{ ui.telegram_child_bind_step02_note }}</p>
-                                                </div>
+                                    <div class="persona-stage-divider"></div>
+
+                                    <div class="persona-stage-step persona-stage-step--config">
+                                        <div class="persona-step__head">
+                                            <span class="persona-step__index">02</span>
+                                            <div>
+                                                <strong>{{ ui.telegram_child_bind_step02_title }}</strong>
                                             </div>
+                                        </div>
+                                        <div class="persona-config-form">
                                             <label>
                                                 <span>{{ ui.analysis_context }}</span>
-                                                <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
+                                                <textarea name="analysis_context" rows="4">{{ analysis_defaults.analysis_context }}</textarea>
                                             </label>
-                                            <label>
-                                                <span>{{ ui.analysis_concurrency }}</span>
-                                                <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
-                                            </label>
-                                        </section>
-
-                                        <section class="persona-stage-card persona-stage-card--launch">
-                                            <div class="button-row button-row--end">
-                                                <button type="submit" class="primary-button" id="analyze-submit-btn" data-target-submit {% if not can_analyze %}disabled{% endif %}>
-                                                    {{ ui.telegram_child_bind_submit_bind_and_start }}
-                                                </button>
+                                            <div class="persona-config-row">
+                                                <label>
+                                                    <span>{{ ui.analysis_concurrency }}</span>
+                                                    <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
+                                                </label>
+                                                <div class="button-row button-row--end">
+                                                    <button type="submit" class="primary-button" id="analyze-submit-btn" data-target-submit {% if not can_analyze %}disabled{% endif %}>
+                                                        {{ ui.telegram_child_bind_submit_bind_and_start }}
+                                                    </button>
+                                                </div>
                                             </div>
-                                        </section>
+                                        </div>
                                     </div>
-                                </div>
-                                <aside class="persona-studio-rail">
-                                    <div class="persona-rail-card telegram-binding-card telegram-binding-card--summary" data-target-summary>
-                                        <span class="status-chip tone-processing">{{ ui.telegram_child_bind_pending_bind_chip }}</span>
-                                        <strong>{{ ui.telegram_persona_select_user_first }}</strong>
-                                        <p>{{ ui.telegram_child_bind_pending_bind_note }}</p>
-                                    </div>
-                                </aside>
-                            </form>
+                                </section>
+                            </div>
+                        </form>
                         {% else %}
                             <p class="section-note">{{ ui.telegram_child_bind_preprocess_first_note }}</p>
                         {% endif %}
@@ -521,67 +469,80 @@
                         {% if profiles %}
                             <div class="persona-profile-list panel-scroll" data-panel-scroll>
                                 {% for profile in profiles %}
-                                    <article class="persona-profile-card">
-                                        <div class="persona-profile-card__head">
-                                            <div>
+                                    <article class="persona-profile-card persona-profile-card--collapsible" data-persona-card>
+                                        <div class="persona-profile-card__summary" data-persona-toggle>
+                                            <div class="persona-profile-card__info">
                                                 <strong>{{ profile.name }}</strong>
-                                                <p>{{ profile.description or ui.profile_description_empty }}</p>
+                                                <p class="truncate">{{ profile.description or ui.profile_description_empty }}</p>
                                             </div>
-                                            {% if profile.latest_run %}
-                                                <span class="status-chip tone-{{ 'ready' if profile.latest_run.status == 'completed' else 'warning' if profile.latest_run.status == 'partial_failed' else 'processing' if profile.latest_run.status in ['queued', 'running'] else 'failed' }}">
-                                                    {{ profile.latest_run.status }}
-                                                </span>
-                                            {% else %}
-                                                <span class="status-chip tone-queued">{{ ui.telegram_personas_pending_bind_chip }}</span>
-                                            {% endif %}
+                                            <div class="persona-profile-card__status">
+                                                {% if profile.latest_run %}
+                                                    <span class="status-chip tone-{{ 'ready' if profile.latest_run.status == 'completed' else 'warning' if profile.latest_run.status == 'partial_failed' else 'processing' if profile.latest_run.status in ['queued', 'running'] else 'failed' }}">
+                                                        {{ profile.latest_run.status }}
+                                                    </span>
+                                                {% else %}
+                                                    <span class="status-chip tone-queued">{{ ui.telegram_personas_pending_bind_chip }}</span>
+                                                {% endif %}
+                                                <span class="collapsible-icon"></span>
+                                            </div>
                                         </div>
 
-                                        {% if profile.binding %}
-                                            <div class="telegram-binding-card telegram-binding-card--profile">
-                                                <span class="status-chip tone-ready">{{ ui.telegram_personas_bound_user_chip }}</span>
-                                                <strong>{{ profile.binding.label }}</strong>
-                                                <p>
-                                                    {% if profile.binding.username %}@{{ profile.binding.username }}{% endif %}
-                                                    {% if profile.binding.uid %}{% if profile.binding.username %} · {% endif %}{{ profile.binding.uid }}{% endif %}
-                                                    {% if not profile.binding.username and not profile.binding.uid %}{{ ui.telegram_personas_recovered_hint }}{% endif %}
-                                                </p>
-                                            </div>
-                                        {% else %}
-                                            <div class="telegram-binding-card telegram-binding-card--profile telegram-binding-card--warning">
-                                                <span class="status-chip tone-warning">{{ ui.telegram_personas_needs_binding_chip }}</span>
-                                                <strong>{{ ui.telegram_personas_needs_binding_title }}</strong>
-                                                <p>{{ ui.telegram_personas_needs_binding_note }}</p>
-                                            </div>
-                                        {% endif %}
-
-                                        <div class="button-row">
-                                            {% if profile.binding and profile.latest_run %}
-                                                <form method="post" action="/projects/{{ profile.id }}/analyze" class="inline-form">
-                                                    <input type="hidden" name="target_user_query" value="{{ profile.binding.target_user_query or profile.binding.label or '' }}">
-                                                    <input type="hidden" name="participant_id" value="{{ profile.binding.participant_id or '' }}">
-                                                    <input type="hidden" name="analysis_context" value="{{ profile.analysis_context }}">
-                                                    <label class="inline-number-field">
-                                                        <span>{{ ui.analysis_concurrency }}</span>
-                                                        <input
-                                                            type="number"
-                                                            name="concurrency"
-                                                            value="{{ (profile.latest_run.summary_json or {}).get('concurrency', analysis_concurrency_default) }}"
-                                                            min="1"
-                                                        >
-                                                    </label>
-                                                    <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>{{ ui.telegram_personas_rerun }}</button>
-                                                </form>
-                                                <a class="ghost-button" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
+                                        <div class="persona-profile-card__content">
+                                            {% if profile.binding %}
+                                                <div class="persona-binding-summary">
+                                                    <span class="status-pill tone-ready">{{ ui.telegram_personas_bound_user_chip }}</span>
+                                                    <strong>{{ profile.binding.label }}</strong>
+                                                    <small>
+                                                        {% if profile.binding.username %}@{{ profile.binding.username }}{% endif %}
+                                                        {% if profile.binding.uid %}{% if profile.binding.username %} · {% endif %}{{ profile.binding.uid }}{% endif %}
+                                                    </small>
+                                                </div>
                                             {% else %}
-                                                <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_continue_binding }}</a>
+                                                <div class="persona-binding-summary persona-binding-summary--warning">
+                                                    <span class="status-pill tone-warning">{{ ui.telegram_personas_needs_binding_chip }}</span>
+                                                    <strong>{{ ui.telegram_personas_needs_binding_title }}</strong>
+                                                </div>
                                             {% endif %}
-                                            <a class="ghost-button" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_open }}</a>
-                                            {% if profile.latest_skill %}
-                                                <a class="ghost-button" href="/projects/{{ profile.id }}/assets?kind=cc_skill">{{ ui.profile_view_asset }}</a>
-                                            {% endif %}
-                                            <form method="post" action="/projects/{{ profile.id }}/delete">
-                                                <button type="submit" class="danger-button" data-confirm="{{ ui.profile_delete_confirm }}">{{ ui.common.delete }}</button>
-                                            </form>
+
+                                            <div class="persona-profile-card__actions">
+                                                {% if profile.binding and profile.latest_run %}
+                                                    <form method="post" action="/projects/{{ profile.id }}/analyze" class="persona-profile-rerun-form">
+                                                        <input type="hidden" name="target_user_query" value="{{ profile.binding.target_user_query or profile.binding.label or '' }}">
+                                                        <input type="hidden" name="participant_id" value="{{ profile.binding.participant_id or '' }}">
+                                                        <input type="hidden" name="analysis_context" value="{{ profile.analysis_context }}">
+                                                        <div class="persona-profile-rerun-controls">
+                                                            <label class="inline-number-field">
+                                                                <span>{{ ui.analysis_concurrency }}</span>
+                                                                <input
+                                                                    type="number"
+                                                                    name="concurrency"
+                                                                    value="{{ (profile.latest_run.summary_json or {}).get('concurrency', analysis_concurrency_default) }}"
+                                                                    min="1"
+                                                                >
+                                                            </label>
+                                                            <button type="submit" class="ghost-button" {% if not can_analyze %}disabled{% endif %}>{{ ui.telegram_personas_rerun }}</button>
+                                                        </div>
+                                                    </form>
+                                                    <div class="persona-profile-button-grid">
+                                                        <a class="ghost-button ghost-button--small" href="/projects/{{ profile.id }}/analysis">{{ ui.profile_view_analysis }}</a>
+                                                        <a class="ghost-button ghost-button--small" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_open }}</a>
+                                                        {% if profile.latest_skill %}
+                                                            <a class="ghost-button ghost-button--small" href="/projects/{{ profile.id }}/assets?kind=cc_skill">{{ ui.profile_view_asset }}</a>
+                                                        {% endif %}
+                                                        <form method="post" action="/projects/{{ profile.id }}/delete">
+                                                            <button type="submit" class="danger-button danger-button--small" data-confirm="{{ ui.profile_delete_confirm }}">{{ ui.common.delete }}</button>
+                                                        </form>
+                                                    </div>
+                                                {% else %}
+                                                    <div class="persona-profile-button-grid">
+                                                        <a class="ghost-button ghost-button--small" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_continue_binding }}</a>
+                                                        <a class="ghost-button ghost-button--small" href="/projects/{{ profile.id }}">{{ ui.telegram_personas_open }}</a>
+                                                        <form method="post" action="/projects/{{ profile.id }}/delete">
+                                                            <button type="submit" class="danger-button danger-button--small" data-confirm="{{ ui.profile_delete_confirm }}">{{ ui.common.delete }}</button>
+                                                        </form>
+                                                    </div>
+                                                {% endif %}
+                                            </div>
                                         </div>
                                     </article>
                                 {% endfor %}

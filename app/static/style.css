@@ -47,7 +47,7 @@ body {
     margin: 0;
     min-height: 100vh;
     color: var(--text);
-    font: 400 15px/1.6 var(--font-sans);
+    font: 400 14px/1.5 var(--font-sans);
     background: #04080f;
     overflow-x: hidden;
 }
@@ -100,7 +100,7 @@ p {
     align-items: center;
     justify-content: space-between;
     gap: 20px;
-    padding: 16px 0;
+    padding: 12px 0;
 }
 
 .brand-lockup {
@@ -163,7 +163,7 @@ p {
 }
 
 .page-shell {
-    padding: 28px 0 64px;
+    padding: 16px 0 32px;
 }
 
 .hero-panel,

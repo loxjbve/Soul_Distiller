@@ -10,22 +10,18 @@
 {% block content %}
 <div class="page-frame">
     <section class="page-banner page-banner--assets-compact">
-        <div class="page-banner__main">
-            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
-            <div class="page-banner__title-row">
-                <h1>{{ project.name }} | {{ asset_label }}</h1>
-                <span class="page-banner__label">{{ ui.title }}</span>
+        <div class="page-banner__main" style="flex-direction: row; align-items: center; justify-content: space-between; width: 100%;">
+            <div style="display: flex; align-items: center; gap: 16px; flex-shrink: 0;">
+                <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+                <h1 style="margin: 0; font-size: 1.4rem; color: var(--text-strong); white-space: nowrap;">{{ project.name }} | {{ asset_label }}</h1>
             </div>
-            <p>{{ ui.hero_note }}</p>
-            <div class="page-banner__chip-row">
-                {% for option in asset_options %}
-                    <a class="filter-chip {% if option.value == asset_kind %}is-active{% endif %}" href="/projects/{{ project.id }}/assets?kind={{ option.value }}">{{ option.label }}</a>
-                {% endfor %}
-            </div>
-        </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__actions">
+            <p style="margin: 0; font-size: 0.85rem; color: var(--text-secondary); flex: 1; padding: 0 24px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis;">{{ ui.hero_note }}</p>
+            <div style="display: flex; align-items: center; gap: 12px; flex-shrink: 0;">
+                <div class="page-banner__chip-row">
+                    {% for option in asset_options %}
+                        <a class="filter-chip {% if option.value == asset_kind %}is-active{% endif %}" href="/projects/{{ project.id }}/assets?kind={{ option.value }}">{{ option.label }}</a>
+                    {% endfor %}
+                </div>
                 <a class="ghost-button" href="/projects/{{ project.id }}/analysis{% if latest_run %}?run_id={{ latest_run.id }}{% endif %}">{{ ui.view_analysis }}</a>
             </div>
         </div>
@@ -86,34 +82,30 @@
                     <p class="eyebrow">Draft</p>
                     <h2>{{ ui.draft_title }}</h2>
                 </div>
-                <span class="status-chip tone-queued" id="asset-editor-lock-chip">{{ ui.status_idle }}</span>
+                <div class="asset-draft-header-meta">
+                    <span class="helper-text" id="asset-active-document">当前输出文件：等待开始</span>
+                    <span class="status-chip tone-queued" id="asset-editor-lock-chip">{{ ui.status_idle }}</span>
+                </div>
             </div>
             <div class="panel-body">
                 <form class="form-stack asset-draft-form" id="asset-draft-form" data-asset-kind="{{ asset_kind }}" data-draft-id="{{ draft.id if draft else '' }}">
                     <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
                     <input type="hidden" name="markdown_text" id="asset-markdown-text" value="{{ draft.markdown_text if draft else '' }}">
 
+                    <section class="asset-draft-monitor">
+                        <div class="asset-draft-monitor__head" style="align-items: center; justify-content: flex-start; gap: 12px; margin-bottom: 6px;">
+                            <h3 style="margin: 0; font-size: 0.9rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);">输出跟踪</h3>
+                            <span class="helper-text" style="margin: 0;">点击可手动切换文件，流式输出时自动跟随</span>
+                        </div>
+                        <div id="asset-document-status" class="asset-document-status-board" data-documents-board>
+                            <!-- JS injected pills -->
+                        </div>
+                    </section>
+
                     <div class="asset-draft-scroll panel-scroll" data-panel-scroll>
                         {% if asset_kind == "cc_skill" %}
                             {% set editor_keys = ["skill", "personality", "memories", "analysis"] %}
                             <div class="asset-editor-shell">
-                                <div class="asset-editor-tabs" role="tablist" aria-label="Draft pages">
-                                    {% for key in editor_keys %}
-                                        <button
-                                            type="button"
-                                            class="asset-editor-tab {% if loop.first %}is-active{% endif %}"
-                                            data-editor-tab-trigger="{{ key }}"
-                                            role="tab"
-                                            aria-selected="{{ 'true' if loop.first else 'false' }}"
-                                        >
-                                            {{ draft_documents.get(key, {}).get("filename", key) }}
-                                        </button>
-                                    {% endfor %}
-                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="json" role="tab" aria-selected="false">{{ ui.field_json }}</button>
-                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="prompt" role="tab" aria-selected="false">{{ ui.field_prompt }}</button>
-                                    <button type="button" class="asset-editor-tab" data-editor-tab-trigger="notes" role="tab" aria-selected="false">{{ ui.field_notes }}</button>
-                                </div>
-
                                 <div class="asset-editor-pages">
                                     {% for key in editor_keys %}
                                         {% set document = draft_documents.get(key, {}) %}
@@ -189,22 +181,6 @@
         </article>
 
         <aside class="assets-side-column">
-            <article class="panel-shell assets-card--documents">
-                <div class="panel-header panel-header--slim">
-                    <div>
-                        <p class="eyebrow">Documents</p>
-                        <h2>Reference Set</h2>
-                    </div>
-                </div>
-                <div class="panel-body panel-body--tight">
-                    <div id="asset-document-status" class="document-board panel-scroll" data-documents-board data-panel-scroll>
-                        <div class="empty-panel">
-                            <strong>Reference documents for the current draft appear here after generation or load.</strong>
-                        </div>
-                    </div>
-                </div>
-            </article>
-
             <article class="panel-shell assets-card--versions">
                 <div class="panel-header panel-header--slim">
                     <div>
