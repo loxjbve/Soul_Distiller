@@ -20,6 +20,17 @@
                 <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/analysis">去分析作者维度</a>
                 <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="inline-form stone-preprocess-start-form">
+                    <label class="inline-number-field" style="display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text-soft);">
+                        <span>并发分析线程</span>
+                        <input
+                            type="number"
+                            name="concurrency"
+                            min="1"
+                            max="20"
+                            value="{{ selected_run_data.concurrency if selected_run_data else 1 }}"
+                            style="width: 68px; min-height: 32px; padding: 0 10px;"
+                        >
+                    </label>
                     <button type="submit" class="primary-button stone-preprocess-start-form__submit" {% if not can_start %}disabled{% endif %}>
                         {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
                             正在分析...
@@ -91,18 +102,24 @@
                             {% endif %}
                         </p>
                     </summary>
-                    <div id="stone-preprocess-topic-lamps" class="stone-preprocess-topic-lamps panel-scroll" data-panel-scroll>
+                    <div id="stone-preprocess-topic-lamps" class="stone-preprocess-agent-list panel-scroll" data-panel-scroll>
                         {% if documents %}
+                            {% set concurrency = selected_run_data.concurrency if selected_run_data else 1 %}
+                            {% set completed = selected_run_data.stone_profile_completed if selected_run_data else 0 %}
                             {% for doc in documents %}
                                 {% set has_profile = "stone_profile" in (doc.metadata_json or {}) %}
-                                {% set lamp_status = "completed" if has_profile else ("queued" if not selected_run_data or selected_run_data.status not in ["queued", "running"] else "running") %}
-                                <article class="stone-topic-lamp status-{{ lamp_status }}">
-                                    <span class="stone-topic-lamp__dot" aria-hidden="true"></span>
-                                    <div class="stone-topic-lamp__body">
-                                        <strong>{{ doc.title or doc.filename }}</strong>
+                                {% set doc_index = loop.index %}
+                                {% set is_running = selected_run_data and selected_run_data.status in ["queued", "running"] and doc_index > completed and doc_index <= completed + concurrency %}
+                                {% set lamp_status = "completed" if has_profile else ("running is-live" if is_running else "queued") %}
+                                <article class="stone-agent-lamp status-{{ lamp_status }}">
+                                    <span class="stone-agent-lamp__dot" aria-hidden="true"></span>
+                                    <div class="stone-agent-lamp__body">
+                                        <div class="stone-agent-lamp__head">
+                                            <strong>{{ doc.title or doc.filename }}</strong>
+                                            <span class="stone-agent-lamp__index" style="color: var(--text-secondary); font: 600 0.72rem/1.35 var(--font-mono);">{{ "%02d"|format(loop.index) }}</span>
+                                        </div>
                                         <small>{{ doc.id }}</small>
                                     </div>
-                                    <span class="stone-topic-lamp__index">{{ "%02d"|format(loop.index) }}</span>
                                 </article>
                             {% endfor %}
                         {% else %}

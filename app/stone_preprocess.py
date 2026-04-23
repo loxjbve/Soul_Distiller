@@ -57,10 +57,11 @@ class StonePreprocessWorker:
                 for document in repository.list_project_documents(session, project.id)
                 if document.ingest_status == "ready"
             ]
-            
-            chat_config = repository.get_chat_config(session, project_id)
+
+            chat_config = repository.get_service_config(session, "chat_service")
 
             summary = dict(run.summary_json or {})
+            concurrency = max(1, int(summary.get("concurrency", 1)))
             summary["stone_profile_total"] = len(documents)
             summary["stone_profile_completed"] = 0
             run.summary_json = summary
@@ -69,42 +70,53 @@ class StonePreprocessWorker:
             session.commit()
             self._progress(run)
 
-        for index, document in enumerate(documents, start=1):
-            with self.db.session() as session:
-                run = repository.get_stone_preprocess_run(session, run_id)
-                if not run or run.status == "cancelled":
-                    return
+        semaphore = asyncio.Semaphore(concurrency)
+        completed_count = 0
+        total_docs = len(documents)
 
-                metadata = dict(document.metadata_json or {})
-                if "stone_profile" in metadata and isinstance(metadata["stone_profile"], dict):
-                    self._update_progress(session, run, index, len(documents), "Profiling documents")
-                    continue
+        async def _process_document(document: DocumentRecord) -> None:
+            nonlocal completed_count
+            async with semaphore:
+                with self.db.session() as session:
+                    run = repository.get_stone_preprocess_run(session, run_id)
+                    if not run or run.status == "cancelled":
+                        return
 
-                self._trace(run, f"Profiling document {index}/{len(documents)}: {document.title}")
-                
-            try:
-                # We need to run the profile LLM
-                profile_payload = await asyncio.to_thread(
-                    self._build_stone_profile_payload,
-                    document,
-                    project_name=project.name,
-                    chat_config=chat_config,
-                )
-            except Exception as e:
-                logger.exception("Failed to build stone profile for document %s", document.id)
-                profile_payload = build_stone_profile(document)
+                    metadata = dict(document.metadata_json or {})
+                    if "stone_profile" in metadata and isinstance(metadata["stone_profile"], dict):
+                        completed_count += 1
+                        self._update_progress(session, run, completed_count, total_docs, "Profiling documents")
+                        return
 
-            with self.db.session() as session:
-                doc = repository.get_document(session, document.id)
-                if doc:
-                    metadata = dict(doc.metadata_json or {})
-                    metadata["stone_profile"] = profile_payload
-                    doc.metadata_json = metadata
-                    session.add(doc)
-                
-                run = repository.get_stone_preprocess_run(session, run_id)
-                if run:
-                    self._update_progress(session, run, index, len(documents), "Profiling documents")
+                    self._trace(run, f"Profiling document {completed_count + 1}/{total_docs}: {document.title}")
+
+                try:
+                    profile_payload = await asyncio.to_thread(
+                        self._build_stone_profile_payload,
+                        document,
+                        project_name=project.name,
+                        chat_config=chat_config,
+                    )
+                except Exception as e:
+                    logger.exception("Failed to build stone profile for document %s", document.id)
+                    profile_payload = build_stone_profile(document)
+
+                with self.db.session() as session:
+                    doc = repository.get_document(session, document.id)
+                    if doc:
+                        metadata = dict(doc.metadata_json or {})
+                        metadata["stone_profile"] = profile_payload
+                        doc.metadata_json = metadata
+                        session.add(doc)
+
+                    run = repository.get_stone_preprocess_run(session, run_id)
+                    if run:
+                        completed_count += 1
+                        self._update_progress(session, run, completed_count, total_docs, "Profiling documents")
+
+        tasks = [_process_document(doc) for doc in documents]
+        if tasks:
+            await asyncio.gather(*tasks)
 
         with self.db.session() as session:
             run = repository.get_stone_preprocess_run(session, run_id)

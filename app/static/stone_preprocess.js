@@ -133,16 +133,17 @@ if (bootstrap?.project_id) {
 
         // Update lamps
         if (elements.topicLamps) {
-            const lamps = elements.topicLamps.querySelectorAll(".stone-topic-lamp");
+            const lamps = elements.topicLamps.querySelectorAll(".stone-agent-lamp");
+            const concurrency = payload.concurrency || 1;
             lamps.forEach((lamp, index) => {
                 const docIndex = index + 1;
                 // simple heuristic for lamp status
                 if (docIndex <= completed) {
-                    lamp.className = "stone-topic-lamp status-completed";
-                } else if (docIndex === completed + 1 && isRunActive) {
-                    lamp.className = "stone-topic-lamp status-running is-current";
+                    lamp.className = "stone-agent-lamp status-completed";
+                } else if (docIndex > completed && docIndex <= completed + concurrency && isRunActive) {
+                    lamp.className = "stone-agent-lamp status-running is-live";
                 } else {
-                    lamp.className = "stone-topic-lamp status-queued";
+                    lamp.className = "stone-agent-lamp status-queued";
                 }
             });
         }
