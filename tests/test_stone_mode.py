@@ -9,6 +9,8 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from app.analysis.facets import get_facets_for_mode
+from app.analysis.stone import normalize_stone_profile
+from app.analysis.stone_agent import StoneAnalysisAgent
 from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import ChatCompletionResult, LLMToolCall, ToolRoundResult
@@ -384,11 +386,11 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
 
     def fake_chat_completion_result(self, messages, **kwargs):
         payload = {
-            "content_summary": "这是一句被 LLM 错误总结后的内容，最终不应该保留下来。",
+            "content_summary": "作者习惯先压低声调，再把情绪往句子深处回收。",
             "content_type": "自嘲式抱怨",
             "length_label": "短文",
             "emotion_label": "闷着难受",
-            "selected_passages": ["作者总是先压低声调，再把情绪推回句子深处。"],
+            "selected_passages": [],
         }
         return ChatCompletionResult(
             content=json.dumps(payload, ensure_ascii=False),
@@ -455,12 +457,12 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
     assert preprocess_payload["prompt_tokens"] == 12
     assert preprocess_payload["completion_tokens"] == 8
     assert preprocess_payload["total_tokens"] == 20
-    assert (
-        preprocess_payload["documents"][0]["stone_profile"]["content_summary"]
-        == "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
-    )
+    assert preprocess_payload["documents"][0]["stone_profile"]["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
     assert preprocess_payload["documents"][0]["stone_profile"]["content_type"] == "自嘲式抱怨"
     assert preprocess_payload["documents"][0]["stone_profile"]["emotion_label"] == "闷着难受"
+    assert preprocess_payload["documents"][0]["stone_profile"]["selected_passages"] == [
+        "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
+    ]
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -486,10 +488,181 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
         "emotion_label",
         "selected_passages",
     }
-    assert stone_profile["content_summary"] == "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
+    assert stone_profile["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
     assert stone_profile["content_type"] == "自嘲式抱怨"
     assert stone_profile["emotion_label"] == "闷着难受"
-    assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处。"]
+    assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"]
+
+
+def test_normalize_stone_profile_supports_raw_summary_sentinel_and_short_text_full_passage():
+    article_text = "就这一句，但我今天确实有点不舒服。"
+    profile = normalize_stone_profile(
+        {
+            "content_summary": "raw",
+            "content_type": "随手抱怨",
+            "length_label": "短文",
+            "emotion_label": "轻微烦闷",
+            "selected_passages": [],
+        },
+        article_text=article_text,
+        fallback_title="短文测试",
+    )
+    assert profile["content_summary"] == article_text
+    assert profile["content_type"] == "随手抱怨"
+    assert profile["length_label"] == "短文"
+    assert profile["emotion_label"] == "轻微烦闷"
+    assert profile["selected_passages"] == [article_text]
+
+
+def test_stone_project_detail_exposes_analysis_concurrency_input(client):
+    create_response = client.post("/api/projects", json={"name": "Stone Console", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    response = client.get(f"/projects/{project_id}")
+    assert response.status_code == 200
+    assert 'textarea name="analysis_context"' in response.text
+    assert 'input type="number" name="concurrency"' in response.text
+    assert 'type="hidden" name="concurrency"' not in response.text
+
+
+def test_stone_analysis_agent_starts_from_corpus_overview_and_pages_profiles(client, app, monkeypatch):
+    create_response = client.post("/api/projects", json={"name": "Stone Paging", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    upload_dir = app.state.config.upload_dir / project_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    with app.state.db.session() as session:
+        for index in range(30):
+            doc_id = str(uuid4())
+            text = f"第{index}篇文章独有标记_{index}，作者在这里反复写深夜、疲惫和关系。"
+            storage_path = upload_dir / f"paging-{index}.txt"
+            storage_path.write_text(text, encoding="utf-8")
+            emotion = "低落" if index < 18 else "轻松"
+            content_type = "诉苦" if index < 18 else "分享"
+            repository.create_document(
+                session,
+                id=doc_id,
+                project_id=project_id,
+                filename=f"paging-{index}.txt",
+                mime_type="text/plain",
+                extension=".txt",
+                source_type="essay",
+                title=f"第{index}篇文章",
+                author_guess="Author",
+                created_at_guess=None,
+                raw_text=text,
+                clean_text=text,
+                language="zh",
+                metadata_json={
+                    "stone_profile": {
+                        "content_summary": text,
+                        "content_type": content_type,
+                        "length_label": "短文",
+                        "emotion_label": emotion,
+                        "selected_passages": [text],
+                    }
+                },
+                ingest_status="ready",
+                error_message=None,
+                storage_path=str(storage_path),
+            )
+        session.commit()
+
+    captured: dict[str, object] = {}
+
+    def fake_tool_round(self, messages, tools, **kwargs):
+        has_tool_result = any(message.get("role") == "tool" for message in messages)
+        if not has_tool_result:
+            prompt_text = "\n\n".join(
+                str(message.get("content") or "")
+                for message in messages
+                if message.get("role") in {"system", "user"}
+            )
+            captured["first_prompt"] = prompt_text
+            assert "作品总数：30" in prompt_text
+            assert "性质分布" in prompt_text
+            assert "情绪分布" in prompt_text
+            assert "独有标记_29" not in prompt_text
+            assert "第29篇文章独有标记_29" not in prompt_text
+            return ToolRoundResult(
+                content="",
+                model="demo-model",
+                usage={"prompt_tokens": 20, "completion_tokens": 6, "total_tokens": 26},
+                tool_calls=[
+                    LLMToolCall(
+                        id="call-page-1",
+                        name="list_article_profiles_page",
+                        arguments_json=json.dumps({"offset": 0, "limit": 6, "emotion_label": "低落"}, ensure_ascii=False),
+                        arguments={"offset": 0, "limit": 6, "emotion_label": "低落"},
+                    )
+                ],
+                provider_response_id="resp-page-1",
+            )
+
+        tool_message = next(message for message in messages if message.get("role") == "tool")
+        page_payload = json.loads(tool_message["content"])
+        captured["page_payload"] = page_payload
+        assert page_payload["returned"] == 6
+        assert page_payload["total_profiles"] == 18
+        assert page_payload["has_more"] is True
+        assert 0 <= int(page_payload["remaining_profile_budget"]) < page_payload["total_profiles"]
+        serialized_page = json.dumps(page_payload, ensure_ascii=False)
+        assert "独有标记_29" not in serialized_page
+
+        first_profile = page_payload["profiles"][0]
+        return ToolRoundResult(
+            content=json.dumps(
+                {
+                    "summary": "作者在这一维度上主要表现为持续低落、自我消耗和深夜叙述。",
+                    "bullets": [
+                        "前几个分页样本集中指向疲惫、深夜和关系压力。",
+                        "低落情绪在抽样页面中明显高频出现。",
+                    ],
+                    "confidence": 0.81,
+                    "fewshots": [
+                        {
+                            "document_id": first_profile["document_id"],
+                            "document_title": first_profile["title"],
+                            "situation": "分页抽样时观察作者低落表达",
+                            "expression": "把疲惫和关系压力直接写进短文",
+                            "quote": first_profile["content_summary"],
+                            "reason": "足以支撑当前 facet 的初步判断",
+                        }
+                    ],
+                    "conflicts": [],
+                    "notes": "先基于总体分布筛选低落样本，再按分页读取文章画像。",
+                },
+                ensure_ascii=False,
+            ),
+            model="demo-model",
+            usage={"prompt_tokens": 18, "completion_tokens": 8, "total_tokens": 26},
+            tool_calls=[],
+            provider_response_id="resp-page-2",
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        assert project is not None
+        chat_config = repository.get_service_config(session, "chat_service")
+        assert chat_config is not None
+        facet = get_facets_for_mode("stone")[0]
+        agent = StoneAnalysisAgent(session, project, llm_config=chat_config)
+        result = agent.analyze_facet(
+            facet,
+            target_role="Author",
+            analysis_context="分页读取测试",
+        )
+
+    assert "作品总数：30" in str(captured["first_prompt"])
+    assert result.retrieval_trace["tool_calls"][0]["tool"] == "list_article_profiles_page"
+    assert result.retrieval_trace["corpus_overview"]["total_documents"] == 30
+    assert result.payload["fewshots"][0]["document_id"] == captured["page_payload"]["profiles"][0]["document_id"]
 
 
 def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_version(client, app):

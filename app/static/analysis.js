@@ -191,33 +191,34 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const total = Number(summary.total_facets || facets.length || 0);
         const completed = Number(summary.completed_facets || counts.completed || 0);
 
-        updateText(elements.stage, summary.current_stage || ui.waiting || "Waiting");
+        updateText(elements.percent, `${percent}%`);
+        updateText(elements.stage, summary.current_stage || ui.waiting || "等待中");
         updateText(elements.requestedConcurrency, requestedConcurrency);
-        updateText(elements.concurrency, requestedConcurrency);
+        updateText(elements.concurrency, `启动设置 ${requestedConcurrency}`);
         updateText(elements.effectiveConcurrency, effectiveConcurrency);
-        updateText(elements.effectiveNote, `Effective ${effectiveConcurrency}`);
+        updateText(elements.effectiveNote, `当前最多并行 ${effectiveConcurrency} 个维度`);
         updateText(elements.activeAgents, effectiveActiveAgents);
         updateText(elements.effectiveActiveAgents, effectiveActiveAgents);
         updateText(elements.slotUsage, `${activeAgents} / ${requestedConcurrency}`);
-        updateText(elements.currentFacet, summary.current_facet || ui.waiting || "Waiting");
+        updateText(elements.currentFacet, summary.current_facet || ui.waiting || "等待中");
         updateText(
             elements.lastUpdated,
-            `${ui.last_updated || "Last updated"} | ${formatDateTime(payload.finished_at || payload.started_at || events[0]?.created_at)}`
+            `${ui.last_updated || "最近更新时间"} | ${formatDateTime(payload.finished_at || payload.started_at || events[0]?.created_at)}`
         );
-        updateText(elements.progressLabel, summary.current_stage || ui.waiting || "Waiting");
+        updateText(elements.progressLabel, summary.current_stage || ui.waiting || "等待中");
         updateText(elements.progressCaption, `${completed} / ${total}`);
-        updateText(elements.heroStage, summary.current_stage || ui.waiting || "Waiting");
+        updateText(elements.heroStage, summary.current_stage || ui.waiting || "等待中");
         updateText(elements.heroNote, buildHeroNote(summary, counts, facets));
         updateText(elements.percentChip, `${percent}%`);
-        updateText(elements.completedCount, `Completed ${counts.completed}`);
-        updateText(elements.runningCount, `Running ${counts.running}`);
-        updateText(elements.queuedCount, `Queued ${counts.queued + counts.preparing}`);
-        updateText(elements.failedCount, `Failed ${counts.failed}`);
+        updateText(elements.completedCount, `已完成 ${counts.completed}`);
+        updateText(elements.runningCount, `运行中 ${counts.running}`);
+        updateText(elements.queuedCount, `排队中 ${counts.queued + counts.preparing}`);
+        updateText(elements.failedCount, `失败 ${counts.failed}`);
 
         if (elements.progressFill) {
             elements.progressFill.style.width = `${percent}%`;
         }
-        setStatusTone(elements.statusChip, payload.status, payload.status);
+        setStatusTone(elements.statusChip, payload.status, statusLabel(payload.status));
 
         state.selectedFacetKey = resolveSelectedFacetKey(facets, summary);
         renderDiagnostics(events);
@@ -272,7 +273,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             button.className = `agent-lamp status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}`;
             button.dataset.facetSelect = facet.facet_key || "";
             button.innerHTML = `
-                <span class="agent-lamp__label">${escapeHtml(findings.label || facet.facet_key || "Facet")}</span>
+                <span class="agent-lamp__label">${escapeHtml(findings.label || facet.facet_key || "维度")}</span>
+                <span class="agent-lamp__meta">${escapeHtml(buildAgentLampMeta(facet))}</span>
                 <span class="agent-lamp__dot" aria-hidden="true"></span>
             `;
             button.addEventListener("click", () => {
@@ -304,13 +306,13 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                     <span class="status-pill">${escapeHtml(statusLabel(status))}</span>
                 </div>
                 <div class="facet-status-flags">
-                    <span class="facet-inline-tag">${escapeHtml(`Phase ${phaseLabel(findings.phase || status)}`)}</span>
-                    ${findings.queue_position ? `<span class="facet-inline-tag tag-warning">${escapeHtml(`Queue #${findings.queue_position}`)}</span>` : ""}
-                    <span class="facet-inline-tag">${escapeHtml(`${Number(findings.hit_count || 0)} evidence`)}</span>
+                    <span class="facet-inline-tag">${escapeHtml(`阶段：${phaseLabel(findings.phase || status)}`)}</span>
+                    ${findings.queue_position ? `<span class="facet-inline-tag tag-warning">${escapeHtml(`排队 #${findings.queue_position}`)}</span>` : ""}
+                    <span class="facet-inline-tag">${escapeHtml(`${Number(findings.hit_count || 0)} 条证据`)}</span>
                 </div>
                 <p class="facet-status-preview">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 120))}</p>
                 <div class="inline-actions top-gap">
-                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>Rerun Facet</button>
+                    <button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>重跑维度</button>
                 </div>
             `;
             fragment.appendChild(card);
@@ -327,7 +329,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         elements.diagnosticsList.innerHTML = "";
 
         if (!events.length) {
-            elements.diagnosticsList.innerHTML = `<div class="empty-panel"><strong>${escapeHtml(ui.no_events || "No events yet.")}</strong></div>`;
+            elements.diagnosticsList.innerHTML = `<div class="empty-panel"><strong>${escapeHtml(ui.no_events || "暂无事件")}</strong></div>`;
             return;
         }
 
@@ -356,10 +358,13 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             return;
         }
         elements.resultList.innerHTML = "";
+        if (elements.resultNav) {
+            elements.resultNav.innerHTML = "";
+        }
 
         const orderedFacets = sortFacetsForQueue(facets);
         if (!orderedFacets.length) {
-            elements.resultList.innerHTML = `<div class="empty-panel"><strong>${escapeHtml(ui.empty || "No analysis results yet.")}</strong></div>`;
+            elements.resultList.innerHTML = `<div class="empty-panel"><strong>${escapeHtml(ui.empty || "还没有分析结果")}</strong></div>`;
             return;
         }
 
@@ -367,17 +372,62 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const activeIndex = Math.max(0, orderedFacets.findIndex((facet) => facet.facet_key === state.selectedFacetKey));
         const activeFacet = orderedFacets[activeIndex] || orderedFacets[0];
 
+        renderResultNav(orderedFacets, activeFacet);
         elements.resultList.appendChild(buildResultDetail(activeFacet, runStatus, orderedFacets));
 
         bindFacetRerunActions();
     }
 
+    function renderResultNav(orderedFacets, activeFacet) {
+        if (!elements.resultNav) {
+            return;
+        }
+        elements.resultNav.innerHTML = "";
+
+        const fragment = document.createDocumentFragment();
+        orderedFacets.forEach((facet, index) => {
+            const findings = facet.findings || {};
+            const status = normalizeStatus(facet.status || "queued");
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = `analysis-result-tab status-${escapeHtml(status)}${activeFacet?.facet_key === facet.facet_key ? " is-active" : ""}`;
+            button.innerHTML = `
+                <div class="analysis-result-tab__head">
+                    <span class="analysis-result-tab__index">${escapeHtml(String(index + 1).padStart(2, "0"))}</span>
+                    <strong>${escapeHtml(findings.label || facet.facet_key || "维度")}</strong>
+                    <span class="analysis-result-tab__dot" aria-hidden="true"></span>
+                </div>
+                <div class="analysis-result-tab__summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 88))}</div>
+            `;
+            button.addEventListener("click", () => {
+                setSelectedFacet(facet.facet_key || null);
+            });
+            fragment.appendChild(button);
+        });
+        elements.resultNav.appendChild(fragment);
+    }
+
     function buildResultDetail(facet, runStatus, orderedFacets) {
         const findings = facet.findings || {};
         const status = normalizeStatus(facet.status || "queued");
+        const activeIndex = Math.max(0, orderedFacets.findIndex((item) => item.facet_key === facet.facet_key));
         const panel = document.createElement("article");
         panel.className = `facet-result-card facet-result-card--detail status-${escapeHtml(status)}`;
         panel.innerHTML = `
+            <div class="facet-result-card__summary facet-result-card__summary--detail">
+                <div class="facet-result-card__summary-main">
+                    <div class="facet-result-card__summary-meta">
+                        <span class="analysis-result-page">#${escapeHtml(String(activeIndex + 1).padStart(2, "0"))}</span>
+                        <span class="status-chip tone-${escapeHtml(statusTone(status))}">${escapeHtml(statusLabel(status))}</span>
+                    </div>
+                    <h3>${escapeHtml(findings.label || facet.facet_key || "维度")}</h3>
+                    <p class="facet-summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 140))}</p>
+                </div>
+                <div class="facet-result-card__status">
+                    <span class="status-chip">${escapeHtml(phaseLabel(findings.phase || status))}</span>
+                    <span class="status-chip tone-ready">${escapeHtml(`${Number(findings.hit_count || facet.evidence?.length || 0)} 条证据`)}</span>
+                </div>
+            </div>
             <div class="facet-result-card__body facet-result-card__body--detail"></div>
         `;
 
@@ -401,12 +451,12 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (Array.isArray(facet.evidence) && facet.evidence.length) {
             const evidenceWrap = document.createElement("div");
             evidenceWrap.className = "facet-result-section";
-            evidenceWrap.innerHTML = "<strong>Evidence</strong>";
+            evidenceWrap.innerHTML = `<strong>${escapeHtml(ui.evidence || "证据")}</strong>`;
             facet.evidence.slice(0, 10).forEach((item) => {
                 const block = document.createElement("div");
                 block.className = "evidence-block";
                 block.innerHTML = `
-                    <strong>${escapeHtml(item.filename || item.document_title || item.sender_name || "Evidence")}</strong>
+                    <strong>${escapeHtml(item.filename || item.document_title || item.sender_name || "证据")}</strong>
                     <p class="muted">${escapeHtml(item.reason || "")}</p>
                     <blockquote>${escapeHtml(item.quote || JSON.stringify(item))}</blockquote>
                 `;
@@ -418,12 +468,12 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if ((facet.conflicts && facet.conflicts.length) || facet.error_message || findings.notes) {
             const notesWrap = document.createElement("div");
             notesWrap.className = "facet-result-section";
-            notesWrap.innerHTML = "<strong>Notes</strong>";
+            notesWrap.innerHTML = `<strong>${escapeHtml(ui.notes || "备注与冲突")}</strong>`;
             (facet.conflicts || []).forEach((item) => {
                 const block = document.createElement("div");
                 block.className = "evidence-block";
                 block.innerHTML = `
-                    <strong>${escapeHtml(item.title || "Conflict")}</strong>
+                    <strong>${escapeHtml(item.title || "冲突")}</strong>
                     <p>${escapeHtml(item.detail || "")}</p>
                 `;
                 notesWrap.appendChild(block);
@@ -447,7 +497,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (toolCalls.length || findings.retrieval_trace) {
             const traceSection = document.createElement("details");
             traceSection.className = "facet-trace-section";
-            traceSection.innerHTML = "<summary>Trace Snapshot</summary><div class=\"facet-trace-section__body\"></div>";
+            traceSection.innerHTML = `<summary>${escapeHtml(ui.trace || "LLM 跟踪")}</summary><div class="facet-trace-section__body"></div>`;
             const traceBody = traceSection.querySelector(".facet-trace-section__body");
             toolCalls.forEach((call) => {
                 traceBody.appendChild(buildToolBubble({
@@ -469,7 +519,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (liveText) {
             const liveWrap = document.createElement("details");
             liveWrap.className = "facet-trace-section";
-            liveWrap.innerHTML = "<summary>LLM Output</summary><div class=\"facet-trace-section__body\"></div>";
+            liveWrap.innerHTML = `<summary>${escapeHtml(ui.live_output || "实时输出")}</summary><div class="facet-trace-section__body"></div>`;
             liveWrap.querySelector(".facet-trace-section__body").appendChild(
                 buildAssistantBubble({
                     label: findings.label || facet.facet_key,
@@ -484,7 +534,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
         const actions = document.createElement("div");
         actions.className = "inline-actions top-gap";
-        actions.innerHTML = `<button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>Rerun Facet</button>`;
+        actions.innerHTML = `<button type="button" class="secondary-button" data-facet-rerun="${escapeHtml(facet.facet_key)}" ${isRunBusy(runStatus) ? "disabled" : ""}>${escapeHtml(ui.rerun || "重跑维度")}</button>`;
         body.appendChild(actions);
 
         return panel;
@@ -527,7 +577,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
         if (!filteredItems.length) {
             fragment.appendChild(buildContextBubble({
-                text: filterFacet ? `No activity recorded for agent: ${filterFacet}` : (payload.summary?.current_stage || "Waiting for agent activity"),
+                text: filterFacet ? `当前维度暂无独立执行记录：${filterFacet}` : (payload.summary?.current_stage || "等待分析代理更新"),
                 meta: payload.status || "queued",
                 active: isRunBusy(payload.status),
             }));
@@ -561,22 +611,22 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const summary = payload.summary || {};
         const bubble = document.createElement("article");
         bubble.className = "bubble bubble--user bubble--task";
-        const targetLabel = summary.target_role || summary.target_user?.label || summary.target_user_query || "Unspecified target";
-        const context = summary.analysis_context || "No extra analysis context was supplied.";
+        const targetLabel = summary.target_role || summary.target_user?.label || summary.target_user_query || "未指定对象";
+        const context = summary.analysis_context || "未额外提供分析上下文。";
         const requestedConcurrency = Number(summary.requested_concurrency || summary.concurrency || 1);
         const effectiveAgents = Number(summary.effective_active_agents || summary.active_agents || 0);
         bubble.innerHTML = `
             <div class="bubble__head">
-                <span class="bubble__badge">Task</span>
-                <span class="bubble__meta">${escapeHtml(payload.status || "queued")}</span>
+                <span class="bubble__badge">任务</span>
+                <span class="bubble__meta">${escapeHtml(statusLabel(payload.status || "queued"))}</span>
             </div>
             <h3>${escapeHtml(targetLabel)}</h3>
             <p>${escapeHtml(context)}</p>
             <div class="bubble__meta-row">
-                <span>${escapeHtml(summary.current_stage || "Queued")}</span>
-                <span>${escapeHtml(`Facet ${summary.current_facet || "-"}`)}</span>
-                <span>${escapeHtml(`Requested ${requestedConcurrency}`)}</span>
-                <span>${escapeHtml(`Live agents ${effectiveAgents}`)}</span>
+                <span>${escapeHtml(summary.current_stage || "排队中")}</span>
+                <span>${escapeHtml(`当前维度 ${summary.current_facet || "-"}`)}</span>
+                <span>${escapeHtml(`请求并发 ${requestedConcurrency}`)}</span>
+                <span>${escapeHtml(`活跃代理 ${effectiveAgents}`)}</span>
             </div>
         `;
         return bubble;
@@ -590,7 +640,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (isRunBusy(payload.status)) {
             items.push({
                 type: "context",
-                text: payload.summary?.current_stage || "Agent is working",
+                text: payload.summary?.current_stage || "分析代理正在工作",
                 meta: payload.summary?.current_facet || payload.status,
                 active: true,
             });
@@ -740,7 +790,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const head = document.createElement("div");
         head.className = "bubble__head bubble__head--assistant";
         head.innerHTML = `
-            <span class="bubble__badge">Assistant</span>
+            <span class="bubble__badge">分析输出</span>
             <span class="bubble__meta">${escapeHtml(item.meta || item.label || "")}</span>
         `;
         bubble.appendChild(head);
@@ -750,9 +800,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const text = String(item.text || "").trim();
 
         if (!text) {
-            content.innerHTML = `<p class="muted">${escapeHtml(item.status === "running" ? "Agent is thinking..." : "No response text was captured yet.")}</p>`;
+            content.innerHTML = `<p class="muted">${escapeHtml(item.status === "running" ? "分析代理正在思考…" : "暂时还没有捕获到输出文本。")}</p>`;
         } else if (item.preferCode || looksStructured(text)) {
-            content.appendChild(createCodeBlock("output", text));
+            content.appendChild(createCodeBlock("输出", text));
         } else {
             renderMarkdownInto(content, text);
         }
@@ -774,16 +824,16 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
         const body = details.querySelector(".bubble__tool-body");
         if (item.arguments) {
-            body.appendChild(createCodeBlock("arguments", item.arguments));
+            body.appendChild(createCodeBlock("参数", item.arguments));
         }
         if (item.result) {
-            body.appendChild(createCodeBlock("result", item.result));
+            body.appendChild(createCodeBlock("结果", item.result));
         }
         if (item.error) {
-            body.appendChild(createCodeBlock("error", item.error, { tone: "error" }));
+            body.appendChild(createCodeBlock("错误", item.error, { tone: "error" }));
         }
         if (!item.arguments && !item.result && !item.error) {
-            body.innerHTML = "<p class=\"muted\">Tool body is empty.</p>";
+            body.innerHTML = "<p class=\"muted\">当前工具没有返回可展示的内容。</p>";
         }
         return details;
     }
@@ -794,7 +844,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         row.innerHTML = `
             <div class="bubble bubble--context">
                 ${item.active ? '<span class="bubble__spinner" aria-hidden="true"></span>' : '<span class="bubble__dot" aria-hidden="true"></span>'}
-                <span>${escapeHtml(item.text || "Context update")}</span>
+                <span>${escapeHtml(item.text || "上下文更新")}</span>
                 ${item.meta ? `<small>${escapeHtml(item.meta)}</small>` : ""}
             </div>
         `;
@@ -808,7 +858,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         wrapper.innerHTML = `
             <div class="code-block__header">
                 <span>${escapeHtml(label)}</span>
-                <button type="button" class="code-block__copy">Copy</button>
+                <button type="button" class="code-block__copy">复制</button>
             </div>
             <pre><code>${escapeHtml(value)}</code></pre>
         `;
@@ -816,9 +866,9 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             try {
                 await navigator.clipboard.writeText(value);
                 const button = event.currentTarget;
-                button.textContent = "Copied";
+                button.textContent = "已复制";
                 window.setTimeout(() => {
-                    button.textContent = "Copy";
+                    button.textContent = "复制";
                 }, 1200);
             } catch (error) {
                 console.error(error);
@@ -842,7 +892,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
                     render(payload);
                     connectStream();
                 } catch (error) {
-                    window.alert(error.message || "Facet rerun failed.");
+                    window.alert(error.message || "维度重跑失败。");
                     button.disabled = false;
                 }
             };
@@ -855,24 +905,24 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             .map((facet) => facet.findings?.label || facet.facet_key)
             .filter(Boolean);
         return [
-            summary.current_facet ? `Focus ${summary.current_facet}` : "",
-            activeLabels.length ? `Live ${activeLabels.join(", ")}` : "",
-            counts.failed ? `Failed ${counts.failed}` : "",
-            summary.requested_concurrency ? `Requested ${summary.requested_concurrency}` : "",
-        ].filter(Boolean).join(" · ") || "Waiting for the next agent update.";
+            summary.current_facet ? `聚焦 ${summary.current_facet}` : "",
+            activeLabels.length ? `运行中 ${activeLabels.join("、")}` : "",
+            counts.failed ? `失败 ${counts.failed}` : "",
+            summary.requested_concurrency ? `请求并发 ${summary.requested_concurrency}` : "",
+        ].filter(Boolean).join(" · ") || "等待下一条分析代理更新。";
     }
 
     function buildAgentLampMeta(facet) {
         const findings = facet.findings || {};
         const status = normalizeStatus(facet.status || "queued");
         if (status === "queued" && findings.queue_position) {
-            return `Queue #${findings.queue_position}`;
+            return `排队 #${findings.queue_position}`;
         }
         if (status === "completed") {
-            return `${Number(findings.hit_count || facet.evidence?.length || 0)} evidence`;
+            return `${Number(findings.hit_count || facet.evidence?.length || 0)} 条证据`;
         }
         if (status === "running" || status === "preparing") {
-            return "Active";
+            return "进行中";
         }
         return phaseLabel(findings.phase || status);
     }
@@ -959,18 +1009,18 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             return findings.summary;
         }
         if (status === "queued") {
-            return "Waiting for a free execution slot.";
+            return "等待空闲执行槽位。";
         }
         if (status === "preparing") {
-            return "Preparing evidence for the next agent step.";
+            return "正在为下一步分析准备证据。";
         }
         if (status === "running") {
-            return `Current phase: ${phaseLabel(findings.phase || status)}.`;
+            return `当前阶段：${phaseLabel(findings.phase || status)}。`;
         }
         if (status === "failed") {
-            return findings.notes || facet.error_message || "This facet failed before a summary was produced.";
+            return findings.notes || facet.error_message || "这个维度在生成总结之前就失败了。";
         }
-        return "No summary was stored for this facet.";
+        return "这个维度暂时还没有可展示的总结。";
     }
 
     function looksStructured(value) {
@@ -1004,7 +1054,7 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
     }
 
     function isRunBusy(status) {
-        return ["queued", "running"].includes(normalizeStatus(status || ""));
+        return ["queued", "preparing", "running"].includes(normalizeStatus(status || ""));
     }
 
     function isRunning(status) {
@@ -1012,23 +1062,29 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
     }
 
     function statusLabel(status) {
+        if (String(status || "").toLowerCase() === "partial_failed") {
+            return "部分失败";
+        }
         switch (normalizeStatus(status)) {
             case "queued":
-                return "Queued";
+                return "排队中";
             case "preparing":
-                return "Preparing";
+                return "准备中";
             case "running":
-                return "Running";
+                return "运行中";
             case "completed":
-                return "Completed";
+                return "已完成";
             case "failed":
-                return "Failed";
+                return "失败";
             default:
-                return String(status || "Queued");
+                return String(status || "排队中");
         }
     }
 
     function statusTone(status) {
+        if (String(status || "").toLowerCase() === "partial_failed") {
+            return "failed";
+        }
         switch (normalizeStatus(status)) {
             case "completed":
                 return "ready";
@@ -1044,43 +1100,43 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
     function phaseLabel(phase) {
         switch (String(phase || "").toLowerCase()) {
             case "retrieving":
-                return "Retrieving";
+                return "检索证据";
             case "llm":
                 return "LLM";
             case "analyzing":
-                return "Analyzing";
+                return "分析中";
             case "persisting":
-                return "Persisting";
+                return "整理结果";
             case "completed":
-                return "Completed";
+                return "已完成";
             case "failed":
-                return "Failed";
+                return "失败";
             default:
-                return String(phase || "Queued");
+                return String(phase || "排队中");
         }
     }
 
     function summarizeTraceEvent(event) {
         if (event.kind === "agent_started") {
-            return `${event.label || event.facet_key || event.agent || "Agent"} started`;
+            return `${event.label || event.facet_key || event.agent || "分析代理"} 已启动`;
         }
         if (event.kind === "agent_completed") {
-            return `${event.label || event.facet_key || event.agent || "Agent"} completed`;
+            return `${event.label || event.facet_key || event.agent || "分析代理"} 已完成`;
         }
         if (event.kind === "llm_request_started") {
-            return `${event.label || event.facet_key || event.agent || "LLM"} request started`;
+            return `${event.label || event.facet_key || event.agent || "LLM"} 已发起请求`;
         }
         if (event.kind === "llm_request_completed") {
-            return `${event.label || event.facet_key || event.agent || "LLM"} request completed`;
+            return `${event.label || event.facet_key || event.agent || "LLM"} 已返回结果`;
         }
         if (event.kind === "tool_call") {
-            return `Calling ${event.tool_name || "tool"}`;
+            return `调用工具 ${event.tool_name || "tool"}`;
         }
         if (event.kind === "tool_result") {
-            return `${event.tool_name || "tool"} returned`;
+            return `工具 ${event.tool_name || "tool"} 已返回`;
         }
         if (event.kind === "stage_progress") {
-            return event.message || event.stage || "Stage progress";
+            return event.message || event.stage || "阶段推进";
         }
         return event.kind || "trace";
     }
@@ -1089,8 +1145,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         return [
             event.agent || "",
             event.facet_key || "",
-            event.round_index ? `round ${event.round_index}` : "",
-            event.tool_name ? `tool ${event.tool_name}` : "",
+            event.round_index ? `第 ${event.round_index} 轮` : "",
+            event.tool_name ? `工具 ${event.tool_name}` : "",
         ].filter(Boolean).join(" · ");
     }
 
@@ -1102,19 +1158,19 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         switch (mode) {
             case "connecting":
                 elements.livePill.classList.add("is-connecting");
-                elements.livePill.textContent = "Connecting";
+                elements.livePill.textContent = "连接中";
                 break;
             case "live":
                 elements.livePill.classList.add("is-live");
-                elements.livePill.textContent = "Live";
+                elements.livePill.textContent = "实时";
                 break;
             case "polling":
                 elements.livePill.classList.add("is-polling");
-                elements.livePill.textContent = "Polling";
+                elements.livePill.textContent = "轮询中";
                 break;
             default:
                 elements.livePill.classList.add("is-idle");
-                elements.livePill.textContent = "Idle";
+                elements.livePill.textContent = "空闲";
         }
     }
 }

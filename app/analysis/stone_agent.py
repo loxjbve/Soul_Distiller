@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from time import perf_counter
@@ -10,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FacetDefinition
-from app.analysis.stone import build_stone_facet_messages, expand_stone_profile_for_analysis, summarize_stone_profiles
+from app.analysis.stone import build_stone_facet_messages, expand_stone_profile_for_analysis
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import DocumentRecord, Project
 from app.schemas import ServiceConfig
@@ -18,8 +19,14 @@ from app.storage import repository
 from app.utils.text import normalize_whitespace
 
 STONE_TOOL_LOOP_MAX_STEPS = 16
-STONE_TOOL_MAX_DOCUMENTS = 12
+STONE_TOOL_MAX_DOCUMENTS = 8
 STONE_TOOL_READ_LIMIT = 5000
+STONE_LARGE_CORPUS_THRESHOLD = 24
+STONE_TOOL_MAX_PROFILE_BUDGET = 24
+STONE_TOOL_MIN_PROFILE_BUDGET = 12
+STONE_TOOL_TOTAL_TEXT_BUDGET = 18000
+STONE_TOOL_PREVIEW_LIMIT = 220
+STONE_TOOL_PASSAGE_PREVIEW_LIMIT = 180
 
 
 @dataclass(slots=True)
@@ -56,7 +63,8 @@ class StoneAnalysisAgent:
         documents = self._load_ready_documents()
         profiles = [self._profile_snapshot(document) for document in documents]
         if not documents:
-            raise ValueError("Stone analysis requires ready documents.")
+            raise ValueError("Stone 分析需要至少一篇已就绪文章。")
+        corpus_overview = self._build_corpus_overview(profiles)
         if not self.client or not self.llm_config:
             payload = self._heuristic_facet_result(facet, profiles)
             return StoneFacetAnalysisResult(
@@ -64,6 +72,7 @@ class StoneAnalysisAgent:
                 retrieval_trace=self._base_retrieval_trace(
                     documents=documents,
                     profiles=profiles,
+                    corpus_overview=corpus_overview,
                     queried_document_ids=[],
                     tool_trace=[],
                 ),
@@ -74,13 +83,12 @@ class StoneAnalysisAgent:
         request_url = self.client.endpoint_url(
             "/responses" if normalize_api_mode(self.llm_config.api_mode) == "responses" else "/chat/completions"
         )
-        profile_dump = summarize_stone_profiles(profiles)
         messages = build_stone_facet_messages(
             self.project.name,
             facet.label,
             facet.key,
             facet.purpose,
-            profile_dump,
+            self._render_corpus_overview(corpus_overview),
             target_role=target_role,
             analysis_context=analysis_context,
         )
@@ -89,6 +97,7 @@ class StoneAnalysisAgent:
             messages=messages,
             documents=documents,
             profiles=profiles,
+            corpus_overview=corpus_overview,
         )
         llm_success = True
         llm_error_text: str | None = None
@@ -107,7 +116,7 @@ class StoneAnalysisAgent:
         )
         notes = [str(payload.get("notes") or "").strip()] if payload.get("notes") else []
         if not llm_success:
-            notes.append("LLM returned non-JSON text, so the facet was recovered with fallback parsing.")
+            notes.append("LLM 返回的不是标准 JSON，系统已用回退解析尽量恢复结果。")
         payload["notes"] = "\n".join(item for item in notes if item) or None
         payload["_meta"] = {
             "llm_called": True,
@@ -135,6 +144,7 @@ class StoneAnalysisAgent:
         retrieval_trace = self._base_retrieval_trace(
             documents=documents,
             profiles=profiles,
+            corpus_overview=corpus_overview,
             queried_document_ids=tool_result["queried_document_ids"],
             tool_trace=tool_result["tool_trace"],
         )
@@ -169,6 +179,104 @@ class StoneAnalysisAgent:
             **expanded,
         }
 
+    @staticmethod
+    def _distribution_snapshot(counter: Counter[str], *, limit: int = 12) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for label, count in counter.most_common(limit):
+            normalized = normalize_whitespace(label) or "未标注"
+            rows.append({"label": normalized, "count": int(count)})
+        return rows
+
+    def _build_corpus_overview(self, profiles: list[dict[str, Any]]) -> dict[str, Any]:
+        content_type_counter = Counter(
+            normalize_whitespace(str(profile.get("content_type") or "")) or "未标注"
+            for profile in profiles
+        )
+        emotion_counter = Counter(
+            normalize_whitespace(str(profile.get("emotion_label") or "")) or "未标注"
+            for profile in profiles
+        )
+        length_counter = Counter(
+            normalize_whitespace(str(profile.get("length_label") or "")) or "未标注"
+            for profile in profiles
+        )
+        return {
+            "project_name": self.project.name,
+            "total_documents": len(profiles),
+            "profile_count": len(profiles),
+            "length_distribution": self._distribution_snapshot(length_counter, limit=4),
+            "content_type_distribution": self._distribution_snapshot(content_type_counter, limit=12),
+            "emotion_distribution": self._distribution_snapshot(emotion_counter, limit=12),
+            "sample_titles": [
+                str(profile.get("title") or "（未命名）").strip()
+                for profile in profiles[: min(6, len(profiles))]
+            ],
+            "paging_policy": {
+                "page_limit_max": STONE_TOOL_MAX_DOCUMENTS,
+                "profile_budget": self._profile_read_budget(len(profiles)),
+                "large_corpus_threshold": STONE_LARGE_CORPUS_THRESHOLD,
+            },
+        }
+
+    @staticmethod
+    def _render_corpus_overview(overview: dict[str, Any]) -> str:
+        def _render_distribution(label: str, items: list[dict[str, Any]]) -> str:
+            if not items:
+                return f"{label}：暂无"
+            return f"{label}：" + "，".join(
+                f"{item.get('label') or '未标注'} {int(item.get('count') or 0)} 篇"
+                for item in items
+            )
+
+        lines = [
+            f"作品总数：{int(overview.get('total_documents') or 0)}",
+            _render_distribution("长短分布", list(overview.get("length_distribution") or [])),
+            _render_distribution("性质分布", list(overview.get("content_type_distribution") or [])),
+            _render_distribution("情绪分布", list(overview.get("emotion_distribution") or [])),
+        ]
+        sample_titles = [str(item or "").strip() for item in (overview.get("sample_titles") or []) if str(item or "").strip()]
+        if sample_titles:
+            lines.append("样本标题预览：" + "｜".join(sample_titles))
+        paging_policy = dict(overview.get("paging_policy") or {})
+        lines.append(
+            "分页策略：每次最多读取 "
+            f"{int(paging_policy.get('page_limit_max') or STONE_TOOL_MAX_DOCUMENTS)} 篇画像，"
+            f"单个 facet 最多分页读取 {int(paging_policy.get('profile_budget') or 0)} 篇。"
+        )
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _profile_read_budget(profile_count: int) -> int:
+        if profile_count <= STONE_LARGE_CORPUS_THRESHOLD:
+            return max(1, profile_count)
+        return min(
+            STONE_TOOL_MAX_PROFILE_BUDGET,
+            max(STONE_TOOL_MIN_PROFILE_BUDGET, (profile_count + 3) // 4),
+        )
+
+    @staticmethod
+    def _compact_profile(profile: dict[str, Any], *, preview: bool) -> dict[str, Any]:
+        def _trim(value: Any, limit: int) -> str:
+            text = normalize_whitespace(str(value or ""))
+            if len(text) <= limit:
+                return text
+            return f"{text[: max(0, limit - 1)]}…"
+
+        selected_passages = [
+            _trim(item, STONE_TOOL_PASSAGE_PREVIEW_LIMIT if preview else 3200)
+            for item in (profile.get("selected_passages") or [])
+            if normalize_whitespace(str(item or ""))
+        ][:3]
+        return {
+            "document_id": str(profile.get("document_id") or ""),
+            "title": str(profile.get("title") or "（未命名）").strip() or "（未命名）",
+            "content_summary": _trim(profile.get("content_summary"), STONE_TOOL_PREVIEW_LIMIT if preview else 3200),
+            "content_type": normalize_whitespace(str(profile.get("content_type") or "")),
+            "length_label": normalize_whitespace(str(profile.get("length_label") or "")),
+            "emotion_label": normalize_whitespace(str(profile.get("emotion_label") or "")),
+            "selected_passages": selected_passages,
+        }
+
     def _run_tool_loop(
         self,
         *,
@@ -176,6 +284,7 @@ class StoneAnalysisAgent:
         messages: list[dict[str, Any]],
         documents: list[DocumentRecord],
         profiles: list[dict[str, Any]],
+        corpus_overview: dict[str, Any],
     ) -> dict[str, Any]:
         assert self.client is not None
         usage = {
@@ -189,6 +298,11 @@ class StoneAnalysisAgent:
         queried_document_ids: set[str] = set()
         fallback_evidence = self._fallback_evidence(profiles)
         model_name = self.llm_config.model if self.llm_config else None
+        tool_state = {
+            "profile_reads": 0,
+            "profile_budget": self._profile_read_budget(len(profiles)),
+            "text_chars_read": 0,
+        }
 
         for iteration in range(1, STONE_TOOL_LOOP_MAX_STEPS + 1):
             request_key = f"{facet.key}-stone-round-{iteration}"
@@ -199,7 +313,7 @@ class StoneAnalysisAgent:
                 round_index=iteration,
                 request_key=request_key,
                 request_kind="tool_round",
-                label=f"{facet.label} round {iteration}",
+                label=f"{facet.label} 第 {iteration} 轮",
                 tool_names=[tool["function"]["name"] for tool in self._tool_schemas()],
             )
             round_result = self.client.tool_round(
@@ -219,7 +333,7 @@ class StoneAnalysisAgent:
                 round_index=iteration,
                 request_key=request_key,
                 request_kind="tool_round",
-                label=f"{facet.label} round {iteration}",
+                label=f"{facet.label} 第 {iteration} 轮",
                 usage=round_result.usage,
                 response_text_preview=self._preview(round_result.content),
                 tool_calls=[{"name": call.name, "arguments": call.arguments} for call in round_result.tool_calls],
@@ -233,6 +347,8 @@ class StoneAnalysisAgent:
                     "fallback_evidence": fallback_evidence,
                     "iterations": iteration,
                     "model": model_name,
+                    "tool_state": tool_state,
+                    "corpus_overview": corpus_overview,
                 }
             messages.append(
                 {
@@ -258,12 +374,20 @@ class StoneAnalysisAgent:
                     tool_name=call.name,
                     arguments_preview=self._preview(call.arguments),
                 )
-                output, state = self._execute_tool(call.name, call.arguments, documents=documents, profiles=profiles)
+                output, state = self._execute_tool(
+                    call.name,
+                    call.arguments,
+                    documents=documents,
+                    profiles=profiles,
+                    corpus_overview=corpus_overview,
+                    tool_state=tool_state,
+                )
                 queried_document_ids.update(state.get("document_ids", []))
                 tool_entry = {
                     "tool": call.name,
                     "arguments": call.arguments,
                     "document_ids": sorted(state.get("document_ids", [])),
+                    "request_key": request_key,
                     "result_preview": self._preview(output),
                 }
                 tool_trace.append(tool_entry)
@@ -285,7 +409,7 @@ class StoneAnalysisAgent:
                         "content": json.dumps(output, ensure_ascii=False),
                     }
                 )
-        raise LLMError("Stone analysis exceeded the maximum tool iterations.")
+        raise LLMError("Stone 分析超过了最大工具调用轮数。")
 
     def _execute_tool(
         self,
@@ -294,22 +418,49 @@ class StoneAnalysisAgent:
         *,
         documents: list[DocumentRecord],
         profiles: list[dict[str, Any]],
+        corpus_overview: dict[str, Any],
+        tool_state: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         documents_by_id = {document.id: document for document in documents}
         profiles_by_id = {profile["document_id"]: profile for profile in profiles}
 
-        if name == "list_article_profiles":
+        if name == "get_corpus_overview":
+            return {
+                **corpus_overview,
+                "remaining_profile_budget": max(
+                    0,
+                    int(tool_state.get("profile_budget", 0) or 0) - int(tool_state.get("profile_reads", 0) or 0),
+                ),
+                "remaining_text_budget": max(
+                    0,
+                    STONE_TOOL_TOTAL_TEXT_BUDGET - int(tool_state.get("text_chars_read", 0) or 0),
+                ),
+            }, {}
+
+        if name == "list_article_profiles_page":
             query = normalize_whitespace(str(args.get("query") or "")).lower()
-            requested_ids = {
-                str(item).strip()
-                for item in (args.get("document_ids") or [])
-                if str(item).strip()
-            }
-            limit = max(1, min(int(args.get("limit", STONE_TOOL_MAX_DOCUMENTS) or STONE_TOOL_MAX_DOCUMENTS), 24))
+            content_type = normalize_whitespace(str(args.get("content_type") or ""))
+            emotion_label = normalize_whitespace(str(args.get("emotion_label") or ""))
+            length_label = normalize_whitespace(str(args.get("length_label") or ""))
+            offset = max(0, int(args.get("offset", 0) or 0))
+            limit = max(1, min(int(args.get("limit", STONE_TOOL_MAX_DOCUMENTS) or STONE_TOOL_MAX_DOCUMENTS), STONE_TOOL_MAX_DOCUMENTS))
+            remaining_budget = max(
+                0,
+                int(tool_state.get("profile_budget", 0) or 0) - int(tool_state.get("profile_reads", 0) or 0),
+            )
+            if remaining_budget <= 0:
+                return {
+                    "error": "当前 facet 的分页读取上限已经用完，请基于已读取范围继续总结，不要继续穷举全部文章。",
+                    "remaining_profile_budget": 0,
+                }, {}
+
             matched: list[dict[str, Any]] = []
             for profile in profiles:
-                document_id = str(profile.get("document_id") or "")
-                if requested_ids and document_id not in requested_ids:
+                if content_type and normalize_whitespace(str(profile.get("content_type") or "")) != content_type:
+                    continue
+                if emotion_label and normalize_whitespace(str(profile.get("emotion_label") or "")) != emotion_label:
+                    continue
+                if length_label and normalize_whitespace(str(profile.get("length_label") or "")) != length_label:
                     continue
                 haystack = normalize_whitespace(
                     " ".join(
@@ -332,19 +483,47 @@ class StoneAnalysisAgent:
                 if query and query not in haystack:
                     continue
                 matched.append(profile)
-                if len(matched) >= limit:
-                    break
-            return {"profiles": matched, "count": len(matched)}, {"document_ids": {item["document_id"] for item in matched}}
+            paged = matched[offset:offset + min(limit, remaining_budget)]
+            tool_state["profile_reads"] = int(tool_state.get("profile_reads", 0) or 0) + len(paged)
+            return (
+                {
+                    "offset": offset,
+                    "limit": limit,
+                    "returned": len(paged),
+                    "total_profiles": len(matched),
+                    "has_more": offset + len(paged) < len(matched),
+                    "remaining_profile_budget": max(
+                        0,
+                        int(tool_state.get("profile_budget", 0) or 0) - int(tool_state.get("profile_reads", 0) or 0),
+                    ),
+                    "filters": {
+                        "query": query or None,
+                        "content_type": content_type or None,
+                        "emotion_label": emotion_label or None,
+                        "length_label": length_label or None,
+                    },
+                    "profiles": [self._compact_profile(item, preview=True) for item in paged],
+                },
+                {"document_ids": {item["document_id"] for item in paged}},
+            )
 
         if name == "read_article_text":
             document_id = str(args.get("document_id") or "").strip()
             if not document_id or document_id not in documents_by_id:
-                return {"error": "Unknown document_id."}, {}
+                return {"error": "未知 document_id。"}, {}
             document = documents_by_id[document_id]
             full_text = str(document.clean_text or document.raw_text or "")
             start_offset = max(0, int(args.get("start_offset", 0) or 0))
             max_chars = max(200, min(int(args.get("max_chars", STONE_TOOL_READ_LIMIT) or STONE_TOOL_READ_LIMIT), 12000))
+            remaining_text_budget = max(
+                0,
+                STONE_TOOL_TOTAL_TEXT_BUDGET - int(tool_state.get("text_chars_read", 0) or 0),
+            )
+            if remaining_text_budget <= 0:
+                return {"error": "当前 facet 的原文读取额度已经用完，请基于已有证据继续总结。"}, {}
+            max_chars = min(max_chars, remaining_text_budget)
             excerpt = full_text[start_offset:start_offset + max_chars]
+            tool_state["text_chars_read"] = int(tool_state.get("text_chars_read", 0) or 0) + len(excerpt)
             return (
                 {
                     "document_id": document.id,
@@ -353,6 +532,10 @@ class StoneAnalysisAgent:
                     "returned_chars": len(excerpt),
                     "total_chars": len(full_text),
                     "has_more": start_offset + len(excerpt) < len(full_text),
+                    "remaining_text_budget": max(
+                        0,
+                        STONE_TOOL_TOTAL_TEXT_BUDGET - int(tool_state.get("text_chars_read", 0) or 0),
+                    ),
                     "text": excerpt,
                 },
                 {"document_ids": {document.id}},
@@ -361,7 +544,7 @@ class StoneAnalysisAgent:
         if name == "search_article_text":
             query = normalize_whitespace(str(args.get("query") or ""))
             if not query:
-                return {"error": "Query is required."}, {}
+                return {"error": "query 不能为空。"}, {}
             limit = max(1, min(int(args.get("limit", 6) or 6), 12))
             matches: list[dict[str, Any]] = []
             matched_ids: set[str] = set()
@@ -389,10 +572,27 @@ class StoneAnalysisAgent:
             document_id = str(args.get("document_id") or "").strip()
             profile = profiles_by_id.get(document_id)
             if not profile:
-                return {"error": "Unknown document_id."}, {}
-            return {"profile": profile}, {"document_ids": {document_id}}
+                return {"error": "未知 document_id。"}, {}
+            remaining_budget = max(
+                0,
+                int(tool_state.get("profile_budget", 0) or 0) - int(tool_state.get("profile_reads", 0) or 0),
+            )
+            if len(profiles) > STONE_LARGE_CORPUS_THRESHOLD and remaining_budget <= 0:
+                return {"error": "当前 facet 的画像读取上限已经用完，请基于已读取范围继续总结。"}, {}
+            if len(profiles) > STONE_LARGE_CORPUS_THRESHOLD:
+                tool_state["profile_reads"] = int(tool_state.get("profile_reads", 0) or 0) + 1
+            return (
+                {
+                    "profile": self._compact_profile(profile, preview=False),
+                    "remaining_profile_budget": max(
+                        0,
+                        int(tool_state.get("profile_budget", 0) or 0) - int(tool_state.get("profile_reads", 0) or 0),
+                    ),
+                },
+                {"document_ids": {document_id}},
+            )
 
-        return {"error": f"Unknown stone tool: {name}"}, {}
+        return {"error": f"未知 Stone 工具：{name}"}, {}
 
     @staticmethod
     def _tool_schemas() -> list[dict[str, Any]]:
@@ -400,14 +600,28 @@ class StoneAnalysisAgent:
             {
                 "type": "function",
                 "function": {
-                    "name": "list_article_profiles",
-                    "description": "List per-article profiles, optionally filtered by query or document ids.",
+                    "name": "get_corpus_overview",
+                    "description": "返回 Stone 语料总览，包括作品总数、性质分布、情绪分布和分页额度。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_article_profiles_page",
+                    "description": "按范围分页读取一部分文章画像预览，可按性质、情绪、长短或关键词过滤。",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string"},
-                            "document_ids": {"type": "array", "items": {"type": "string"}},
+                            "offset": {"type": "integer"},
                             "limit": {"type": "integer"},
+                            "query": {"type": "string"},
+                            "content_type": {"type": "string"},
+                            "emotion_label": {"type": "string"},
+                            "length_label": {"type": "string"},
                         },
                     },
                 },
@@ -416,7 +630,7 @@ class StoneAnalysisAgent:
                 "type": "function",
                 "function": {
                     "name": "get_article_profile",
-                    "description": "Return one exact per-article profile by document id.",
+                    "description": "按 document_id 获取单篇文章的完整画像。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -430,7 +644,7 @@ class StoneAnalysisAgent:
                 "type": "function",
                 "function": {
                     "name": "read_article_text",
-                    "description": "Read original article text for one document id, with optional offset and char limit.",
+                    "description": "按 document_id 读取文章原文，可指定起始位置和最大字符数。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -446,7 +660,7 @@ class StoneAnalysisAgent:
                 "type": "function",
                 "function": {
                     "name": "search_article_text",
-                    "description": "Search original article text across the corpus and return matching snippets.",
+                    "description": "在原文语料中搜索关键词，返回命中的片段预览。",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -503,9 +717,9 @@ class StoneAnalysisAgent:
                 {
                     "document_id": document_id,
                     "document_title": document.title or document.filename,
-                    "situation": normalize_whitespace(str(item.get("situation") or item.get("reason") or "")) or f"{facet.label} evidence",
-                    "expression": normalize_whitespace(str(item.get("expression") or "")) or "Profile-led evidence",
-                    "reason": normalize_whitespace(str(item.get("reason") or "")) or f"Supports {facet.label}",
+                    "situation": normalize_whitespace(str(item.get("situation") or item.get("reason") or "")) or f"{facet.label} 相关证据",
+                    "expression": normalize_whitespace(str(item.get("expression") or "")) or "基于文章画像的表达特征",
+                    "reason": normalize_whitespace(str(item.get("reason") or "")) or f"用于支撑 {facet.label} 判断",
                     "quote": quote,
                 }
             )
@@ -521,8 +735,15 @@ class StoneAnalysisAgent:
             if title or detail:
                 conflicts.append({"title": title, "detail": detail})
 
+        summary = normalize_whitespace(str(payload.get("summary") or ""))
+        if not summary:
+            if bullets:
+                summary = f"围绕 {facet.label}，当前抽样文章主要显示出这些共同特征：{'；'.join(bullets[:2])}。"
+            else:
+                summary = f"围绕 {facet.label}，当前样本中已经出现可归纳信号，但还需要结合证据一起阅读。"
+
         return {
-            "summary": normalize_whitespace(str(payload.get("summary") or "")),
+            "summary": summary,
             "bullets": bullets,
             "confidence": self._parse_confidence(payload.get("confidence"), default=0.68),
             "fewshots": evidence,
@@ -536,24 +757,24 @@ class StoneAnalysisAgent:
         bullets: list[str] = []
         for profile in profiles[:4]:
             pieces = [
-                profile.get("article_theme"),
-                profile.get("tone"),
-                profile.get("structure_template"),
+                profile.get("content_summary"),
+                profile.get("content_type"),
+                profile.get("emotion_label"),
             ]
-            rendered = " | ".join(piece for piece in pieces if piece)
+            rendered = "｜".join(piece for piece in pieces if piece)
             if rendered:
-                bullets.append(f"{profile.get('title') or '(untitled)'}: {rendered}")
+                bullets.append(f"{profile.get('title') or '（未命名）'}：{rendered}")
         return {
             "summary": (
-                f"{facet.label} currently relies on per-article profiles because chat LLM is not configured. "
-                f"The output summarizes repeated signals already captured during article profiling."
+                f"当前未配置 Chat LLM，因此 {facet.label} 只能先基于逐篇文章画像做启发式归纳。"
+                "结果侧重提炼重复出现的主题、性质和情绪信号。"
             ),
             "bullets": bullets[:8],
             "confidence": 0.52,
             "fewshots": evidence,
             "evidence": evidence,
             "conflicts": [],
-            "notes": "Chat LLM is not configured; stone facet analysis used profile-only heuristics.",
+            "notes": "未配置 Chat LLM，本次 Stone 维度分析使用了仅基于文章画像的启发式结果。",
             "_meta": {
                 "llm_called": False,
                 "llm_success": False,
@@ -576,10 +797,10 @@ class StoneAnalysisAgent:
             evidence.append(
                 {
                     "document_id": document_id,
-                    "document_title": profile.get("title") or "(untitled)",
-                    "situation": "Per-article profile",
-                    "expression": profile.get("tone") or "Profile summary",
-                    "reason": profile.get("article_theme") or "Representative article signal",
+                    "document_title": profile.get("title") or "（未命名）",
+                    "situation": "文章画像提取",
+                    "expression": profile.get("tone") or "画像摘要",
+                    "reason": profile.get("article_theme") or "代表性文章信号",
                     "quote": quote,
                 }
             )
@@ -599,6 +820,7 @@ class StoneAnalysisAgent:
         *,
         documents: list[DocumentRecord],
         profiles: list[dict[str, Any]],
+        corpus_overview: dict[str, Any],
         queried_document_ids: list[str],
         tool_trace: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -613,6 +835,7 @@ class StoneAnalysisAgent:
             "document_count": len(documents),
             "document_profile_count": len(profiles),
             "document_ids": [document.id for document in documents],
+            "corpus_overview": corpus_overview,
             "queried_document_ids": queried_document_ids,
             "tool_calls": tool_trace,
         }

@@ -459,9 +459,15 @@
                             </label>
                             <p class="section-note">{{ ui.analysis_help }}</p>
                         {% else %}
-                            <input type="hidden" name="analysis_context" value="stone corpus">
-                            <input type="hidden" name="concurrency" value="1">
-                            <p class="helper-text" style="margin: 0;">在搬石模式下，目标角色仅作为作者的笔名或称呼，不参与额外背景设定。分析过程基于预分析提取的文章特征运行。</p>
+                            <label>
+                                <span>{{ ui.analysis_context }}</span>
+                                <textarea name="analysis_context" rows="4" placeholder="可选，补充作者阶段、题材范围、时间区间或你想重点观察的写作背景。">{{ analysis_defaults.analysis_context or 'stone corpus' }}</textarea>
+                            </label>
+                            <label>
+                                <span>{{ ui.analysis_concurrency }}</span>
+                                <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
+                            </label>
+                            <p class="helper-text" style="margin: 0;">搬石模式会先读取作者整体分布，再按范围分页抽样文章画像，必要时才回读原文。目标角色仍只作为作者名、笔名或你想给这个作者取的分析称呼。</p>
                         {% endif %}
                         <div class="button-row button-row--end">
                             <button type="submit" class="primary-button" id="analyze-submit-btn" {% if not can_analyze %}disabled{% endif %}>

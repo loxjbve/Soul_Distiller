@@ -239,7 +239,7 @@ def analyze_facet_worker(
                 }
                 payload["notes"] = (
                     f"{payload.get('notes') or ''}\n"
-                    f"LLM returned an unusable response, so the result was recovered with heuristic fallback: {exc}"
+                    f"LLM 返回不可用结果，系统已切换到启发式回退逻辑恢复当前维度：{exc}"
                 ).strip()
         else:
             payload = _analyze_heuristically(
@@ -1503,7 +1503,7 @@ class AnalysisEngine:
             session,
             run.id,
             event_type="facet",
-            message=f"{facet.label} claimed an execution slot and started retrieval.",
+            message=f"{facet.label} 已占用执行槽位，开始准备检索证据。",
             payload_json={
                 "facet_key": facet.key,
                 "phase": "retrieving",
@@ -1580,7 +1580,7 @@ class AnalysisEngine:
             session,
             run.id,
             event_type="facet",
-            message=f"{facet.label} started analysis with {hit_count} retrieved evidence chunks.",
+            message=f"{facet.label} 已启动分析，当前已拿到 {hit_count} 个证据片段。",
             payload_json={
                 "facet_key": facet.key,
                 "phase": phase,
@@ -1595,7 +1595,7 @@ class AnalysisEngine:
                 session,
                 run.id,
                 event_type="llm_request",
-                message=f"{facet.label} prepared an LLM request.",
+                message=f"{facet.label} 已准备好 LLM 请求。",
                 payload_json={
                     "facet_key": facet.key,
                     "url": OpenAICompatibleClient(config, log_path=self.llm_log_path).endpoint_url(endpoint_path),
@@ -1682,7 +1682,7 @@ class AnalysisEngine:
                 session,
                 run.id,
                 event_type="llm_request",
-                message=f"{facet.label} preparing LLM request.",
+                message=f"{facet.label} 正在准备 LLM 请求。",
                 payload_json={
                     "facet_key": facet.key,
                     "url": OpenAICompatibleClient(config, log_path=self.llm_log_path).endpoint_url(endpoint_path),
@@ -1773,14 +1773,14 @@ class AnalysisEngine:
 
         if findings_json["llm_called"]:
             llm_state = "成功" if findings_json["llm_success"] else "失败"
-            message = f"{message} LLM {llm_state}，消耗 {findings_json['total_tokens']} tokens。"
+            message = f"{message} LLM {llm_state}，消耗 {findings_json['total_tokens']} Token。"
         message = (
             f"{facet.label} {'完成' if result.status == 'completed' else '失败'}。"
             if not findings_json["llm_called"]
             else (
                 f"{facet.label} {'完成' if result.status == 'completed' else '失败'}。"
                 f" LLM {'成功' if findings_json['llm_success'] else '失败'}，"
-                f"消耗 {findings_json['total_tokens']} tokens。"
+                f"消耗 {findings_json['total_tokens']} Token。"
             )
         )
         repository.add_analysis_event(
@@ -1960,21 +1960,21 @@ class AnalysisEngine:
             summary["current_phase"] = current_phase
             label = active_findings.get("label") or active_facet.facet_key
             if current_phase == "retrieving":
-                summary["current_stage"] = f"{label}: retrieving evidence"
+                summary["current_stage"] = f"{label}：检索证据中"
             elif current_phase == "llm":
-                summary["current_stage"] = f"{label}: generating with LLM"
+                summary["current_stage"] = f"{label}：调用 LLM 生成中"
             elif current_phase == "analyzing":
-                summary["current_stage"] = f"{label}: analyzing"
+                summary["current_stage"] = f"{label}：分析中"
             else:
-                summary["current_stage"] = f"{label}: in progress"
+                summary["current_stage"] = f"{label}：进行中"
         elif run.status == "completed":
             summary["current_facet"] = None
             summary["current_phase"] = "completed"
-            summary["current_stage"] = "Analysis completed"
+            summary["current_stage"] = "分析已完成"
         elif run.status in {"failed", "partial_failed"}:
             summary["current_facet"] = None
             summary["current_phase"] = "failed"
-            summary["current_stage"] = "Analysis finished with failures"
+            summary["current_stage"] = "分析已结束，但存在失败维度"
         elif queued:
             summary["current_facet"] = None
             summary["current_phase"] = "queued"
@@ -2334,7 +2334,7 @@ def _analyze_with_llm(
             if not llm_success:
                 normalized["notes"] = (
                     f"{normalized.get('notes') or ''}\n"
-                    "LLM returned non-JSON text, so the facet was recovered with fallback parsing."
+                    "LLM 返回的不是标准 JSON，系统已用回退解析尽量恢复当前维度结果。"
                 ).strip()
             normalized["_meta"] = {
                 "llm_called": True,
@@ -2364,7 +2364,7 @@ def _analyze_with_llm(
                 setattr(exc, "request_url", client.endpoint_url(endpoint_path))
             last_error = exc
     raise LLMError(
-        str(last_error) if last_error else "Failed to analyze facet.",
+        str(last_error) if last_error else "维度分析失败。",
         raw_text=(getattr(last_error, "raw_text", None) or "")[:RAW_TEXT_PREVIEW_LIMIT] or None,
         request_url=getattr(last_error, "request_url", None),
         request_payload=getattr(last_error, "request_payload", None),

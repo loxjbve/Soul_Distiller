@@ -84,8 +84,10 @@ def normalize_stone_profile(
         )
     )
     length_label = _resolve_length_label(raw.get("length_label") or raw.get("length"), source_text)
-    if length_label == "短文":
-        content_summary = source_text or content_summary or str(fallback_title or "").strip()
+    if content_summary.strip().lower() == "raw":
+        content_summary = source_text or str(fallback_title or "").strip()
+    elif not content_summary and length_label == "短文":
+        content_summary = source_text or str(fallback_title or "").strip()
     elif not content_summary:
         content_summary = _build_content_summary(source_text, fallback_title)
 
@@ -106,7 +108,9 @@ def normalize_stone_profile(
             for item in selected_passages_source
             if normalize_whitespace(str(item or ""))
         ][:3]
-    if not selected_passages and source_text:
+    if length_label == "短文" and source_text:
+        selected_passages = [source_text]
+    elif not selected_passages and source_text:
         selected_passages = _pick_selected_passages(source_text, length_label=length_label)
 
     return {
@@ -235,11 +239,12 @@ def build_stone_profile_messages(
                 "把整篇文章当成一个整体处理，只返回 JSON，不要输出任何额外解释。\n"
                 "必须且只能使用这 5 个 key：content_summary, content_type, length_label, emotion_label, selected_passages。\n"
                 "规则如下：\n"
-                "1. content_summary：如果文章是短文（300 字/词及以内），不要总结，直接保留原文；如果是长文，再写一句非常简明的内容总结。\n"
+                "1. content_summary：由你判断是否需要总结。如果你认为这篇文章短到没有总结必要，就返回精确字面量“raw”；系统会自动替换成原文。"
+                "如果你认为仍有总结价值，就直接写一句非常简明的内容总结。\n"
                 "2. content_type：用很短的自然语言概括文章性质，例如“诉苦”“抽象”“玩笑”“分享”等，但这只是示例，你可以使用更准确的词语。\n"
                 "3. length_label：超过 300 字/词必须写“长文”，否则写“短文”。\n"
                 "4. emotion_label：用很短的自然语言概括情绪状态，例如“消极”“积极”“不确定”“无情绪表达”等，但这只是示例，你可以使用更准确的词语。\n"
-                "5. selected_passages：长文返回最能表达主旨的 2-3 句原文或自然段；短文可以直接返回原文作为 1 条段落。\n"
+                "5. selected_passages：只有长文才需要认真精选，返回最能表达主旨的 2-3 句原文或自然段；如果是短文，直接返回空数组 []，系统会自动把全文写进去。\n"
                 "所有 selected_passages 都必须直接摘自原文，不能改写。"
             ),
         },
@@ -249,7 +254,7 @@ def build_stone_profile_messages(
                 f"项目名：{project_name}\n"
                 f"文章标题：{document_title or '(untitled)'}\n\n"
                 "请基于下面这篇文章，生成极简 Stone 文章画像。\n"
-                "再次强调：如果是短文，content_summary 必须直接保留原文，不要总结。\n\n"
+                "再次强调：如果你判断这篇文章短到不需要总结，就把 content_summary 写成 raw；短文的 selected_passages 直接返回 [] 即可。\n\n"
                 f"文章原文：\n{article_text}"
             ),
         },
@@ -261,7 +266,7 @@ def build_stone_facet_messages(
     facet_label: str,
     facet_key: str,
     facet_purpose: str,
-    profile_dump: str,
+    corpus_overview: str,
     *,
     target_role: str | None,
     analysis_context: str | None,
@@ -271,13 +276,15 @@ def build_stone_facet_messages(
             "role": "system",
             "content": (
                 "你是一个作者风格分析 agent，这一轮只分析一个 facet。\n"
-                "你的默认证据来源，是已经提供的逐篇 Stone 文章画像列表。\n"
-                "每篇画像都很短，只包含内容、性质、长短、情绪和精选段落。\n"
-                "只有在画像信息不足、彼此冲突，或你需要核对风格判断时，才去读取原文。\n"
+                "Stone 模式的文章可能很多，严禁把整库文章逐篇穷举后再总结。\n"
+                "你必须先阅读语料总览，先理解作品总数、性质分布、情绪分布，再决定要抽样读取哪一个范围。\n"
+                "默认只允许按范围分页读取一部分文章画像；只有在分页结果不足、出现冲突，或必须核对原话时，才去读取单篇完整画像或原文。\n"
+                "分页读取时，请优先围绕当前 facet 最相关的性质、情绪、长短或关键词来抽样，不要无目的遍历全库。\n"
                 "分析范围必须严格限制在当前 facet 内。\n"
-                "只返回 JSON，使用这些 key：summary, bullets, confidence, fewshots, conflicts, notes。\n"
+                "只返回 JSON，必须且只能使用这些 key：summary, bullets, confidence, fewshots, conflicts, notes。\n"
                 "fewshots 必须是对象数组，每项都包含：document_id, document_title, situation, expression, quote, reason。\n"
-                "conflicts 必须是对象数组，每项都包含：title, detail。"
+                "conflicts 必须是对象数组，每项都包含：title, detail。\n"
+                "除 JSON 键名外，所有可读文本都使用简体中文。"
             ),
         },
         {
@@ -288,9 +295,9 @@ def build_stone_facet_messages(
                 f"facet 目标：{facet_purpose}\n"
                 f"目标角色：{target_role or project_name}\n"
                 f"分析上下文：{analysis_context or ''}\n\n"
-                "请先从下面这些文章画像出发。\n"
-                "只有当画像不够用、彼此冲突，或者你需要核对某个风格判断时，才去读取原文。\n\n"
-                f"文章画像列表：\n{profile_dump}"
+                "请先阅读下面这份 Stone 语料总览，再决定抽样范围。\n"
+                "注意：总览不是逐篇列表，后续必须通过工具按范围分页读取，不要尝试一次性读取全部文章。\n\n"
+                f"Stone 语料总览：\n{corpus_overview}"
             ),
         },
     ]
