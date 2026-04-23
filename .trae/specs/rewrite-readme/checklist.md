@@ -1,0 +1,4 @@
+- [x] The `README.md` file contains both English and Chinese descriptions.
+- [x] The `README.md` file includes standard GitHub-style sections (Badges, Features, Installation, Usage, Architecture).
+- [x] The formatting is beautiful and visually appealing (using emojis, bolding, lists, and code blocks appropriately).
+- [x] Technical details match the `pyproject.toml` (e.g., Python >= 3.12, FastAPI, ChromaDB).
