@@ -665,7 +665,7 @@ def test_stone_analysis_agent_starts_from_corpus_overview_and_pages_profiles(cli
     assert result.payload["fewshots"][0]["document_id"] == captured["page_payload"]["profiles"][0]["document_id"]
 
 
-def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_version(client, app):
+def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exists(client, app):
     create_response = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"})
     assert create_response.status_code == 200
     project_id = create_response.json()["id"]
@@ -676,20 +676,10 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
     assert "Writing Guide" in assets_page.text
     assert "Claude Code Skill" not in assets_page.text
 
-    draft_response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "writing_guide"})
-    assert draft_response.status_code == 200
-    draft_payload = draft_response.json()
-    draft_id = draft_payload["id"]
-    assert draft_payload["asset_kind"] == "writing_guide"
-    external_slots = draft_payload["json_payload"]["external_slots"]
-    assert external_slots["clinical_profile"]
-    assert external_slots["vulnerability_map"]
-    assert "reserved_external" not in external_slots
-    assert "## external_slots" in draft_payload["markdown_text"]
-    assert "Ignore external_slots" not in draft_payload["prompt_text"]
-
     writing_page = client.get(f"/projects/{project_id}/writing")
     assert writing_page.status_code == 200
+    assert "analysis" in writing_page.text
+    assert "writing_guide" not in writing_page.text
 
     session_payload = client.post(
         f"/api/projects/{project_id}/writing/sessions",
@@ -707,16 +697,24 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
         f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
     )
     event_names = [name for name, _payload in events]
-    assert "stage" in event_names
+    assert event_names.count("stage") >= len(get_facets_for_mode("stone")) + 3
     assert "done" in event_names
 
     detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
     assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
     assert assistant_turns
     latest_turn = assistant_turns[-1]
-    assert latest_turn["trace"]["guide_source"] == "draft"
-    assert len(latest_turn["trace"]["reviews"]) == 5
-    assert latest_turn["trace"]["final_judge"]
+    assert latest_turn["trace"]["baseline_source"] == "analysis_run"
+    assert latest_turn["trace"]["analysis_facets"] == [facet.key for facet in get_facets_for_mode("stone")]
+    assert len(latest_turn["trace"]["reviews"]) == len(get_facets_for_mode("stone"))
+    assert latest_turn["trace"]["review_plan"]
+    assert latest_turn["trace"]["final_assessment"]
+
+    draft_response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "writing_guide"})
+    assert draft_response.status_code == 200
+    draft_payload = draft_response.json()
+    draft_id = draft_payload["id"]
+    assert draft_payload["asset_kind"] == "writing_guide"
 
     publish_response = client.post(
         f"/api/projects/{project_id}/assets/{draft_id}/publish",
@@ -744,4 +742,5 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
         f"/api/projects/{project_id}/writing/sessions/{published_session_id}"
     ).json()
     published_assistant_turns = [turn for turn in published_detail["turns"] if turn["role"] == "assistant"]
-    assert published_assistant_turns[-1]["trace"]["guide_source"] == "published"
+    assert published_assistant_turns[-1]["trace"]["baseline_source"] == "analysis_run"
+    assert len(published_assistant_turns[-1]["trace"]["reviews"]) == len(get_facets_for_mode("stone"))

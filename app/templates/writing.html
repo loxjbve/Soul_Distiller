@@ -15,14 +15,14 @@
             <p>{{ writing_ui.hero_note }}</p>
             <div class="page-banner__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
-                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=writing_guide">writing_guide</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/analysis">analysis</a>
             </div>
         </div>
         <div class="page-banner__meta">
             <div class="page-banner__portrait"></div>
             <div class="page-banner__signal-row">
                 <span class="page-banner__label">{{ writing_ui.sessions }}</span>
-                <span class="page-banner__label">{{ writing_ui.guide_label }}</span>
+                <span class="page-banner__label">{{ writing_ui.baseline_label }}</span>
             </div>
         </div>
     </section>
@@ -57,7 +57,7 @@
 
             <div class="panel-body">
                 <div class="turn-pill-row">
-                    <div class="turn-pill" data-guide-pill>{{ writing_ui.guide_missing }}</div>
+                    <div class="turn-pill" data-baseline-pill>{{ writing_ui.baseline_missing_analysis }}</div>
                 </div>
                 <div class="panel-scroll" data-live-feed data-panel-scroll>
                     <div class="preprocess-chat-scroll" data-chat-list></div>

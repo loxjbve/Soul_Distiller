@@ -217,13 +217,13 @@ def _stone_mode_label(locale: str) -> str:
     return "Stone Mode" if locale == "en-US" else "搬石模式"
 
 
-def _stone_mode_hint(locale: str) -> str:
+def _stone_mode_hint_legacy_unused(locale: str) -> str:
     if locale == "en-US":
         return "For single-author corpus, article profiling, writing guide synthesis, and controlled article drafting"
     return "适合单作者文本、逐篇预分析、写作指南生成与定向写作"
 
 
-def _writing_workspace_ui(locale: str) -> dict[str, Any]:
+def _writing_workspace_ui_legacy_unused(locale: str) -> dict[str, Any]:
     base = page_strings("preprocess", locale)
     labels = {
         "title": "Writing Workspace" if locale == "en-US" else "写作台",
@@ -309,6 +309,86 @@ def _resolve_writing_guide_status(session: Session, project_id: str) -> dict[str
             "label": "draft",
         }
     return {"status": "missing", "asset_id": None, "label": None}
+
+
+def _stone_mode_hint(locale: str) -> str:
+    if locale == "en-US":
+        return "For single-author corpus, article profiling, multi-facet analysis, and analysis-driven drafting"
+    return "适合单作者文本、逐篇预分析、多维分析与分析驱动写作"
+
+
+def _writing_workspace_ui(locale: str) -> dict[str, Any]:
+    base = page_strings("preprocess", locale)
+    labels = {
+        "title": "Writing Workspace" if locale == "en-US" else "写作台",
+        "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
+        "hero_note": (
+            "Draft directly from the latest multi-facet analysis, let eight reviewers critique round one, then revise once into the final piece."
+            if locale == "en-US"
+            else "直接读取最新多维分析出首稿，再由 8 个维度分别审稿，整合意见后修订一轮输出定稿。"
+        ),
+        "new_session": "New Session" if locale == "en-US" else "新建会话",
+        "rename_session": "Rename" if locale == "en-US" else "重命名",
+        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
+        "sessions": "Sessions" if locale == "en-US" else "会话",
+        "composer_placeholder": (
+            "Enter the topic, target word count, and optional extra requirements."
+            if locale == "en-US"
+            else "输入主题、目标字数和可选附加要求。"
+        ),
+        "topic_label": "Topic" if locale == "en-US" else "主题",
+        "target_word_count_label": "Target Word Count" if locale == "en-US" else "目标字数",
+        "extra_requirements_label": "Extra Requirements" if locale == "en-US" else "附加要求",
+        "send": "Start Writing" if locale == "en-US" else "开始写作",
+        "sending": "Writing..." if locale == "en-US" else "写作中...",
+        "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
+        "baseline_ready": "Using latest Stone analysis baseline." if locale == "en-US" else "当前使用最新 Stone 分析基线。",
+        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "先完成 Stone 预分析。",
+        "baseline_missing_analysis": "Run Stone analysis first." if locale == "en-US" else "先完成 Stone 多维分析。",
+        "baseline_running_analysis": "Stone analysis is still running." if locale == "en-US" else "Stone 分析仍在运行中。",
+        "baseline_incomplete_analysis": "Latest Stone analysis is incomplete." if locale == "en-US" else "最新 Stone 分析还不完整。",
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作任务。",
+        "working": "Working..." if locale == "en-US" else "执行中...",
+        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
+        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
+        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
+        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
+        "stage_feed": "Pipeline" if locale == "en-US" else "流水线",
+    }
+    base.update(labels)
+    return base
+
+
+def _resolve_stone_writing_status(session: Session, project_id: str) -> dict[str, Any]:
+    preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
+    if not preprocess_run:
+        return {"status": "missing_preprocess", "run_id": None, "label": None, "missing_facets": []}
+
+    run = repository.get_latest_analysis_run(session, project_id, load_facets=True, load_events=False)
+    if not run:
+        return {"status": "missing_analysis", "run_id": None, "label": None, "missing_facets": []}
+    if run.status in {"queued", "running"}:
+        return {"status": "running_analysis", "run_id": run.id, "label": "running", "missing_facets": []}
+
+    ready_facets = {
+        facet.facet_key
+        for facet in (run.facets or [])
+        if facet.status == "completed" and isinstance(facet.findings_json, dict)
+    }
+    missing_facets = [facet.label for facet in get_facets_for_mode("stone") if facet.key not in ready_facets]
+    if missing_facets:
+        return {
+            "status": "incomplete_analysis",
+            "run_id": run.id,
+            "label": f"run {run.id[:8]}",
+            "missing_facets": missing_facets,
+        }
+    return {
+        "status": "ready",
+        "run_id": run.id,
+        "label": f"run {run.id[:8]}",
+        "missing_facets": [],
+    }
 
 
 def _ok_response(message: str, **payload: Any) -> dict[str, Any]:
@@ -987,7 +1067,7 @@ def writing_page(
         "selected_session_id": selected_session.id,
         "selected_session": _serialize_writing_session_detail(selected_session),
         "documents": [_serialize_document(item) for item in repository.list_project_documents(session, project_id)],
-        "guide": _resolve_writing_guide_status(session, project_id),
+        "baseline": _resolve_stone_writing_status(session, project_id),
         "locale": locale,
         "ui_strings": writing_ui,
     }
@@ -1000,7 +1080,6 @@ def writing_page(
             project=project,
             bootstrap=json.dumps(bootstrap, ensure_ascii=False),
             writing_ui=writing_ui,
-            primary_asset_kind="writing_guide",
         ),
     )
 
@@ -2372,7 +2451,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
     latest_version = repository.get_latest_asset_version(session, project_id, asset_kind=primary_asset_kind)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
-    writing_guide_status = _resolve_writing_guide_status(session, project_id) if project.mode == "stone" else None
+    stone_writing_status = _resolve_stone_writing_status(session, project_id) if project.mode == "stone" else None
     latest_preprocess_run = None
     latest_successful_preprocess_run = None
     
@@ -2490,7 +2569,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
                 },
                 "locale": get_locale(request),
                 "ui_strings": page_strings("project", get_locale(request)),
-                "writing_guide_status": writing_guide_status,
+                "stone_writing_status": stone_writing_status,
             },
             ensure_ascii=False,
         ),
@@ -2509,7 +2588,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
         "can_analyze": can_analyze,
         "latest_draft": latest_draft,
         "latest_version": latest_version,
-        "writing_guide_status": writing_guide_status,
+        "stone_writing_status": stone_writing_status,
         "preprocess_sessions": preprocess_sessions,
         "stone_mode_label": _stone_mode_label(get_locale(request)),
         "stone_mode_hint": _stone_mode_hint(get_locale(request)),

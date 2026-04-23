@@ -3,7 +3,7 @@
 {% block body_class %}theme-ambient--analysis{% endblock %}
 {% block page_class %}page-analysis page-analysis-center{% if project.mode in ["telegram", "stone"] %} page-analysis--telegram{% endif %}{% if project.mode == "telegram" and project.parent_id %} page-analysis--telegram-persona{% endif %}{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='analysis-page.css') }}?v=20260423a">
+<link rel="stylesheet" href="{{ request.url_for('static', path='analysis-page.css') }}?v=20260423b">
 {% endblock %}
 {% block content %}
 {% set summary = run.summary_json or {} if run else {} %}
@@ -126,7 +126,6 @@
 
                         <section class="analysis-dynamic-area">
                             <div class="analysis-results-browser">
-                                <div class="analysis-result-nav panel-scroll" id="analysis-result-nav"></div>
                                 <div class="analysis-stage-stack">
                                     <div class="analysis-feed-section" id="analysis-feed-container">
                                         <div class="analysis-feed-header">
@@ -172,6 +171,6 @@
 
 {% block extra_scripts %}
 {% if run %}
-<script type="module" defer src="{{ request.url_for('static', path='analysis.js') }}?v=20260423a"></script>
+<script type="module" defer src="{{ request.url_for('static', path='analysis.js') }}?v=20260423b"></script>
 {% endif %}
 {% endblock %}

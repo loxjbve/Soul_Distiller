@@ -18,7 +18,7 @@ if (shell) {
         currentSessionId: bootstrap.selected_session_id || null,
         currentSession: bootstrap.selected_session || null,
         documents: bootstrap.documents || [],
-        guide: bootstrap.guide || { status: "missing" },
+        baseline: bootstrap.baseline || { status: "missing_analysis" },
         stageFeed: [],
         eventSource: null,
         sending: false,
@@ -30,7 +30,7 @@ if (shell) {
         chatList: shell.querySelector("[data-chat-list]"),
         documentList: shell.querySelector("[data-document-list]"),
         stageFeedList: shell.querySelector("[data-stage-feed-list]"),
-        guidePill: shell.querySelector("[data-guide-pill]"),
+        baselinePill: shell.querySelector("[data-baseline-pill]"),
         topic: shell.querySelector("[data-topic-input]"),
         targetWordCount: shell.querySelector("[data-target-word-count]"),
         extraRequirements: shell.querySelector("[data-extra-requirements]"),
@@ -205,7 +205,7 @@ if (shell) {
     }
 
     function renderAll() {
-        renderGuide();
+        renderBaseline();
         renderSessions();
         renderChat();
         renderDocuments();
@@ -213,19 +213,27 @@ if (shell) {
         elements.sessionTitle.textContent = state.currentSession?.title || ui.untitled_session || "未命名会话";
     }
 
-    function renderGuide() {
-        if (!elements.guidePill) {
+    function renderBaseline() {
+        if (!elements.baselinePill) {
             return;
         }
-        if (state.guide.status === "published") {
-            elements.guidePill.textContent = ui.guide_published || "当前使用已发布指南。";
+        if (state.baseline.status === "ready") {
+            elements.baselinePill.textContent = ui.baseline_ready || "当前使用最新 Stone 分析基线。";
             return;
         }
-        if (state.guide.status === "draft") {
-            elements.guidePill.textContent = ui.guide_unpublished || "当前使用未发布指南。";
+        if (state.baseline.status === "missing_preprocess") {
+            elements.baselinePill.textContent = ui.baseline_missing_preprocess || "先完成 Stone 预分析。";
             return;
         }
-        elements.guidePill.textContent = ui.guide_missing || "还没有 writing_guide。";
+        if (state.baseline.status === "running_analysis") {
+            elements.baselinePill.textContent = ui.baseline_running_analysis || "Stone 分析仍在运行中。";
+            return;
+        }
+        if (state.baseline.status === "incomplete_analysis") {
+            elements.baselinePill.textContent = ui.baseline_incomplete_analysis || "最新 Stone 分析还不完整。";
+            return;
+        }
+        elements.baselinePill.textContent = ui.baseline_missing_analysis || "先完成 Stone 多维分析。";
     }
 
     function renderSessions() {
@@ -299,6 +307,19 @@ if (shell) {
                         keep: block.keep || [],
                     }, null, 2))}</pre>
                 </div>
+            `;
+            return details;
+        }
+        if (block.type === "review_plan") {
+            const details = document.createElement("details");
+            details.className = "tool-call";
+            details.innerHTML = `
+                <summary><span>${escapeHtml(block.label || "review plan")}</span><span>merged</span></summary>
+                <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify({
+                    summary: block.summary || "",
+                    priorities: block.priorities || [],
+                    keep: block.keep || [],
+                }, null, 2))}</pre></div>
             `;
             return details;
         }

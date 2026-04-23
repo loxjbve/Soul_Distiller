@@ -93,12 +93,16 @@
                         <a class="ghost-button" href="/projects/{{ project.id }}/preprocess">去预分析</a>
                     </div>
                     <p class="helper-text">
-                        {% if writing_guide_status and writing_guide_status.status == 'published' %}
-                            当前已有已发布的 writing_guide，可直接进入写作台。
-                        {% elif writing_guide_status and writing_guide_status.status == 'draft' %}
-                            当前只有未发布的 writing_guide，写作台会回退使用最新 draft。
+                        {% if stone_writing_status and stone_writing_status.status == 'ready' %}
+                            当前多维分析已完成，可直接进入写作台；写作时会自动读取最新分析结论。
+                        {% elif stone_writing_status and stone_writing_status.status == 'running_analysis' %}
+                            当前 Stone 多维分析仍在运行中，完成后即可直接进入写作台。
+                        {% elif stone_writing_status and stone_writing_status.status == 'incomplete_analysis' %}
+                            当前最新 Stone 分析还不完整，建议重跑分析后再进入写作台。
+                        {% elif stone_writing_status and stone_writing_status.status == 'missing_preprocess' %}
+                            当前还没有完成 Stone 预分析。先完成逐篇预分析，再运行多维分析。
                         {% else %}
-                            当前还没有 writing_guide。完成分析后先生成指南，再进入写作台。
+                            当前还没有可用的 Stone 多维分析。完成分析后即可直接进入写作台。
                         {% endif %}
                     </p>
                 {% else %}

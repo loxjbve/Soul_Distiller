@@ -343,7 +343,7 @@
 
 .analysis-results-browser {
     display: grid;
-    grid-template-columns: 200px 1fr;
+    grid-template-columns: minmax(0, 1fr);
     height: 100%;
 }
 
@@ -706,17 +706,13 @@
     display: flex;
     flex-direction: column;
     flex: 1;
+    height: 100%;
     overflow: hidden;
 }
 
 .analysis-results-browser {
     flex: 1;
     min-height: 0;
-}
-
-.analysis-result-nav {
-    border-right: 1px solid rgba(255, 255, 255, 0.06);
-    padding-right: 8px;
 }
 
 .analysis-result-detail,
@@ -762,26 +758,6 @@
 @media (max-width: 900px) {
     .hub-monitor-grid {
         grid-template-columns: 1fr;
-    }
-
-    .analysis-results-browser {
-        grid-template-columns: 1fr;
-    }
-
-    .analysis-result-nav {
-        border-right: none;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-        padding-right: 0;
-        padding-bottom: 8px;
-        overflow-x: auto;
-        overflow-y: hidden;
-        display: flex;
-        flex-direction: row;
-    }
-
-    .analysis-result-tab {
-        min-width: 240px;
-        flex-shrink: 0;
     }
 
     .page-analysis .page-content {
