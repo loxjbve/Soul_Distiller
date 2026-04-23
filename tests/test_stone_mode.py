@@ -850,6 +850,89 @@ def test_stone_analysis_agent_starts_from_corpus_overview_and_pages_profiles(cli
     assert result.payload["fewshots"][0]["document_id"] == captured["page_payload"]["profiles"][0]["document_id"]
 
 
+def test_stone_profile_paging_ignores_none_like_filter_strings(client, app):
+    create_response = client.post("/api/projects", json={"name": "Stone None Filters", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    upload_dir = app.state.config.upload_dir / project_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    with app.state.db.session() as session:
+        for index in range(6):
+            doc_id = str(uuid4())
+            text = f"Sample article {index} repeats a frustrated voice and plain spoken complaints."
+            storage_path = upload_dir / f"none-filter-{index}.txt"
+            storage_path.write_text(text, encoding="utf-8")
+            content_type = "rant" if index < 5 else "note"
+            repository.create_document(
+                session,
+                id=doc_id,
+                project_id=project_id,
+                filename=f"none-filter-{index}.txt",
+                mime_type="text/plain",
+                extension=".txt",
+                source_type="essay",
+                title=f"Sample {index}",
+                author_guess="Author",
+                created_at_guess=None,
+                raw_text=text,
+                clean_text=text,
+                language="en",
+                metadata_json={
+                    "stone_profile": {
+                        "content_summary": text,
+                        "content_type": content_type,
+                        "length_label": "short",
+                        "emotion_label": "grim",
+                        "selected_passages": [text],
+                    }
+                },
+                ingest_status="ready",
+                error_message=None,
+                storage_path=str(storage_path),
+            )
+        session.commit()
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        assert project is not None
+        agent = StoneAnalysisAgent(session, project, llm_config=None)
+        documents = agent._load_ready_documents()
+        profiles = [agent._profile_snapshot(document) for document in documents]
+        corpus_overview = agent._build_corpus_overview(profiles)
+        payload, state = agent._execute_tool(
+            "list_article_profiles_page",
+            {
+                "offset": 0,
+                "limit": 4,
+                "query": "None",
+                "content_type": "rant",
+                "emotion_label": "None",
+                "length_label": "None",
+            },
+            documents=documents,
+            profiles=profiles,
+            corpus_overview=corpus_overview,
+            tool_state={
+                "profile_reads": 0,
+                "profile_budget": agent._profile_read_budget(len(profiles)),
+                "text_chars_read": 0,
+            },
+        )
+
+    assert payload["returned"] == 4
+    assert payload["total_profiles"] == 5
+    assert payload["filters"] == {
+        "query": None,
+        "content_type": "rant",
+        "emotion_label": None,
+        "length_label": None,
+    }
+    assert len(state["document_ids"]) == 4
+    assert all(item["content_type"] == "rant" for item in payload["profiles"])
+
+
 def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exists(client, app):
     create_response = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"})
     assert create_response.status_code == 200

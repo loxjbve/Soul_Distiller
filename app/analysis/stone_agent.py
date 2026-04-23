@@ -438,10 +438,10 @@ class StoneAnalysisAgent:
             }, {}
 
         if name == "list_article_profiles_page":
-            query = normalize_whitespace(str(args.get("query") or "")).lower()
-            content_type = normalize_whitespace(str(args.get("content_type") or ""))
-            emotion_label = normalize_whitespace(str(args.get("emotion_label") or ""))
-            length_label = normalize_whitespace(str(args.get("length_label") or ""))
+            query = self._normalize_tool_filter(args.get("query"), lowercase=True)
+            content_type = self._normalize_tool_filter(args.get("content_type"))
+            emotion_label = self._normalize_tool_filter(args.get("emotion_label"))
+            length_label = self._normalize_tool_filter(args.get("length_label"))
             offset = max(0, int(args.get("offset", 0) or 0))
             limit = max(1, min(int(args.get("limit", STONE_TOOL_MAX_DOCUMENTS) or STONE_TOOL_MAX_DOCUMENTS), STONE_TOOL_MAX_DOCUMENTS))
             remaining_budget = max(
@@ -593,6 +593,13 @@ class StoneAnalysisAgent:
             )
 
         return {"error": f"未知 Stone 工具：{name}"}, {}
+
+    @staticmethod
+    def _normalize_tool_filter(value: Any, *, lowercase: bool = False) -> str:
+        text = normalize_whitespace(str(value or ""))
+        if text.lower() in {"none", "null", "(none)", "<none>", "n/a", "unspecified"} or text in {"未指定", "未设置"}:
+            return ""
+        return text.lower() if lowercase else text
 
     @staticmethod
     def _tool_schemas() -> list[dict[str, Any]]:
