@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -67,6 +68,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     retrieval = RetrievalService(vector_store=vector_store_manager)
     analysis_stream_hub = AnalysisStreamHub()
     telegram_preprocess_stream_hub = AnalysisStreamHub()
+    stone_preprocess_stream_hub = StonePreprocessStreamHub()
     analysis_engine = AnalysisEngine(
         retrieval,
         db=database,
@@ -103,6 +105,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         max_workers=2,
         stream_hub=telegram_preprocess_stream_hub,
     )
+    stone_preprocess_worker = StonePreprocessWorker(
+        database,
+        stream_hub=stone_preprocess_stream_hub,
+        llm_log_path=str(config.llm_log_path),
+    )
     project_deletion_manager = ProjectDeletionManager(
         db=database,
         config=config,
@@ -121,6 +128,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        stone_preprocess_worker.bind_loop(asyncio.get_running_loop())
+        stone_preprocess_worker.resume_interrupted_runs()
         try:
             yield
         finally:
@@ -129,6 +138,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             preprocess_service.shutdown()
             writing_service.shutdown()
             telegram_preprocess_manager.shutdown()
+            await stone_preprocess_worker.shutdown()
             rechunk_manager.shutdown()
             ingest_task_manager.shutdown()
             vector_store_manager.save_all()
@@ -152,13 +162,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.writing_service = writing_service
     app.state.telegram_preprocess_manager = telegram_preprocess_manager
     app.state.project_deletion_manager = project_deletion_manager
-
-    app.state.stone_preprocess_stream_hub = StonePreprocessStreamHub()
-    app.state.stone_preprocess_worker = StonePreprocessWorker(
-        database,
-        stream_hub=app.state.stone_preprocess_stream_hub,
-        llm_log_path=str(config.llm_log_path),
-    )
+    app.state.stone_preprocess_stream_hub = stone_preprocess_stream_hub
+    app.state.stone_preprocess_worker = stone_preprocess_worker
 
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")

@@ -2633,16 +2633,15 @@ def _create_stone_preprocess_run(
     concurrency: int = 1,
 ) -> "StonePreprocessRun":
     project = _ensure_project(session, project_id)
-    chat_config = repository.get_service_config(session, "chat_service")
-
-    run = repository.create_stone_preprocess_run(
-        session,
-        project_id=project_id,
-        llm_model=chat_config.model if chat_config else None,
-        summary_json={"concurrency": concurrency},
+    if project.mode != "stone":
+        raise HTTPException(status_code=400, detail="Only Stone projects use preprocess runs.")
+    created = request.app.state.stone_preprocess_worker.submit(
+        project_id,
+        concurrency=concurrency,
     )
-    request.app.state.stone_preprocess_worker.process(run.id, project_id)
-    return run
+    session.expire_all()
+    refreshed = repository.get_stone_preprocess_run(session, created.id)
+    return refreshed or created
 
 
 def _create_telegram_preprocess_run(

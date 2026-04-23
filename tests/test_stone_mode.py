@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -219,6 +220,79 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     assert stone_profile["narrative_pov"]
     assert stone_profile["tone"]
     assert stone_profile["structure_template"]
+
+
+def test_stone_preprocess_form_route_redirects_and_completes(client):
+    create_response = client.post("/api/projects", json={"name": "Stone Form", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    create_doc = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "这是一段足够长的石川文风样本文本，用来验证表单入口触发预分析时会正确创建并完成后台任务。",
+            "source_type": "essay",
+        },
+    )
+    assert create_doc.status_code == 200
+    document_id = create_doc.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    response = client.post(
+        f"/projects/{project_id}/preprocess/run",
+        data={"concurrency": "1"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    assert parsed.path == f"/projects/{project_id}/preprocess"
+    run_id = parse_qs(parsed.query)["run_id"][0]
+
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, run_id)
+    assert preprocess_payload["status"] == "completed"
+
+
+def test_stone_preprocess_reuses_failed_run(client, app):
+    create_response = client.post("/api/projects", json={"name": "Stone Resume", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    create_doc = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "这段文本用于验证失败后的预分析 run 会被复用，而不是重新生成一条新的 run 记录。",
+            "source_type": "essay",
+        },
+    )
+    assert create_doc.status_code == 200
+    document_id = create_doc.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    with app.state.db.session() as session:
+        run = repository.create_stone_preprocess_run(
+            session,
+            project_id=project_id,
+            status="failed",
+            summary_json={
+                "concurrency": 1,
+                "stone_profile_total": 1,
+                "stone_profile_completed": 0,
+            },
+        )
+        run.progress_percent = 47
+        run.current_stage = "Failed"
+        run.error_message = "previous failure"
+        failed_run_id = run.id
+
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    assert preprocess_response.json()["id"] == failed_run_id
+
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, failed_run_id)
+    assert preprocess_payload["status"] == "completed"
+    assert preprocess_payload["progress_percent"] == 100
 
 
 def test_stone_json_upload_splits_articles_and_filters_noise(client, app):

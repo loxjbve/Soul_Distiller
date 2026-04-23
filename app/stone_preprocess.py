@@ -3,17 +3,33 @@ import json
 import logging
 import traceback
 from collections.abc import AsyncGenerator
+from concurrent.futures import Future
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
+from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.stone import build_stone_profile, build_stone_profile_messages, normalize_stone_profile
-from app.llm import OpenAICompatibleClient, parse_json_response
-from app.models import DocumentRecord, Project, StonePreprocessRun
-from app.storage import repository
 from app.db import Database
+from app.llm import OpenAICompatibleClient, parse_json_response
+from app.models import StonePreprocessRun
+from app.runtime_limits import background_task_slot
+from app.storage import repository
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class StoneDocumentSnapshot:
+    id: str
+    title: str | None
+    filename: str
+    clean_text: str | None
+    raw_text: str | None
+    metadata_json: dict[str, Any]
 
 
 class StonePreprocessWorker:
@@ -21,14 +37,117 @@ class StonePreprocessWorker:
         self.db = db
         self.stream_hub = stream_hub
         self.llm_log_path = llm_log_path
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._futures: dict[str, Future[None]] = {}
+        self._project_by_future: dict[str, str] = {}
+        self._lock = Lock()
+
+    @staticmethod
+    def _build_summary(summary: dict[str, Any] | None, *, concurrency: int) -> dict[str, Any]:
+        updated = dict(summary or {})
+        updated["concurrency"] = max(1, int(concurrency or 1))
+        updated["stone_profile_total"] = int(updated.get("stone_profile_total") or 0)
+        updated["stone_profile_completed"] = 0
+        updated["current_stage"] = "queued"
+        updated["progress_percent"] = 0
+        return updated
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+
+    def resume_interrupted_runs(self) -> None:
+        interrupted_at = datetime.now(UTC).replace(tzinfo=None)
+        with self.db.session() as session:
+            active_runs = list(
+                session.scalars(
+                    select(StonePreprocessRun).where(StonePreprocessRun.status.in_(("queued", "running")))
+                )
+            )
+            for run in active_runs:
+                summary = dict(run.summary_json or {})
+                summary["current_stage"] = "interrupted"
+                summary["progress_percent"] = int(summary.get("progress_percent") or run.progress_percent or 0)
+                run.status = "failed"
+                run.finished_at = interrupted_at
+                run.error_message = (
+                    "Service restarted while Stone preprocess was still running. "
+                    "Start preprocess again to resume from saved document profiles."
+                )
+                run.current_stage = "Interrupted"
+                run.summary_json = summary
+
+    def submit(self, project_id: str, *, concurrency: int = 1) -> StonePreprocessRun:
+        normalized_concurrency = max(1, int(concurrency or 1))
+        with self.db.session() as session:
+            project = repository.get_project(session, project_id)
+            if not project or project.mode != "stone":
+                raise ValueError("Stone project not found.")
+            chat_config = repository.get_service_config(session, "chat_service")
+            active_run = repository.get_active_stone_preprocess_run(session, project_id)
+            if active_run and self.is_tracking(active_run.id):
+                run_id = active_run.id
+            else:
+                resumable_run = active_run or repository.get_latest_resumable_stone_preprocess_run(session, project_id)
+                if resumable_run:
+                    resumable_run.status = "queued"
+                    resumable_run.started_at = None
+                    resumable_run.finished_at = None
+                    resumable_run.error_message = None
+                    resumable_run.current_stage = "queued"
+                    resumable_run.progress_percent = 0
+                    resumable_run.llm_model = chat_config.model if chat_config else resumable_run.llm_model
+                    resumable_run.summary_json = self._build_summary(
+                        resumable_run.summary_json,
+                        concurrency=normalized_concurrency,
+                    )
+                    run_id = resumable_run.id
+                else:
+                    run = repository.create_stone_preprocess_run(
+                        session,
+                        project_id=project_id,
+                        llm_model=chat_config.model if chat_config else None,
+                        summary_json=self._build_summary({}, concurrency=normalized_concurrency),
+                    )
+                    run_id = run.id
+        if not self.is_tracking(run_id):
+            self.process(run_id, project_id)
+        with self.db.session() as session:
+            run = repository.get_stone_preprocess_run(session, run_id)
+            if not run:
+                raise ValueError("Stone preprocess run not found after submit.")
+            return run
 
     def process(self, run_id: str, project_id: str) -> None:
-        loop = asyncio.get_running_loop()
-        loop.create_task(self._process(run_id, project_id))
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            raise RuntimeError("Stone preprocess event loop is not ready.")
+        future = asyncio.run_coroutine_threadsafe(self._process(run_id, project_id), loop)
+        with self._lock:
+            self._futures[run_id] = future
+            self._project_by_future[run_id] = project_id
+        future.add_done_callback(lambda _: self._finish_future(run_id))
+
+    def is_tracking(self, run_id: str) -> bool:
+        with self._lock:
+            future = self._futures.get(run_id)
+        return future is not None and not future.done()
+
+    async def shutdown(self) -> None:
+        with self._lock:
+            futures = list(self._futures.values())
+        for future in futures:
+            future.cancel()
+        if not futures:
+            return
+        await asyncio.gather(
+            *(asyncio.wrap_future(future) for future in futures),
+            return_exceptions=True,
+        )
 
     async def _process(self, run_id: str, project_id: str) -> None:
         try:
-            await self._run(run_id, project_id)
+            with background_task_slot():
+                await self._run(run_id, project_id)
         except asyncio.CancelledError:
             logger.info("Stone preprocess %s cancelled.", run_id)
             self._mark_failed(run_id, "Cancelled.")
@@ -57,7 +176,14 @@ class StonePreprocessWorker:
             self._trace(run, "Starting Stone preprocess run.")
 
             documents = [
-                document
+                StoneDocumentSnapshot(
+                    id=document.id,
+                    title=document.title,
+                    filename=document.filename,
+                    clean_text=document.clean_text,
+                    raw_text=document.raw_text,
+                    metadata_json=dict(document.metadata_json or {}),
+                )
                 for document in repository.list_project_documents(session, project.id)
                 if document.ingest_status == "ready"
             ]
@@ -68,6 +194,8 @@ class StonePreprocessWorker:
             concurrency = max(1, int(summary.get("concurrency", 1)))
             summary["stone_profile_total"] = len(documents)
             summary["stone_profile_completed"] = 0
+            summary["current_stage"] = "checking_documents"
+            summary["progress_percent"] = 0
             run.summary_json = summary
             run.current_stage = "Checking documents"
             run.progress_percent = 0
@@ -78,7 +206,7 @@ class StonePreprocessWorker:
         completed_count = 0
         total_docs = len(documents)
 
-        async def _process_document(document: DocumentRecord) -> None:
+        async def _process_document(document: StoneDocumentSnapshot) -> None:
             nonlocal completed_count
             async with semaphore:
                 with self.db.session() as session:
@@ -92,7 +220,10 @@ class StonePreprocessWorker:
                         self._update_progress(session, run, completed_count, total_docs, "Profiling documents")
                         return
 
-                    self._trace(run, f"Profiling document {completed_count + 1}/{total_docs}: {document.title}")
+                    self._trace(
+                        run,
+                        f"Profiling document {completed_count + 1}/{total_docs}: {document.title or document.filename}",
+                    )
 
                 try:
                     profile_payload = await asyncio.to_thread(
@@ -137,6 +268,8 @@ class StonePreprocessWorker:
         summary = dict(run.summary_json or {})
         summary["stone_profile_completed"] = index
         summary["stone_profile_total"] = total
+        summary["current_stage"] = stage
+        summary["progress_percent"] = int(index / total * 100) if total > 0 else 100
         run.summary_json = summary
         run.current_stage = f"{stage} ({index}/{total})"
         run.progress_percent = int(index / total * 100) if total > 0 else 100
@@ -145,7 +278,7 @@ class StonePreprocessWorker:
 
     def _build_stone_profile_payload(
         self,
-        document: DocumentRecord,
+        document: StoneDocumentSnapshot,
         *,
         project_name: str,
         chat_config: "ServiceConfig | None",
@@ -181,9 +314,14 @@ class StonePreprocessWorker:
         with self.db.session() as session:
             run = repository.get_stone_preprocess_run(session, run_id)
             if run and run.status in ("queued", "running"):
+                summary = dict(run.summary_json or {})
+                summary["current_stage"] = "failed"
+                summary["progress_percent"] = int(summary.get("progress_percent") or run.progress_percent or 0)
                 run.status = "failed"
                 run.finished_at = datetime.now(UTC).replace(tzinfo=None)
                 run.error_message = error_message
+                run.current_stage = "Failed"
+                run.summary_json = summary
                 session.commit()
                 self._progress(run)
 
@@ -192,6 +330,11 @@ class StonePreprocessWorker:
 
     def _trace(self, run: StonePreprocessRun, message: str) -> None:
         self.stream_hub.broadcast_trace(run.id, run.project_id, message)
+
+    def _finish_future(self, run_id: str) -> None:
+        with self._lock:
+            self._futures.pop(run_id, None)
+            self._project_by_future.pop(run_id, None)
 
 
 class StonePreprocessStreamHub:
