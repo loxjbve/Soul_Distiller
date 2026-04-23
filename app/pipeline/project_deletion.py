@@ -20,6 +20,7 @@ from app.models import (
     GeneratedArtifact,
     SkillDraft,
     SkillVersion,
+    StonePreprocessRun,
     TelegramPreprocessActiveUser,
     TelegramPreprocessRun,
     TelegramPreprocessTopic,
@@ -328,8 +329,15 @@ class ProjectDeletionManager:
             with self.db.session() as session:
                 run_ids = repository.list_analysis_run_ids_for_projects(session, project_ids, limit=self.batch_size)
                 if not run_ids:
-                    return
+                    break
                 repository.delete_analysis_runs_by_ids(session, run_ids)
+                session.commit()
+        while True:
+            with self.db.session() as session:
+                run_ids = [str(r) for r in session.scalars(select(StonePreprocessRun.id).where(StonePreprocessRun.project_id.in_(project_ids)).limit(self.batch_size))]
+                if not run_ids:
+                    break
+                session.execute(delete(StonePreprocessRun).where(StonePreprocessRun.id.in_(run_ids)))
                 session.commit()
 
     def _delete_project_model_rows(self, project_ids: list[str], model, delete_by_ids) -> None:

@@ -912,6 +912,13 @@ def preprocess_page(
             name="telegram_preprocess.html",
             context=_page_context(request, "preprocess", **telegram_context),
         )
+    elif context["project"].mode == "stone":
+        stone_context = _stone_preprocess_context(session, project_id, run_id=run_id)
+        return templates.TemplateResponse(
+            request=request,
+            name="stone_preprocess.html",
+            context=_page_context(request, "preprocess", **stone_context),
+        )
     sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     if not sessions:
         sessions = [
@@ -998,21 +1005,28 @@ def writing_page(
 
 
 @router.post("/projects/{project_id}/preprocess/run")
-def start_telegram_preprocess_form(
+def start_preprocess_form(
     request: Request,
     project_id: str,
     session: SessionDep,
     weekly_summary_concurrency: Annotated[int | None, Form(ge=1)] = None,
 ):
     project = _ensure_project(session, project_id)
-    if project.mode != "telegram":
-        raise HTTPException(status_code=400, detail="Only Telegram projects use this preprocess flow.")
-    run = _create_telegram_preprocess_run(
-        request,
-        session,
-        project_id,
-        weekly_summary_concurrency=weekly_summary_concurrency,
-    )
+    if project.mode == "telegram":
+        run = _create_telegram_preprocess_run(
+            request,
+            session,
+            project_id,
+            weekly_summary_concurrency=weekly_summary_concurrency,
+        )
+    elif project.mode == "stone":
+        run = _create_stone_preprocess_run(
+            request,
+            session,
+            project_id,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use this preprocess flow.")
     return RedirectResponse(url=f"/projects/{project_id}/preprocess?run_id={run.id}", status_code=303)
 
 
@@ -1447,101 +1461,164 @@ def analyze_project_api(
 
 
 @router.post("/api/projects/{project_id}/preprocess/runs")
-def create_telegram_preprocess_run_api(
+def create_preprocess_run_api(
     request: Request,
     project_id: str,
     session: SessionDep,
     payload: TelegramPreprocessRunCreatePayload | None = None,
 ):
-    run = _create_telegram_preprocess_run(
-        request,
-        session,
-        project_id,
-        weekly_summary_concurrency=(payload.weekly_summary_concurrency if payload else None),
-    )
-    return _ok_response("Telegram 预处理任务已创建。", **_serialize_telegram_preprocess_run(run))
+    project = _ensure_project(session, project_id)
+    if project.mode == "telegram":
+        run = _create_telegram_preprocess_run(
+            request,
+            session,
+            project_id,
+            weekly_summary_concurrency=(payload.weekly_summary_concurrency if payload else None),
+        )
+        return _ok_response("Telegram 预处理任务已创建。", **_serialize_telegram_preprocess_run(run))
+    elif project.mode == "stone":
+        run = _create_stone_preprocess_run(
+            request,
+            session,
+            project_id,
+        )
+        return _ok_response("Stone 预分析任务已创建。", **_serialize_stone_preprocess_run(run))
+    else:
+        raise HTTPException(status_code=400, detail="Project mode does not support preprocess.")
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs")
-def list_telegram_preprocess_runs_api(project_id: str, session: SessionDep):
+def list_preprocess_runs_api(project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
-    if project.mode != "telegram":
-        raise HTTPException(status_code=400, detail="Only Telegram projects use preprocess runs.")
-    runs = repository.list_telegram_preprocess_runs(session, project_id, limit=40)
-    return _ok_response("已返回 Telegram 预处理历史。", runs=[_serialize_telegram_preprocess_run(item) for item in runs])
+    if project.mode == "telegram":
+        runs = repository.list_telegram_preprocess_runs(session, project_id, limit=40)
+        return _ok_response("已返回 Telegram 预处理历史。", runs=[_serialize_telegram_preprocess_run(item) for item in runs])
+    elif project.mode == "stone":
+        runs = repository.list_stone_preprocess_runs(session, project_id, limit=40)
+        return _ok_response("已返回 Stone 预分析历史。", runs=[_serialize_stone_preprocess_run(item) for item in runs])
+    else:
+        raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/latest")
-def get_latest_telegram_preprocess_run_api(project_id: str, session: SessionDep, successful: bool = Query(default=True)):
+def get_latest_preprocess_run_api(project_id: str, session: SessionDep, successful: bool = Query(default=True)):
     project = _ensure_project(session, project_id)
-    if project.mode != "telegram":
-        raise HTTPException(status_code=400, detail="Only Telegram projects use preprocess runs.")
-    run = (
-        repository.get_latest_successful_telegram_preprocess_run(session, project_id)
-        if successful
-        else repository.get_latest_telegram_preprocess_run(session, project_id)
-    )
-    if not run:
-        raise HTTPException(status_code=404, detail="No Telegram preprocess run found.")
-    return _ok_response("已返回最新 Telegram 预处理结果。", **_serialize_telegram_preprocess_run(run))
+    if project.mode == "telegram":
+        run = (
+            repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+            if successful
+            else repository.get_latest_telegram_preprocess_run(session, project_id)
+        )
+        if not run:
+            raise HTTPException(status_code=404, detail="No Telegram preprocess run found.")
+        return _ok_response("已返回最新 Telegram 预处理结果。", **_serialize_telegram_preprocess_run(run))
+    elif project.mode == "stone":
+        run = (
+            repository.get_latest_successful_stone_preprocess_run(session, project_id)
+            if successful
+            else repository.get_latest_stone_preprocess_run(session, project_id)
+        )
+        if not run:
+            raise HTTPException(status_code=404, detail="No Stone preprocess run found.")
+        return _ok_response("已返回最新 Stone 预分析结果。", **_serialize_stone_preprocess_run(run))
+    else:
+        raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}")
-def get_telegram_preprocess_run_api(project_id: str, run_id: str, session: SessionDep):
-    run = _resolve_telegram_preprocess_run(session, project_id, run_id)
-    return _ok_response("已返回 Telegram 预处理详情。", **_serialize_telegram_preprocess_detail(session, project_id, run))
+def get_preprocess_run_api(project_id: str, run_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    if project.mode == "telegram":
+        run = _resolve_telegram_preprocess_run(session, project_id, run_id)
+        return _ok_response("已返回 Telegram 预处理详情。", **_serialize_telegram_preprocess_detail(session, project_id, run))
+    elif project.mode == "stone":
+        run = repository.get_stone_preprocess_run(session, run_id)
+        if not run or run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        return _ok_response("已返回 Stone 预分析详情。", **_serialize_stone_preprocess_run(run))
+    else:
+        raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}/stream")
-def stream_telegram_preprocess_run_api(request: Request, project_id: str, run_id: str, session: SessionDep):
-    run = _resolve_telegram_preprocess_run(session, project_id, run_id)
-    hub = request.app.state.telegram_preprocess_stream_hub
-    subscription = hub.subscribe(run.id)
+def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    if project.mode == "telegram":
+        run = _resolve_telegram_preprocess_run(session, project_id, run_id)
+        hub = request.app.state.telegram_preprocess_stream_hub
+        subscription = hub.subscribe(run.id)
 
-    async def generate():
-        from starlette.concurrency import run_in_threadpool
+        async def generate():
+            from starlette.concurrency import run_in_threadpool
 
-        last_snapshot = ""
+            last_snapshot = ""
 
-        def fetch_payload():
-            with request.app.state.db.session() as live_session:
-                live_run = _resolve_telegram_preprocess_run(live_session, project_id, run_id)
-                return _serialize_telegram_preprocess_detail(live_session, project_id, live_run)
+            def fetch_payload():
+                with request.app.state.db.session() as live_session:
+                    live_run = _resolve_telegram_preprocess_run(live_session, project_id, run_id)
+                    return _serialize_telegram_preprocess_detail(live_session, project_id, live_run)
 
-        try:
-            initial_payload = await run_in_threadpool(fetch_payload)
-            last_snapshot = json.dumps(initial_payload, ensure_ascii=False)
-            yield _format_sse("snapshot", initial_payload)
-            if initial_payload["status"] not in {"queued", "running"}:
-                yield _format_sse("done", {"run_id": initial_payload["id"], "status": initial_payload["status"]})
-                return
+            try:
+                initial_payload = await run_in_threadpool(fetch_payload)
+                last_snapshot = json.dumps(initial_payload, ensure_ascii=False)
+                yield _format_sse("snapshot", initial_payload)
+                if initial_payload["status"] not in {"queued", "running"}:
+                    yield _format_sse("done", {"run_id": initial_payload["id"], "status": initial_payload["status"]})
+                    return
 
-            while True:
-                try:
-                    event = await run_in_threadpool(subscription.get, True, 15.0)
-                except Empty:
-                    event = {"event": "heartbeat", "payload": {}}
+                while True:
+                    try:
+                        event = await run_in_threadpool(subscription.get, True, 15.0)
+                    except Empty:
+                        event = {"event": "heartbeat", "payload": {}}
 
-                if event.get("event") == "trace":
-                    yield _format_sse("trace", event.get("payload") or {})
+                    if event.get("event") == "trace":
+                        yield _format_sse("trace", event.get("payload") or {})
 
-                if event.get("event") in {"snapshot", "heartbeat"}:
-                    payload = await run_in_threadpool(fetch_payload)
-                    encoded = json.dumps(payload, ensure_ascii=False)
-                    if encoded != last_snapshot:
-                        last_snapshot = encoded
+                    if event.get("event") in {"snapshot", "heartbeat"}:
+                        payload = await run_in_threadpool(fetch_payload)
+                        encoded = json.dumps(payload, ensure_ascii=False)
+                        if encoded != last_snapshot:
+                            last_snapshot = encoded
+                            yield _format_sse("snapshot", payload)
+                        if payload["status"] not in {"queued", "running"}:
+                            yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
+                            break
+            finally:
+                hub.unsubscribe(run.id, subscription)
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    elif project.mode == "stone":
+        run = repository.get_stone_preprocess_run(session, run_id)
+        if not run or run.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Run not found.")
+        hub = request.app.state.stone_preprocess_stream_hub
+        
+        async def generate_stone():
+            async for chunk in hub.stream_events(run.id):
+                yield chunk
+                
+                # Fetch payload to send snapshot periodically
+                with request.app.state.db.session() as live_session:
+                    live_run = repository.get_stone_preprocess_run(live_session, run_id)
+                    if live_run:
+                        payload = _serialize_stone_preprocess_run(live_run)
                         yield _format_sse("snapshot", payload)
-                    if payload["status"] not in {"queued", "running"}:
-                        yield _format_sse("done", {"run_id": payload["id"], "status": payload["status"]})
-                        break
-        finally:
-            hub.unsubscribe(run.id, subscription)
+                        if live_run.status not in {"queued", "running"}:
+                            yield _format_sse("done", {"run_id": live_run.id, "status": live_run.status})
+                            break
 
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
-    )
+        return StreamingResponse(
+            generate_stone(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}/topics")
@@ -2285,16 +2362,15 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     writing_guide_status = _resolve_writing_guide_status(session, project_id) if project.mode == "stone" else None
-    latest_preprocess_run = (
-        repository.get_latest_telegram_preprocess_run(session, telegram_data_project_id)
-        if project.mode == "telegram"
-        else None
-    )
-    latest_successful_preprocess_run = (
-        repository.get_latest_successful_telegram_preprocess_run(session, telegram_data_project_id)
-        if project.mode == "telegram"
-        else None
-    )
+    latest_preprocess_run = None
+    latest_successful_preprocess_run = None
+    
+    if project.mode == "telegram":
+        latest_preprocess_run = repository.get_latest_telegram_preprocess_run(session, telegram_data_project_id)
+        latest_successful_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, telegram_data_project_id)
+    elif project.mode == "stone":
+        latest_preprocess_run = repository.get_latest_stone_preprocess_run(session, project.id)
+        latest_successful_preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project.id)
     telegram_top_users = (
         repository.list_telegram_preprocess_top_users(session, telegram_data_project_id, run_id=latest_successful_preprocess_run.id)
         if latest_successful_preprocess_run
@@ -2455,6 +2531,52 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
     }
 
 
+def _stone_preprocess_context(
+    session: Session,
+    project_id: str,
+    *,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    project = _ensure_project(session, project_id)
+    runs = repository.list_stone_preprocess_runs(session, project_id, limit=24)
+    selected_run = None
+    if run_id:
+        selected_run = repository.get_stone_preprocess_run(session, run_id)
+        if selected_run and selected_run.project_id != project_id:
+            selected_run = None
+    if not selected_run:
+        selected_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
+    if not selected_run and runs:
+        selected_run = runs[0]
+
+    documents = repository.list_project_documents(session, project_id)
+    doc_counts = repository.count_project_documents(session, project_id)
+    serialized_run = _serialize_stone_preprocess_run(selected_run) if selected_run else None
+
+    # Check if a run is already active
+    active_run = repository.get_active_stone_preprocess_run(session, project_id)
+    can_start = doc_counts["ready"] > 0 and not active_run
+
+    ui_strings = page_strings("preprocess", "zh-CN")
+
+    return {
+        "project": project,
+        "runs": [_serialize_stone_preprocess_run(item) for item in runs],
+        "selected_run_data": serialized_run,
+        "documents": [_serialize_document(d) for d in documents],
+        "can_start": can_start,
+        "stone_preprocess_bootstrap": json.dumps(
+            {
+                "project_id": project.id,
+                "run_id": selected_run.id if selected_run else None,
+                "initial_run": serialized_run,
+                "ui_strings": ui_strings,
+            },
+            ensure_ascii=False,
+        ),
+    }
+
+
 def _telegram_preprocess_context(
     session: Session,
     project_id: str,
@@ -2500,6 +2622,24 @@ def _telegram_preprocess_context(
             ensure_ascii=False,
         ),
     }
+
+
+def _create_stone_preprocess_run(
+    request: Request,
+    session: Session,
+    project_id: str,
+) -> "StonePreprocessRun":
+    project = _ensure_project(session, project_id)
+    chat_config = repository.get_chat_config(session, project_id)
+
+    run = repository.create_stone_preprocess_run(
+        session,
+        project_id=project_id,
+        llm_model=chat_config.model if chat_config else None,
+    )
+    task = request.app.state.stone_preprocess_worker.process(run.id, project_id)
+    asyncio.create_task(task)
+    return run
 
 
 def _create_telegram_preprocess_run(
@@ -3450,6 +3590,27 @@ def _serialize_writing_session_detail(chat_session) -> dict[str, Any]:
     return {
         **_serialize_chat_session(chat_session),
         "turns": [_serialize_chat_turn(turn) for turn in turns],
+    }
+
+
+def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]:
+    summary = dict(run.summary_json or {})
+    return {
+        "id": run.id,
+        "project_id": run.project_id,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() + "Z" if run.finished_at else None,
+        "llm_model": run.llm_model,
+        "progress_percent": run.progress_percent,
+        "current_stage": run.current_stage,
+        "prompt_tokens": run.prompt_tokens,
+        "completion_tokens": run.completion_tokens,
+        "total_tokens": run.total_tokens,
+        "error_message": run.error_message,
+        "stone_profile_completed": summary.get("stone_profile_completed", 0),
+        "stone_profile_total": summary.get("stone_profile_total", 0),
+        "created_at": run.created_at.isoformat() + "Z",
     }
 
 
