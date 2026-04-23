@@ -29,6 +29,7 @@
                 {% endif %}
                 <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind={{ primary_asset_kind }}">{{ ui.open_assets }}</a>
                 {% if project.mode == 'stone' %}
+                    <a class="ghost-button" href="/projects/{{ project.id }}/preprocess">预分析</a>
                     <a class="primary-button" href="/projects/{{ project.id }}/writing">写作台</a>
                 {% else %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
@@ -89,6 +90,7 @@
                     <div class="button-row">
                         <button type="button" class="primary-button" data-modal-open="add-text-document-modal">添加文章</button>
                         <button type="button" class="ghost-button" id="refresh-docs-btn">{{ ui.refresh_documents }}</button>
+                        <a class="ghost-button" href="/projects/{{ project.id }}/preprocess">去预分析</a>
                     </div>
                     <p class="helper-text">
                         {% if writing_guide_status and writing_guide_status.status == 'published' %}
@@ -440,21 +442,27 @@
                         <h2>{{ ui.analysis_title }}</h2>
                     </div>
                 </div>
-                <div class="panel-body">
+                <div class="panel-body panel-scroll" data-panel-scroll>
                     <form method="post" action="/projects/{{ project.id }}/analyze" class="form-stack" id="analyze-form">
                         <label>
                             <span>{{ ui.analysis_target_role }}</span>
                             <input type="text" name="target_role" value="{{ analysis_defaults.target_role }}" required>
                         </label>
-                        <label>
-                            <span>{{ ui.analysis_context }}</span>
-                            <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
-                        </label>
-                        <label>
-                            <span>{{ ui.analysis_concurrency }}</span>
-                            <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
-                        </label>
-                        <p class="section-note">{{ ui.analysis_help }}</p>
+                        {% if project.mode != 'stone' %}
+                            <label>
+                                <span>{{ ui.analysis_context }}</span>
+                                <textarea name="analysis_context" rows="6">{{ analysis_defaults.analysis_context }}</textarea>
+                            </label>
+                            <label>
+                                <span>{{ ui.analysis_concurrency }}</span>
+                                <input type="number" name="concurrency" value="{{ analysis_defaults.concurrency }}" min="1">
+                            </label>
+                            <p class="section-note">{{ ui.analysis_help }}</p>
+                        {% else %}
+                            <input type="hidden" name="analysis_context" value="stone corpus">
+                            <input type="hidden" name="concurrency" value="1">
+                            <p class="helper-text" style="margin: 0;">在搬石模式下，目标角色仅作为作者的笔名或称呼，不参与额外背景设定。分析过程基于预分析提取的文章特征运行。</p>
+                        {% endif %}
                         <div class="button-row button-row--end">
                             <button type="submit" class="primary-button" id="analyze-submit-btn" {% if not can_analyze %}disabled{% endif %}>
                                 {{ ui.analysis_submit if can_analyze else ui.analysis_submit_disabled }}
