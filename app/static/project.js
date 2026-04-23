@@ -131,9 +131,14 @@ if (bootstrap.project?.id) {
         Array.from(fileList).forEach((file) => formData.append("files", file));
         showFeedback(state.ui.uploading || "正在上传文档…");
         try {
-            await fetchJson(`/api/projects/${state.projectId}/documents`, {
+            const payload = await fetchJson(`/api/projects/${state.projectId}/documents`, {
                 method: "POST",
                 body: formData,
+            });
+            (payload.tasks || []).forEach((task) => {
+                if (task?.document_id) {
+                    state.tasks.set(task.document_id, task);
+                }
             });
             await refreshDocuments();
             showFeedback(state.ui.upload_success || "文档上传完成。", "success");
@@ -214,6 +219,7 @@ if (bootstrap.project?.id) {
             elements.loadMore.hidden = !state.pagination.has_more;
         }
         updateStats();
+        renderTelegramRelationships();
     }
 
     function getFilteredDocuments() {
@@ -386,8 +392,8 @@ if (bootstrap.project?.id) {
         const content = elements.addTextContent?.value?.trim() || "";
         const sourceType = elements.addTextSource?.value?.trim() || "";
         const userNote = elements.addTextNote?.value?.trim() || "";
-        if (!title || !content) {
-            showFeedback("标题和正文不能为空。", "error");
+        if (!content) {
+            showFeedback("正文不能为空。", "error");
             return;
         }
         setButtonBusy(elements.addTextSubmit, true);

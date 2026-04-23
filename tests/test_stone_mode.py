@@ -5,7 +5,12 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from sqlalchemy import func, select
+
 from app.analysis.facets import get_facets_for_mode
+from app.llm.client import OpenAICompatibleClient
+from app.models import TextChunk
+from app.schemas import ChatCompletionResult, LLMToolCall, ToolRoundResult
 from app.storage import repository
 
 
@@ -52,12 +57,37 @@ def _collect_sse_events(client, url: str) -> list[tuple[str, dict]]:
     return events
 
 
+def _ensure_service_config(app, service_name: str, *, model: str) -> None:
+    with app.state.db.session() as session:
+        repository.upsert_setting(
+            session,
+            service_name,
+            {
+                "provider_kind": "openai-compatible",
+                "base_url": "https://example.com/v1",
+                "api_key": "sk-test",
+                "model": model,
+                "api_mode": "responses",
+            },
+        )
+
+
+def _count_document_chunks(app, document_id: str) -> int:
+    with app.state.db.session() as session:
+        return int(
+            session.scalar(
+                select(func.count()).select_from(TextChunk).where(TextChunk.document_id == document_id)
+            )
+            or 0
+        )
+
+
 def _seed_stone_analysis(app, project_id: str) -> None:
     facet_catalog = get_facets_for_mode("stone")
     upload_dir = app.state.config.upload_dir / project_id
     upload_dir.mkdir(parents=True, exist_ok=True)
     storage_path = upload_dir / "seed-stone.txt"
-    storage_path.write_text("夜里写字的人总会回到代价、关系和沉默。", encoding="utf-8")
+    storage_path.write_text("夜里写字的人，总会回到代价、关系和沉默。", encoding="utf-8")
 
     with app.state.db.session() as session:
         repository.create_document(
@@ -71,8 +101,8 @@ def _seed_stone_analysis(app, project_id: str) -> None:
             title="Seed Stone",
             author_guess="Author",
             created_at_guess=None,
-            raw_text="夜里写字的人总会回到代价、关系和沉默。",
-            clean_text="夜里写字的人总会回到代价、关系和沉默。",
+            raw_text="夜里写字的人，总会回到代价、关系和沉默。",
+            clean_text="夜里写字的人，总会回到代价、关系和沉默。",
             language="zh",
             metadata_json={
                 "stone_profile": {
@@ -82,8 +112,8 @@ def _seed_stone_analysis(app, project_id: str) -> None:
                     "structure_template": "setup_then_turn",
                     "lexical_markers": ["代价", "关系", "沉默"],
                     "emotional_progression": "steady_pressure_with_small_turns",
-                    "nonclinical_signals": ["边界/防御线索偏强：克制、沉默"],
-                    "representative_lines": ["夜里写字的人总会回到代价、关系和沉默。"],
+                    "nonclinical_signals": ["边界和克制感反复出现"],
+                    "representative_lines": ["夜里写字的人，总会回到代价、关系和沉默。"],
                 }
             },
             ingest_status="ready",
@@ -130,15 +160,12 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
 
     project_page = client.get(f"/projects/{project_id}")
     assert project_page.status_code == 200
-    assert "写作台" in project_page.text
-    assert "添加文章" in project_page.text
-    assert 'id="upload-dropzone"' not in project_page.text
+    assert 'id="upload-dropzone"' in project_page.text
 
     create_doc = client.post(
         f"/api/projects/{project_id}/documents/text",
         json={
-            "title": "夜车",
-            "content": "我总觉得夜车不是为了把人送到哪里，而是为了把白天没有说完的话重新摇出来。",
+            "content": "夜里写字的人，总会把白天没说完的话重新从沉默里拽出来，再慢慢摆回桌面。",
             "source_type": "essay",
             "user_note": "first import",
         },
@@ -148,12 +175,13 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     document_id = document_payload["id"]
     assert document_payload["request_status"] == "ok"
     assert document_payload["source_type"] == "essay"
-    assert document_payload["status"] in {"queued", "parsing", "chunking", "embedding", "storing", "completed"}
+    assert document_payload["status"] in {"queued", "parsing", "chunking", "storing", "completed"}
 
     document_detail = _wait_for_ready(client, project_id, document_id)
     assert document_detail["ingest_status"] == "ready"
     assert document_detail["metadata_json"]["user_note"] == "first import"
     assert document_detail["metadata_json"]["stone_text_entry"] is True
+    assert _count_document_chunks(app, document_id) == 0
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -166,6 +194,7 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     assert analysis_payload["status"] == "completed"
     stone_keys = [facet.key for facet in get_facets_for_mode("stone")]
     assert analysis_payload["summary"]["facet_keys"] == stone_keys
+    assert analysis_payload["summary"]["chunk_count"] == 0
     assert len(analysis_payload["facets"]) == len(stone_keys)
 
     refreshed_docs = client.get(f"/api/projects/{project_id}/documents").json()["documents"]
@@ -175,6 +204,164 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     assert stone_profile["narrative_pov"]
     assert stone_profile["tone"]
     assert stone_profile["structure_template"]
+
+
+def test_stone_json_upload_splits_articles_and_filters_noise(client, app):
+    create_response = client.post("/api/projects", json={"name": "Stone JSON", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    payload = {
+        "name": "Stone Feed",
+        "messages": [
+            {"id": 1, "type": "message", "text": "太短了，不算文章。"},
+            {
+                "id": 2,
+                "type": "message",
+                "text": "This is a long English only paragraph with more than fifty characters, but it should still be filtered out.",
+            },
+            {
+                "id": 3,
+                "type": "message",
+                "text": "第一篇文章在这里展开。它有足够长的中文内容，会被系统识别成一篇完整文章，而且不需要再拆分成 chunks。",
+            },
+            {
+                "id": 4,
+                "type": "message",
+                "text": [
+                    "第二篇文章来自富文本数组，它同样有足够长的中文正文，",
+                    {"type": "hashtag", "text": "#忽略这个标签"},
+                    "并且应该被导入成一篇独立文章，而不是保留成原始 JSON 消息。",
+                ],
+            },
+        ],
+    }
+    response = client.post(
+        f"/api/projects/{project_id}/documents",
+        files=[
+            (
+                "files",
+                ("articles.json", json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json"),
+            )
+        ],
+    )
+    assert response.status_code == 200
+    response_payload = response.json()
+    assert len(response_payload["documents"]) == 2
+    assert len(response_payload["tasks"]) == 2
+
+    document_ids = [item["id"] for item in response_payload["documents"]]
+    for document_id in document_ids:
+        ready_document = _wait_for_ready(client, project_id, document_id)
+        assert ready_document["ingest_status"] == "ready"
+        assert ready_document["metadata_json"]["stone_json_import"]["source_filename"] == "articles.json"
+        assert _count_document_chunks(app, document_id) == 0
+
+
+def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypatch):
+    create_response = client.post("/api/projects", json={"name": "Stone Agent", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    create_doc = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。",
+            "source_type": "essay",
+        },
+    )
+    assert create_doc.status_code == 200
+    document_id = create_doc.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    _ensure_service_config(app, "chat_service", model="demo-model")
+
+    def fake_chat_completion_result(self, messages, **kwargs):
+        payload = {
+            "article_theme": "压低声调后的情绪回收",
+            "narrative_pov": "first_person",
+            "tone": "restrained_and_heavy",
+            "structure_template": "setup_then_turn",
+            "lexical_markers": ["声调", "情绪", "收口"],
+            "emotional_progression": "steady_pressure_with_small_turns",
+            "nonclinical_signals": ["边界感和回收式表达反复出现"],
+            "representative_lines": ["作者总是先压低声调，再把情绪推回句子深处。"],
+        }
+        return ChatCompletionResult(
+            content=json.dumps(payload, ensure_ascii=False),
+            model="demo-model",
+            usage={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            request_url="https://example.com/v1/responses",
+            request_payload={"messages": messages},
+        )
+
+    def fake_tool_round(self, messages, tools, **kwargs):
+        has_tool_result = any(message.get("role") == "tool" for message in messages)
+        if not has_tool_result:
+            return ToolRoundResult(
+                content="",
+                model="demo-model",
+                usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                tool_calls=[
+                    LLMToolCall(
+                        id="call-1",
+                        name="read_article_text",
+                        arguments_json=json.dumps({"document_id": document_id, "max_chars": 300}, ensure_ascii=False),
+                        arguments={"document_id": document_id, "max_chars": 300},
+                    )
+                ],
+                provider_response_id="resp-1",
+            )
+        return ToolRoundResult(
+            content=json.dumps(
+                {
+                    "summary": "作者在这个维度上依赖压低声调、延迟释放和半开式收束。",
+                    "bullets": [
+                        "经常先把声调压低，再把核心情绪往后放。",
+                        "句尾常常留一个没有完全封死的收口。",
+                    ],
+                    "confidence": 0.88,
+                    "fewshots": [
+                        {
+                            "document_id": document_id,
+                            "situation": "为了验证句尾收束方式，回读原文",
+                            "expression": "先压低声调，再把情绪回收",
+                            "quote": "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。",
+                            "reason": "直接支持当前 facet 的判断",
+                        }
+                    ],
+                    "conflicts": [],
+                    "notes": "基于文章画像总结，并用原文回读做了核对。",
+                },
+                ensure_ascii=False,
+            ),
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+            tool_calls=[],
+            provider_response_id="resp-2",
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+    run_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"analysis_context": "tool-augmented stone run", "target_role": "Author"},
+    )
+    assert run_response.status_code == 200
+    run_id = run_response.json()["id"]
+
+    analysis_payload = _wait_for_analysis(client, project_id, run_id)
+    assert analysis_payload["status"] == "completed"
+    first_facet = analysis_payload["facets"][0]
+    retrieval_trace = first_facet["findings"]["retrieval_trace"]
+    assert retrieval_trace["mode"] == "stone_agent"
+    assert retrieval_trace["queried_document_ids"] == [document_id]
+    assert retrieval_trace["tool_calls"]
+
+    refreshed_docs = client.get(f"/api/projects/{project_id}/documents").json()["documents"]
+    stone_profile = refreshed_docs[0]["metadata_json"]["stone_profile"]
+    assert stone_profile["lexical_markers"] == ["声调", "情绪", "收口"]
 
 
 def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_version(client, app):
@@ -193,16 +380,15 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
     draft_payload = draft_response.json()
     draft_id = draft_payload["id"]
     assert draft_payload["asset_kind"] == "writing_guide"
-    assert draft_payload["json_payload"]["external_slots"] == {
-        "clinical_profile": {},
-        "vulnerability_map": {},
-        "reserved_external": True,
-    }
+    external_slots = draft_payload["json_payload"]["external_slots"]
+    assert external_slots["clinical_profile"]
+    assert external_slots["vulnerability_map"]
+    assert "reserved_external" not in external_slots
     assert "## external_slots" in draft_payload["markdown_text"]
+    assert "Ignore external_slots" not in draft_payload["prompt_text"]
 
     writing_page = client.get(f"/projects/{project_id}/writing")
     assert writing_page.status_code == 200
-    assert "写作台" in writing_page.text
 
     session_payload = client.post(
         f"/api/projects/{project_id}/writing/sessions",
@@ -212,7 +398,7 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
 
     message_payload = client.post(
         f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
-        json={"topic": "雨夜的站台", "target_word_count": 600, "extra_requirements": "保持冷静克制"},
+        json={"topic": "Rainy Night Station", "target_word_count": 600, "extra_requirements": "keep it restrained"},
     ).json()
     stream_id = message_payload["stream_id"]
     events = _collect_sse_events(
@@ -245,7 +431,7 @@ def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_
     published_session_id = published_session["id"]
     published_message = client.post(
         f"/api/projects/{project_id}/writing/sessions/{published_session_id}/messages",
-        json={"topic": "凌晨的窗台", "target_word_count": 550, "extra_requirements": "留一点余味"},
+        json={"topic": "Window Before Dawn", "target_word_count": 550, "extra_requirements": "leave some aftertaste"},
     ).json()
     published_events = _collect_sse_events(
         client,

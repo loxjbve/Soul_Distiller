@@ -218,6 +218,13 @@ class IngestTaskManager:
                 self._finalize_document(task)
                 self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
                 return
+            if project and project.mode == "stone":
+                self._process_stone_document(task, content)
+                self._update_task(task, status=TaskStage.STORING, progress_percent=90)
+                if task.is_cancelled: return
+                self._finalize_document(task)
+                self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
+                return
             if task.is_cancelled: return
             result = extract_text(task.filename, content)
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
@@ -279,6 +286,38 @@ class IngestTaskManager:
                 participants=bundle.participants,
                 messages=bundle.messages,
             )
+            session.commit()
+
+    def _process_stone_document(self, task: IngestTask, content: bytes) -> None:
+        result = extract_text(task.filename, content)
+        self._update_task(
+            task,
+            status=TaskStage.CHUNKING,
+            progress_percent=45,
+            stages={
+                "chunk_count": 0,
+                "stone_direct_text": True,
+                "paragraph_count": int((result.metadata or {}).get("paragraph_count") or len(result.segments or [])),
+            },
+        )
+        with self.db.session() as session:
+            document = repository.get_document(session, task.document_id)
+            if document:
+                preserved_metadata = dict(document.metadata_json or {})
+                document.title = document.title or result.title or None
+                document.author_guess = result.author_guess
+                document.created_at_guess = result.created_at_guess
+                document.raw_text = result.raw_text
+                document.clean_text = result.clean_text
+                document.language = result.language
+                metadata = dict(result.metadata or {})
+                for key in ("user_note", "stone_text_entry", "stone_json_import"):
+                    if key in preserved_metadata:
+                        metadata[key] = preserved_metadata[key]
+                document.metadata_json = metadata
+                document.ingest_status = "processing"
+                session.flush()
+            repository.replace_document_chunks(session, document_id=task.document_id, chunks=[])
             session.commit()
 
     def _process_chunks(self, task: IngestTask, extraction_result: Any) -> None:

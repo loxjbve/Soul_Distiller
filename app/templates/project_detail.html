@@ -75,6 +75,17 @@
                         {% endif %}
                     </div>
                 {% elif project.mode == 'stone' %}
+                    <div class="dropzone" id="upload-dropzone">
+                        <input
+                            type="file"
+                            id="file-input"
+                            multiple
+                            accept=".json"
+                            aria-label="上传 stone JSON"
+                        >
+                        <strong>上传 JSON 文章集</strong>
+                        <small>服务端会自动拆成单篇文章，只保留大于 50 字且包含中文的文本。</small>
+                    </div>
                     <div class="button-row">
                         <button type="button" class="primary-button" data-modal-open="add-text-document-modal">添加文章</button>
                         <button type="button" class="ghost-button" id="refresh-docs-btn">{{ ui.refresh_documents }}</button>
@@ -481,7 +492,79 @@
             </article>
 
             {% if telegram_is_parent_workspace %}
-
+                <article class="panel-shell telegram-relationship-panel" id="telegram-relationship-panel">
+                    <div class="panel-header panel-header--slim">
+                        <div>
+                            <p class="eyebrow">{{ ui.telegram_relationship_title or "Relationships" }}</p>
+                            <h2>{{ ui.telegram_relationship_title or "Telegram Relationships" }}</h2>
+                        </div>
+                        <span class="status-chip tone-queued" id="telegram-relationship-status">{{ ui.telegram_relationship_waiting or "waiting" }}</span>
+                    </div>
+                    <div class="panel-body panel-body--tight">
+                        <div class="telegram-relationship-empty" id="telegram-relationship-empty">
+                            <strong>{{ ui.telegram_relationship_waiting or "Relationship snapshot pending." }}</strong>
+                            <p>{{ ui.telegram_relationship_empty_note or "Run preprocess to materialize the latest relationship snapshot." }}</p>
+                        </div>
+                        <div class="telegram-relationship-shell" id="telegram-relationship-shell" hidden>
+                            <div class="telegram-relationship-metrics">
+                                <div class="telegram-relationship-metric">
+                                    <span>{{ ui.telegram_relationship_analyzed_users or "Users" }}</span>
+                                    <strong id="telegram-relationship-users">0</strong>
+                                </div>
+                                <div class="telegram-relationship-metric">
+                                    <span>{{ ui.telegram_relationship_total_edges or "Edges" }}</span>
+                                    <strong id="telegram-relationship-edges">0</strong>
+                                </div>
+                                <div class="telegram-relationship-metric">
+                                    <span>{{ ui.telegram_relationship_top_friendly or "Friendly" }}</span>
+                                    <strong id="telegram-relationship-friendly">0</strong>
+                                </div>
+                                <div class="telegram-relationship-metric">
+                                    <span>{{ ui.telegram_relationship_top_tense or "Tense" }}</span>
+                                    <strong id="telegram-relationship-tense">0</strong>
+                                </div>
+                            </div>
+                            <div class="telegram-relationship-columns">
+                                <section class="telegram-relationship-block">
+                                    <div class="telegram-relationship-block__head">
+                                        <strong>{{ ui.telegram_relationship_top_friendly or "Top Friendly Ties" }}</strong>
+                                    </div>
+                                    <div class="telegram-relationship-list" id="telegram-relationship-friendly-list"></div>
+                                </section>
+                                <section class="telegram-relationship-block">
+                                    <div class="telegram-relationship-block__head">
+                                        <strong>{{ ui.telegram_relationship_top_tense or "Top Tense Ties" }}</strong>
+                                    </div>
+                                    <div class="telegram-relationship-list" id="telegram-relationship-tense-list"></div>
+                                </section>
+                            </div>
+                            <section class="telegram-relationship-member">
+                                <label class="telegram-relationship-member__picker">
+                                    <span>{{ ui.telegram_relationship_member_focus or "Member Focus" }}</span>
+                                    <select id="telegram-relationship-member-select"></select>
+                                </label>
+                                <div class="telegram-relationship-member__groups">
+                                    <section class="telegram-relationship-member-group">
+                                        <h3>{{ ui.telegram_relationship_label_friendly or "Friendly" }}</h3>
+                                        <div class="telegram-relationship-list" id="telegram-relationship-member-allies"></div>
+                                    </section>
+                                    <section class="telegram-relationship-member-group">
+                                        <h3>{{ ui.telegram_relationship_label_tense or "Tense" }}</h3>
+                                        <div class="telegram-relationship-list" id="telegram-relationship-member-tense"></div>
+                                    </section>
+                                    <section class="telegram-relationship-member-group">
+                                        <h3>{{ ui.telegram_relationship_label_neutral or "Neutral" }}</h3>
+                                        <div class="telegram-relationship-list" id="telegram-relationship-member-neutral"></div>
+                                    </section>
+                                    <section class="telegram-relationship-member-group">
+                                        <h3>{{ ui.telegram_relationship_label_unclear or "Unclear" }}</h3>
+                                        <div class="telegram-relationship-list" id="telegram-relationship-member-unclear"></div>
+                                    </section>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </article>
 
                 <article class="panel-shell">
                     <div class="panel-header panel-header--slim">

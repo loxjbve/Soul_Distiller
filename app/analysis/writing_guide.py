@@ -18,6 +18,12 @@ def build_writing_guide_payload_from_facets(
     imagery_summary = facet_summary(summary_by_key, "imagery_theme")
     stance_summary = facet_summary(summary_by_key, "stance_values")
     emotional_summary = facet_summary(summary_by_key, "emotional_arc")
+    psychodynamics_summary = facet_summary(summary_by_key, "nonclinical_psychodynamics")
+    psychodynamic_terms = merge_unique(
+        facet_bullets(summary_by_key, "nonclinical_psychodynamics", limit=6),
+        guide_profile_terms(stone_profiles, "nonclinical_signals", 6),
+        limit=6,
+    )
     return {
         "author_snapshot": compose_profile_section(voice_summary, stance_summary, emotional_summary),
         "voice_dna": {
@@ -70,7 +76,7 @@ def build_writing_guide_payload_from_facets(
             ),
             "dont": merge_unique(
                 facet_bullets(summary_by_key, "creative_constraints", limit=6),
-                ["Do not generate clinical diagnosis.", "Do not flatten ambiguity into slogans."],
+                ["Do not flatten ambiguity into slogans.", "Do not resolve pressure points too neatly."],
                 limit=6,
             ),
         },
@@ -93,9 +99,28 @@ def build_writing_guide_payload_from_facets(
         ],
         "fewshot_anchors": normalize_fewshot_anchors(None, stone_profiles),
         "external_slots": {
-            "clinical_profile": {},
-            "vulnerability_map": {},
-            "reserved_external": True,
+            "clinical_profile": {
+                "mental_state": first_nonempty(emotional_summary, psychodynamics_summary, voice_summary),
+                "candidate_diagnoses": psychodynamic_terms,
+                "defense_mechanisms": psychodynamic_terms,
+            },
+            "vulnerability_map": {
+                "pain_points": merge_unique(
+                    facet_bullets(summary_by_key, "emotional_arc", limit=4),
+                    facet_bullets(summary_by_key, "stance_values", limit=3),
+                    limit=6,
+                ),
+                "fragility_triggers": merge_unique(
+                    facet_bullets(summary_by_key, "creative_constraints", limit=4),
+                    guide_profile_terms(stone_profiles, "nonclinical_signals", 4),
+                    limit=6,
+                ),
+                "compensatory_moves": merge_unique(
+                    facet_bullets(summary_by_key, "voice_signature", limit=3),
+                    facet_bullets(summary_by_key, "structure_composition", limit=3),
+                    limit=6,
+                ),
+            },
         },
         "target_role": target_role,
         "source_context": analysis_context,
@@ -144,6 +169,29 @@ def normalize_guide_object(value: Any, *, defaults: dict[str, Any]) -> dict[str,
         )
         return payload
     return dict(defaults)
+
+
+def normalize_external_slots(
+    value: Any,
+    *,
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    normalized = {
+        "clinical_profile": _normalize_external_slot_payload(
+            payload.get("clinical_profile"),
+            default=dict(defaults.get("clinical_profile") or {}),
+        ),
+        "vulnerability_map": _normalize_external_slot_payload(
+            payload.get("vulnerability_map"),
+            default=dict(defaults.get("vulnerability_map") or {}),
+        ),
+    }
+    for key, item in payload.items():
+        if key in normalized or item in (None, "", [], {}):
+            continue
+        normalized[key] = item
+    return normalized
 
 
 def guide_profile_terms(stone_profiles: list[dict[str, Any]], key: str, limit: int) -> list[str]:
@@ -198,6 +246,33 @@ def normalize_fewshot_anchors(value: Any, stone_profiles: list[dict[str, Any]]) 
             if len(anchors) >= 6:
                 return anchors
     return anchors
+
+
+def _normalize_external_slot_payload(value: Any, *, default: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            if item in (None, "", [], {}):
+                continue
+            if isinstance(item, dict):
+                child = _normalize_external_slot_payload(item, default={})
+                if child:
+                    normalized[key] = child
+                continue
+            if isinstance(item, (list, tuple)):
+                cleaned = [str(entry).strip() for entry in item if str(entry).strip()]
+                if cleaned:
+                    normalized[key] = cleaned
+                continue
+            text = str(item).strip()
+            if text:
+                normalized[key] = text
+        return normalized or dict(default)
+    if isinstance(value, (list, tuple)):
+        cleaned = [str(entry).strip() for entry in value if str(entry).strip()]
+        return {"items": cleaned} if cleaned else dict(default)
+    text = str(value or "").strip()
+    return {"summary": text} if text else dict(default)
 
 
 def merge_unique(*groups: list[str], limit: int) -> list[str]:

@@ -14,7 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import ALL_FACETS, FACETS, FacetDefinition, get_facet_definition, get_facet_prompt_profile, get_facets_for_mode
-from app.analysis.stone import build_stone_profile
+from app.analysis.stone import build_stone_profile, build_stone_profile_messages, normalize_stone_profile
+from app.analysis.stone_agent import StoneAnalysisAgent
 from app.analysis.streaming import AnalysisStreamHub
 from app.analysis.telegram_agent import TelegramAnalysisAgent
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
@@ -447,7 +448,7 @@ class AnalysisEngine:
             message="分析任务开始执行。",
             payload_json={
                 "llm_enabled": bool(chat_config),
-                "embedding_enabled": bool(embedding_config) and project.mode != "telegram",
+                "embedding_enabled": bool(embedding_config) and project.mode not in {"telegram", "stone"},
                 "analysis_mode": project.mode,
             },
         )
@@ -457,26 +458,15 @@ class AnalysisEngine:
         if project.mode == "telegram":
             self._execute_telegram_run(session, run, project, chat_config)
         elif project.mode == "stone":
-            self._prepare_stone_document_profiles(session, run, project)
+            self._prepare_stone_document_profiles(session, run, project, chat_config)
             self._ensure_run_active(run.id, run.project_id)
-            if self.use_processes:
-                self._run_parallel_processes(
-                    session,
-                    run,
-                    project.name,
-                    llm_payload=llm_payload,
-                    embedding_config=embedding_config,
-                    facet_catalog=facet_catalog,
-                )
-            else:
-                self._run_parallel_threads(
-                    session,
-                    run,
-                    project.name,
-                    llm_payload=llm_payload,
-                    embedding_config=embedding_config,
-                    facet_catalog=facet_catalog,
-                )
+            self._run_stone_facets(
+                session,
+                run,
+                project,
+                chat_config=chat_config,
+                facet_catalog=facet_catalog,
+            )
         elif self.use_processes:
             self._run_parallel_processes(
                 session,
@@ -615,7 +605,13 @@ class AnalysisEngine:
         self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
 
-    def _prepare_stone_document_profiles(self, session: Session, run: AnalysisRun, project: Project) -> None:
+    def _prepare_stone_document_profiles(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        chat_config: ServiceConfig | None,
+    ) -> None:
         documents = [
             document
             for document in repository.list_project_documents(session, project.id)
@@ -638,7 +634,11 @@ class AnalysisEngine:
         for index, document in enumerate(documents, start=1):
             self._ensure_run_active(run.id, run.project_id)
             metadata = dict(document.metadata_json or {})
-            metadata["stone_profile"] = build_stone_profile(document)
+            metadata["stone_profile"] = self._build_stone_profile_payload(
+                document,
+                project=project,
+                chat_config=chat_config,
+            )
             document.metadata_json = metadata
             summary = dict(run.summary_json or {})
             summary["stone_profile_completed"] = index
@@ -658,6 +658,51 @@ class AnalysisEngine:
         summary["current_phase"] = "retrieving"
         run.summary_json = summary
         self._persist_progress(session, run.id)
+
+    def _build_stone_profile_payload(
+        self,
+        document: DocumentRecord,
+        *,
+        project: Project,
+        chat_config: ServiceConfig | None,
+    ) -> dict[str, Any]:
+        text = str(document.clean_text or document.raw_text or "").strip()
+        if not text:
+            return build_stone_profile(document)
+        if not chat_config:
+            return build_stone_profile(document)
+        client = OpenAICompatibleClient(chat_config, log_path=self.llm_log_path)
+        messages = build_stone_profile_messages(
+            project.name,
+            document.title or document.filename,
+            text,
+        )
+        try:
+            response = client.chat_completion_result(
+                messages,
+                model=chat_config.model,
+                temperature=0.2,
+                max_tokens=1200,
+            )
+            parsed = parse_json_response(response.content, fallback=True)
+            normalized = normalize_stone_profile(parsed)
+            if any(
+                normalized.get(key)
+                for key in (
+                    "article_theme",
+                    "narrative_pov",
+                    "tone",
+                    "structure_template",
+                    "lexical_markers",
+                    "emotional_progression",
+                    "nonclinical_signals",
+                    "representative_lines",
+                )
+            ):
+                return normalized
+        except Exception:
+            pass
+        return build_stone_profile(document)
 
     def _build_telegram_agent(
         self,
@@ -1029,6 +1074,150 @@ class AnalysisEngine:
             )
             return {
                 "analysis_payload": dict(analysis.payload or {}),
+                "retrieval_trace": dict(analysis.retrieval_trace or {}),
+                "hit_count": int(analysis.hit_count or 0),
+            }
+
+    def _run_stone_facets(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        *,
+        chat_config: ServiceConfig | None,
+        facet_catalog: tuple[FacetDefinition, ...],
+    ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
+        run_concurrency = self._resolve_run_concurrency(run)
+        executor = ThreadPoolExecutor(
+            max_workers=min(len(facet_catalog), run_concurrency),
+            thread_name_prefix="stone-facet-thread",
+        )
+        future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
+        pending_facets = list(facet_catalog)
+        results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
+
+        try:
+            while pending_facets or future_map:
+                self._ensure_run_active(run.id, run.project_id)
+                while pending_facets and len(future_map) < run_concurrency:
+                    self._ensure_run_active(run.id, run.project_id)
+                    facet = pending_facets.pop(0)
+                    self._mark_facet_preparing(session, run, facet)
+                    prepared = self._prepare_stone_facet_execution(session, run, facet)
+                    self._ensure_run_active(run.id, run.project_id)
+                    retrieval_mode, retrieval_trace, hit_count = prepared
+                    self._mark_facet_running(
+                        session,
+                        run,
+                        facet,
+                        retrieval_mode,
+                        retrieval_trace,
+                        hit_count,
+                        llm_payload=asdict(chat_config) if chat_config else None,
+                    )
+                    future = executor.submit(
+                        self._run_stone_facet_worker,
+                        run.id,
+                        project.id,
+                        facet.key,
+                        asdict(chat_config) if chat_config else None,
+                    )
+                    future_map[future] = (facet, retrieval_mode, retrieval_trace, hit_count)
+
+                if not future_map:
+                    continue
+
+                completed_futures, _ = wait(list(future_map.keys()), timeout=0.25, return_when=FIRST_COMPLETED)
+                self._ensure_run_active(run.id, run.project_id)
+                for future in completed_futures:
+                    facet, fallback_mode, fallback_trace, fallback_hit_count = future_map.pop(future)
+                    self._ensure_run_active(run.id, run.project_id)
+                    try:
+                        worker_payload = future.result()
+                        result = self._facet_result_from_payload(facet, worker_payload.get("analysis_payload") or {})
+                        retrieval_mode = str(worker_payload.get("retrieval_mode") or fallback_mode)
+                        retrieval_trace = dict(worker_payload.get("retrieval_trace") or fallback_trace)
+                        hit_count = int(worker_payload.get("hit_count") or fallback_hit_count)
+                    except Exception as exc:
+                        result = self._build_failed_facet_result(facet, exc, llm_called=bool(chat_config))
+                        retrieval_mode = fallback_mode
+                        retrieval_trace = fallback_trace
+                        hit_count = fallback_hit_count
+                    self._ensure_run_active(run.id, run.project_id)
+                    self._apply_facet_result(session, run, facet, retrieval_mode, retrieval_trace, hit_count, result)
+                    results.append((facet, retrieval_mode, hit_count, result))
+            return results
+        finally:
+            for future in future_map:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def _prepare_stone_facet_execution(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        facet: FacetDefinition,
+    ) -> tuple[str, dict[str, Any], int]:
+        documents = [
+            document
+            for document in repository.list_project_documents(session, run.project_id)
+            if document.ingest_status == "ready"
+        ]
+        profiled_document_ids = [
+            document.id
+            for document in documents
+            if isinstance(dict(document.metadata_json or {}).get("stone_profile"), dict)
+        ]
+        retrieval_trace = {
+            "mode": "stone_agent",
+            "evidence_kind": "stone_articles",
+            "embedding_configured": False,
+            "embedding_attempted": False,
+            "embedding_api_called": False,
+            "embedding_success": False,
+            "embedding_skip_reason": "stone_direct_article_mode",
+            "document_count": len(documents),
+            "document_profile_count": len(profiled_document_ids),
+            "document_ids": [document.id for document in documents],
+            "queried_document_ids": [],
+            "tool_calls": [],
+        }
+        return "stone_agent", retrieval_trace, len(profiled_document_ids)
+
+    def _run_stone_facet_worker(
+        self,
+        run_id: str,
+        project_id: str,
+        facet_key: str,
+        llm_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not self.db:
+            raise RuntimeError("Stone facet concurrency requires a configured database session factory.")
+        facet_def = get_facet_definition(facet_key, mode="stone")
+        if not facet_def:
+            raise ValueError(f"Unknown facet: {facet_key}")
+        with self.db.session() as session:
+            run = repository.get_analysis_run(session, run_id)
+            project = repository.get_project(session, project_id)
+            if not run or not project:
+                raise ValueError("Stone analysis run context is unavailable.")
+            self._ensure_run_active(run.id, run.project_id)
+            chat_config = ServiceConfig(**llm_payload) if llm_payload else None
+            agent = StoneAnalysisAgent(
+                session,
+                project,
+                llm_config=chat_config,
+                log_path=self.llm_log_path,
+                trace_callback=lambda event: self._publish_trace(run.id, event),
+            )
+            analysis = agent.analyze_facet(
+                facet_def,
+                target_role=(run.summary_json or {}).get("target_role"),
+                analysis_context=(run.summary_json or {}).get("analysis_context"),
+            )
+            return {
+                "analysis_payload": dict(analysis.payload or {}),
+                "retrieval_mode": str((analysis.retrieval_trace or {}).get("mode") or "stone_agent"),
                 "retrieval_trace": dict(analysis.retrieval_trace or {}),
                 "hit_count": int(analysis.hit_count or 0),
             }
@@ -2010,6 +2199,7 @@ class AnalysisEngine:
         project = repository.get_project(session, project_id)
         facet_catalog = get_facets_for_mode(project.mode if project else None)
         is_telegram = bool(project and project.mode == "telegram")
+        is_stone = bool(project and project.mode == "stone")
         target_project_id = repository.get_target_project_id(session, project_id)
         document_count = (
             session.scalar(
@@ -2019,7 +2209,7 @@ class AnalysisEngine:
         )
         chunk_count = (
             0
-            if is_telegram
+            if is_telegram or is_stone
             else (
                 session.scalar(
                     select(func.count()).select_from(TextChunk).where(TextChunk.project_id == target_project_id)

@@ -347,7 +347,8 @@ class WritingAgentService:
                         "role": "system",
                         "content": (
                             "You are the drafter in a constrained writing pipeline.\n"
-                            "Follow the writing guide exactly, ignore external_slots, and output only the article body.\n"
+                            "Follow the writing guide exactly, including external_slots when they are present, "
+                            "and output only the article body.\n"
                             "Keep the style stable, concrete, and internally consistent."
                         ),
                     },

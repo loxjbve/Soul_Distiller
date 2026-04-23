@@ -70,8 +70,8 @@
                             </p>
                         </div>
                         <div class="analysis-signal-chip-row">
-                            <span class="analysis-signal-chip" id="telegram-preprocess-input-token-chip">In {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
-                            <span class="analysis-signal-chip" id="telegram-preprocess-output-token-chip">Out {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
+                            <span class="analysis-signal-chip" id="telegram-preprocess-input-token-chip">{{ ui.input_tokens or "Input Tokens" }} {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
+                            <span class="analysis-signal-chip" id="telegram-preprocess-output-token-chip">{{ ui.output_tokens or "Output Tokens" }} {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
                         </div>
                     </div>
                     <div class="progress-shell progress-shell--slim">

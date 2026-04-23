@@ -137,7 +137,7 @@ class DocumentUpdatePayload(BaseModel):
 
 
 class TextDocumentCreatePayload(BaseModel):
-    title: str
+    title: str | None = None
     content: str
     source_type: str | None = None
     user_note: str | None = None
@@ -469,7 +469,7 @@ async def upload_documents_form(
     session: SessionDep,
     files: list[UploadFile] = File(...),
 ):
-    _ensure_project(session, project_id)
+    project = _ensure_project(session, project_id)
     ingest = request.app.state.ingest_service
     await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
@@ -1211,9 +1211,33 @@ async def upload_documents_api(
     session: SessionDep,
     files: list[UploadFile] = File(...),
 ):
-    _ensure_project(session, project_id)
+    project = _ensure_project(session, project_id)
     ingest = request.app.state.ingest_service
-    created = await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
+    try:
+        created = await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if project.mode == "stone" and created:
+        task_manager = request.app.state.ingest_task_manager
+        for document in created:
+            document.ingest_status = "queued"
+        task_manager.set_embedding_config(None)
+        session.commit()
+        tasks = [
+            task_manager.submit(
+                project_id=project.id,
+                document_id=document.id,
+                filename=document.filename,
+                storage_path=document.storage_path,
+                mime_type=document.mime_type,
+            )
+            for document in created
+        ]
+        return _ok_response(
+            "Stone documents uploaded and queued.",
+            documents=[_serialize_document(document) for document in created],
+            tasks=tasks,
+        )
     return _ok_response("文档上传完成。", documents=[_serialize_document(document) for document in created])
 
 
@@ -1242,7 +1266,7 @@ def create_text_document_api(
     )
     document.ingest_status = "queued"
     task_manager = request.app.state.ingest_task_manager
-    task_manager.set_embedding_config(repository.get_service_config(session, "embedding_service"))
+    task_manager.set_embedding_config(None)
     session.commit()
     task = task_manager.submit(
         project_id=project.id,

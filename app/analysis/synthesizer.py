@@ -10,6 +10,7 @@ from app.analysis.writing_guide import (
     guide_facet_material as _guide_facet_material,
     guide_profile_terms as _guide_profile_terms,
     normalize_fewshot_anchors as _normalize_fewshot_anchors,
+    normalize_external_slots as _normalize_external_slots,
     normalize_guide_object as _normalize_guide_object,
     normalize_string_list as _normalize_string_list,
     string_block as _string_block,
@@ -1053,12 +1054,11 @@ class AssetSynthesizer:
                 "role": "system",
                 "content": (
                     "You are building a structured writing guide from author analysis.\n"
-                    "Do not diagnose clinical disorders and do not infer exploitability or vulnerability maps.\n"
                     "Return only JSON.\n"
                     "Required keys: author_snapshot, voice_dna, sentence_mechanics, structure_patterns, motif_theme_bank, "
                     "worldview_and_stance, emotional_tendencies, nonclinical_psychodynamics, do_and_dont, "
                     "topic_translation_rules, word_count_strategies, revision_rubric, fewshot_anchors, external_slots.\n"
-                    "external_slots must contain clinical_profile and vulnerability_map, both empty, plus reserved_external=true.\n"
+                    "external_slots must contain clinical_profile and vulnerability_map with concrete evidence-based content.\n"
                     "Prefer arrays or nested objects over long monolithic paragraphs."
                 ),
             },
@@ -1627,11 +1627,24 @@ class AssetSynthesizer:
                 ],
             ),
             "fewshot_anchors": _normalize_fewshot_anchors(payload.get("fewshot_anchors"), stone_profiles),
-            "external_slots": {
-                "clinical_profile": {},
-                "vulnerability_map": {},
-                "reserved_external": True,
-            },
+            "external_slots": _normalize_external_slots(
+                payload.get("external_slots"),
+                defaults={
+                    "clinical_profile": {
+                        "mental_state": _string_block(
+                            payload.get("author_snapshot"),
+                            fallback=f"Target author: {target_role or project_name}.",
+                        ),
+                        "candidate_diagnoses": _guide_profile_terms(stone_profiles, "nonclinical_signals", 6),
+                        "defense_mechanisms": _guide_profile_terms(stone_profiles, "nonclinical_signals", 6),
+                    },
+                    "vulnerability_map": {
+                        "pain_points": _guide_profile_terms(stone_profiles, "article_theme", 4),
+                        "fragility_triggers": _guide_profile_terms(stone_profiles, "nonclinical_signals", 6),
+                        "compensatory_moves": _guide_profile_terms(stone_profiles, "structure_template", 4),
+                    },
+                },
+            ),
             "target_role": str(payload.get("target_role", target_role or project_name)),
             "source_context": str(payload.get("source_context", analysis_context or "")),
         }
@@ -1862,7 +1875,8 @@ class AssetSynthesizer:
             f"word_count_strategies:\n{json.dumps(payload.get('word_count_strategies') or {}, ensure_ascii=False, indent=2)}\n\n"
             f"revision_rubric:\n{json.dumps(payload.get('revision_rubric') or [], ensure_ascii=False)}\n\n"
             f"fewshot_anchors:\n{json.dumps(payload.get('fewshot_anchors') or [], ensure_ascii=False, indent=2)}\n\n"
-            "Ignore external_slots during drafting and review."
+            f"external_slots:\n{json.dumps(payload.get('external_slots') or {}, ensure_ascii=False, indent=2)}\n\n"
+            "Use every section of the guide during drafting and review."
         )
 
 

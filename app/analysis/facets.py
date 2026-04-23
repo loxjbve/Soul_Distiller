@@ -120,9 +120,9 @@ STONE_FACETS: tuple[FacetDefinition, ...] = (
     ),
     FacetDefinition(
         key="nonclinical_psychodynamics",
-        label="非临床心理动力",
-        purpose="提炼非临床的防御、边界、压力反应、自我叙事和关系处理线索。",
-        search_query="防御 边界 压力 自我叙事 回避 克制 控制 羞耻",
+        label="临床与心理动力",
+        purpose="提炼作者的心理防御、边界叙事、精神状态、潜在精神障碍线索、关系模式，以及心理痛点、脆弱点与补偿动作，并标出证据强弱。",
+        search_query="防御 边界 精神状态 抑郁 焦虑 躁郁 创伤 痛点 脆弱点 回避 控制 补偿",
     ),
     FacetDefinition(
         key="creative_constraints",
