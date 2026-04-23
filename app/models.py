@@ -48,6 +48,7 @@ class Project(Base, TimestampMixin):
     telegram_messages: Mapped[list["TelegramMessage"]] = relationship(back_populates="project")
     telegram_reports: Mapped[list["TelegramTopicReport"]] = relationship(back_populates="project")
     telegram_preprocess_runs: Mapped[list["TelegramPreprocessRun"]] = relationship(back_populates="project")
+    stone_preprocess_runs: Mapped[list["StonePreprocessRun"]] = relationship(back_populates="project")
     telegram_preprocess_top_users: Mapped[list["TelegramPreprocessTopUser"]] = relationship(back_populates="project")
     telegram_preprocess_weekly_topic_candidates: Mapped[list["TelegramPreprocessWeeklyTopicCandidate"]] = relationship(back_populates="project")
     telegram_preprocess_topics: Mapped[list["TelegramPreprocessTopic"]] = relationship(back_populates="project")
@@ -342,6 +343,26 @@ class TelegramTopicReport(Base, TimestampMixin):
 
     project: Mapped[Project] = relationship(back_populates="telegram_reports")
     chat: Mapped[TelegramChat] = relationship(back_populates="reports")
+
+
+class StonePreprocessRun(Base, TimestampMixin):
+    __tablename__ = "stone_preprocess_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    llm_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_percent: Mapped[int] = mapped_column(Integer, default=0)
+    current_stage: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    project: Mapped[Project] = relationship(back_populates="stone_preprocess_runs")
 
 
 class TelegramPreprocessRun(Base, TimestampMixin):

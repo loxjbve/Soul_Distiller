@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block body_class %}theme-ambient--stone{% endblock %}
+{% block page_class %}page-stone-preprocess{% endblock %}
+{% block title %}{{ project.name }} | 搬石预处理{% endblock %}
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='stone-preprocess-page.css') }}?v=20260422b">
+{% endblock %}
+
+{% block content %}
+<div class="page-frame">
+    <section class="page-banner page-banner--stone-preprocess-compact">
+        <div class="page-banner__main">
+            <span class="page-banner__eyebrow">Stone</span>
+            <div class="page-banner__title-row">
+                <h1>{{ project.name }} | 逐篇文章预分析</h1>
+                <span class="page-banner__label">Article Preprocess</span>
+            </div>
+            <p>自动提取每篇文章的主题、视角、结构和词汇特征，为后续作者分析提供基础。</p>
+            <div class="page-banner__actions">
+                <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/analysis">去分析作者维度</a>
+                <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="inline-form stone-preprocess-start-form">
+                    <button type="submit" class="primary-button stone-preprocess-start-form__submit" {% if not can_start %}disabled{% endif %}>
+                        {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
+                            正在分析...
+                        {% else %}
+                            开始预分析
+                        {% endif %}
+                    </button>
+                </form>
+            </div>
+        </div>
+    </section>
+
+    <script type="application/json" id="stone-preprocess-bootstrap">{{ stone_preprocess_bootstrap | safe }}</script>
+
+    <section class="page-content">
+        <article class="panel-shell stone-preprocess-hub">
+            <div class="panel-header panel-header--slim stone-preprocess-hub__header">
+                <div>
+                    <p class="eyebrow">Run Pulse</p>
+                    <h2 id="stone-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else "等待运行" }}</h2>
+                    <p class="section-note" id="stone-preprocess-live-note">预分析提取出的 profile 会自动附加在每篇文档上。</p>
+                </div>
+                <div class="stone-preprocess-hub__status">
+                    <span class="status-chip tone-queued" id="stone-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
+                    <span class="analysis-live-pill" id="stone-preprocess-live-pill">{% if selected_run_data and selected_run_data.status in ["queued", "running"] %}LIVE{% else %}WAITING{% endif %}</span>
+                </div>
+            </div>
+            <div class="panel-body stone-preprocess-hub__body">
+                <section class="stone-preprocess-progress-spotlight">
+                    <div class="stone-preprocess-progress-spotlight__head">
+                        <div>
+                            <p class="eyebrow">Overall Progress</p>
+                            <h3 id="stone-preprocess-current-topic-label">文档处理进度</h3>
+                            <p class="section-note" id="stone-preprocess-current-topic-progress">
+                                {% if selected_run_data %}
+                                    已处理文档 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
+                                {% else %}
+                                    待处理文档 {{ documents | length }}
+                                {% endif %}
+                            </p>
+                        </div>
+                        <div class="analysis-signal-chip-row">
+                            <span class="analysis-signal-chip" id="stone-preprocess-input-token-chip">Input Tokens {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
+                            <span class="analysis-signal-chip" id="stone-preprocess-output-token-chip">Output Tokens {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
+                        </div>
+                    </div>
+                    <div class="progress-shell progress-shell--slim">
+                        <div class="progress-labels">
+                            <strong>整体进度</strong>
+                            <span id="stone-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="stone-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <details class="stone-preprocess-topic-board" open>
+                    <summary class="stone-preprocess-topic-board__head">
+                        <div>
+                            <p class="eyebrow">Documents</p>
+                            <h3>文章指示灯</h3>
+                        </div>
+                        <p class="helper-text" id="stone-preprocess-topic-board-note">
+                            {% if selected_run_data %}
+                                已处理文档 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
+                            {% else %}
+                                共 {{ documents | length }} 篇文档
+                            {% endif %}
+                        </p>
+                    </summary>
+                    <div id="stone-preprocess-topic-lamps" class="stone-preprocess-topic-lamps panel-scroll" data-panel-scroll>
+                        {% if documents %}
+                            {% for doc in documents %}
+                                {% set has_profile = "stone_profile" in (doc.metadata_json or {}) %}
+                                {% set lamp_status = "completed" if has_profile else ("queued" if not selected_run_data or selected_run_data.status not in ["queued", "running"] else "running") %}
+                                <article class="stone-topic-lamp status-{{ lamp_status }}">
+                                    <span class="stone-topic-lamp__dot" aria-hidden="true"></span>
+                                    <div class="stone-topic-lamp__body">
+                                        <strong>{{ doc.title or doc.filename }}</strong>
+                                        <small>{{ doc.id }}</small>
+                                    </div>
+                                    <span class="stone-topic-lamp__index">{{ "%02d"|format(loop.index) }}</span>
+                                </article>
+                            {% endfor %}
+                        {% else %}
+                            <div class="empty-panel">
+                                <strong>尚未上传文档</strong>
+                            </div>
+                        {% endif %}
+                    </div>
+                </details>
+
+                <p class="section-note stone-preprocess-error" id="stone-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
+                    {{ selected_run_data.error_message if selected_run_data else "" }}
+                </p>
+            </div>
+        </article>
+    </section>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script type="module" defer src="{{ request.url_for('static', path='stone_preprocess.js') }}?v=20260422b"></script>
+{% endblock %}

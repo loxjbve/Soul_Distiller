@@ -149,6 +149,15 @@ def _seed_stone_analysis(app, project_id: str) -> None:
             )
 
 
+def _wait_for_stone_preprocess(client, project_id: str, run_id: str, *, timeout_s: float = 12.0) -> dict:
+    deadline = time.time() + timeout_s
+    payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{run_id}").json()
+    while payload["status"] in {"queued", "running"} and time.time() < deadline:
+        time.sleep(0.05)
+        payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{run_id}").json()
+    return payload
+
+
 def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     create_response = client.post("/api/projects", json={"name": "Stone Project", "mode": "stone"})
     assert create_response.status_code == 200
@@ -182,6 +191,12 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     assert document_detail["metadata_json"]["user_note"] == "first import"
     assert document_detail["metadata_json"]["stone_text_entry"] is True
     assert _count_document_chunks(app, document_id) == 0
+
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    preprocess_run_id = preprocess_response.json()["id"]
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_run_id)
+    assert preprocess_payload["status"] == "completed"
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -343,6 +358,12 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
 
     monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
     monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    preprocess_run_id = preprocess_response.json()["id"]
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_run_id)
+    assert preprocess_payload["status"] == "completed"
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",

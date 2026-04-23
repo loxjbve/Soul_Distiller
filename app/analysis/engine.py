@@ -458,7 +458,9 @@ class AnalysisEngine:
         if project.mode == "telegram":
             self._execute_telegram_run(session, run, project, chat_config)
         elif project.mode == "stone":
-            self._prepare_stone_document_profiles(session, run, project, chat_config)
+            stone_preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project.id)
+            if not stone_preprocess_run:
+                raise ValueError("Stone mode requires a successful preprocess run.")
             self._ensure_run_active(run.id, run.project_id)
             self._run_stone_facets(
                 session,
@@ -604,105 +606,6 @@ class AnalysisEngine:
         )
         self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
-
-    def _prepare_stone_document_profiles(
-        self,
-        session: Session,
-        run: AnalysisRun,
-        project: Project,
-        chat_config: ServiceConfig | None,
-    ) -> None:
-        documents = [
-            document
-            for document in repository.list_project_documents(session, project.id)
-            if document.ingest_status == "ready"
-        ]
-        summary = dict(run.summary_json or {})
-        summary["stone_profile_total"] = len(documents)
-        summary["stone_profile_completed"] = 0
-        summary["current_stage"] = "Building article profiles"
-        summary["current_phase"] = "document_profiling"
-        run.summary_json = summary
-        repository.add_analysis_event(
-            session,
-            run.id,
-            event_type="lifecycle",
-            message="Stone mode starts with per-document profiling.",
-            payload_json={"document_count": len(documents)},
-        )
-        self._persist_progress(session, run.id)
-        for index, document in enumerate(documents, start=1):
-            self._ensure_run_active(run.id, run.project_id)
-            metadata = dict(document.metadata_json or {})
-            metadata["stone_profile"] = self._build_stone_profile_payload(
-                document,
-                project=project,
-                chat_config=chat_config,
-            )
-            document.metadata_json = metadata
-            summary = dict(run.summary_json or {})
-            summary["stone_profile_completed"] = index
-            summary["current_stage"] = f"Profiling article {index}/{len(documents)}"
-            summary["current_phase"] = "document_profiling"
-            run.summary_json = summary
-            repository.add_analysis_event(
-                session,
-                run.id,
-                event_type="document_profile",
-                message=f"Profiled article: {document.title or document.filename}",
-                payload_json={"document_id": document.id, "document_title": document.title or document.filename},
-            )
-            self._persist_progress(session, run.id)
-        summary = dict(run.summary_json or {})
-        summary["current_stage"] = "Running author-level facets"
-        summary["current_phase"] = "retrieving"
-        run.summary_json = summary
-        self._persist_progress(session, run.id)
-
-    def _build_stone_profile_payload(
-        self,
-        document: DocumentRecord,
-        *,
-        project: Project,
-        chat_config: ServiceConfig | None,
-    ) -> dict[str, Any]:
-        text = str(document.clean_text or document.raw_text or "").strip()
-        if not text:
-            return build_stone_profile(document)
-        if not chat_config:
-            return build_stone_profile(document)
-        client = OpenAICompatibleClient(chat_config, log_path=self.llm_log_path)
-        messages = build_stone_profile_messages(
-            project.name,
-            document.title or document.filename,
-            text,
-        )
-        try:
-            response = client.chat_completion_result(
-                messages,
-                model=chat_config.model,
-                temperature=0.2,
-                max_tokens=1200,
-            )
-            parsed = parse_json_response(response.content, fallback=True)
-            normalized = normalize_stone_profile(parsed)
-            if any(
-                normalized.get(key)
-                for key in (
-                    "article_theme",
-                    "narrative_pov",
-                    "tone",
-                    "structure_template",
-                    "lexical_markers",
-                    "emotional_progression",
-                    "nonclinical_signals",
-                    "representative_lines",
-                )
-            ):
-                return normalized
-        except Exception:
-            pass
-        return build_stone_profile(document)
 
     def _build_telegram_agent(
         self,

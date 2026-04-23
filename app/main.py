@@ -29,6 +29,7 @@ from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
+from app.stone_preprocess import StonePreprocessStreamHub, StonePreprocessWorker
 from app.storage import repository
 from app.telegram_preprocess import TelegramPreprocessManager
 from app.web.routes import router
@@ -151,6 +152,13 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.writing_service = writing_service
     app.state.telegram_preprocess_manager = telegram_preprocess_manager
     app.state.project_deletion_manager = project_deletion_manager
+
+    app.state.stone_preprocess_stream_hub = StonePreprocessStreamHub()
+    app.state.stone_preprocess_worker = StonePreprocessWorker(
+        database,
+        stream_hub=app.state.stone_preprocess_stream_hub,
+        llm_log_path=str(config.llm_log_path),
+    )
 
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
