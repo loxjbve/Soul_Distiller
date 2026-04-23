@@ -680,6 +680,9 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     assert writing_page.status_code == 200
     assert "analysis" in writing_page.text
     assert "writing_guide" not in writing_page.text
+    assert "Author的石生产线" in writing_page.text
+    assert "data-stage-feed-list" not in writing_page.text
+    assert "preprocess-context" not in writing_page.text
 
     session_payload = client.post(
         f"/api/projects/{project_id}/writing/sessions",
@@ -696,11 +699,19 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
         client,
         f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
     )
-    event_names = [name for name, _payload in events]
-    assert event_names.count("stage") >= len(get_facets_for_mode("stone")) + 3
-    assert "done" in event_names
+    stage_events = [payload for name, payload in events if name == "stage"]
+    done_events = [payload for name, payload in events if name == "done"]
+    assert stage_events[0]["message_kind"] == "draft"
+    assert len(stage_events[1:]) == len(get_facets_for_mode("stone"))
+    assert all(payload["actor_role"] == "reviewer" for payload in stage_events[1:])
+    assert done_events[-1]["message_kind"] == "final"
+    assert done_events[-1]["actor_role"] == "writer"
 
     detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assert detail_payload["timeline_turn_count"] == 11
+    assert detail_payload["turns"][0]["role"] == "user"
+    assert detail_payload["turns"][1]["message_kind"] == "draft"
+    assert detail_payload["turns"][-1]["message_kind"] == "final"
     assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
     assert assistant_turns
     latest_turn = assistant_turns[-1]
@@ -736,7 +747,7 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
         client,
         f"/api/projects/{project_id}/writing/sessions/{published_session_id}/streams/{published_message['stream_id']}",
     )
-    assert "done" in [name for name, _payload in published_events]
+    assert [payload for name, payload in published_events if name == "done"][-1]["message_kind"] == "final"
 
     published_detail = client.get(
         f"/api/projects/{project_id}/writing/sessions/{published_session_id}"
@@ -744,3 +755,43 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     published_assistant_turns = [turn for turn in published_detail["turns"] if turn["role"] == "assistant"]
     assert published_assistant_turns[-1]["trace"]["baseline_source"] == "analysis_run"
     assert len(published_assistant_turns[-1]["trace"]["reviews"]) == len(get_facets_for_mode("stone"))
+
+
+def test_stone_writing_message_parser_accepts_natural_language_payload(client, app):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Natural Session"},
+    ).json()["id"]
+
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "写一篇雨夜车站，800字，克制一点"},
+    ).json()
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+    assert [payload for name, payload in events if name == "stage"][0]["message_kind"] == "draft"
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assert detail_payload["turns"][0]["content"] == "写一篇雨夜车站，800字，克制一点"
+
+
+def test_stone_writing_message_parser_rejects_missing_word_count(client, app):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Parser Session"},
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "写一篇雨夜车站，克制一点"},
+    )
+    assert response.status_code == 400
+    assert "800字" in response.json()["detail"]

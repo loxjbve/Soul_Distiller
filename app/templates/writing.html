@@ -1,107 +1,75 @@
 {% extends "base.html" %}
 {% block body_class %}theme-ambient--preprocess{% endblock %}
-{% block page_class %}page-preprocess{% endblock %}
-{% block title %}{{ project.name }} · {{ writing_ui.title }}{% endblock %}
+{% block page_class %}page-writing{% endblock %}
+{% block title %}{{ channel_title }}{% endblock %}
+
+{% block extra_head %}
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260423f">
+{% endblock %}
 
 {% block content %}
-<div class="page-frame">
-    <section class="page-banner">
-        <div class="page-banner__main">
-            <span class="page-banner__eyebrow">{{ writing_ui.eyebrow }}</span>
-            <div class="page-banner__title-row">
-                <h1>{{ project.name }} · {{ writing_ui.title }}</h1>
-                <span class="page-banner__label">Stone Workspace</span>
+<div class="writing-shell" data-writing-shell data-project-id="{{ project.id }}" data-sessions-open="false">
+    <script type="application/json" id="writing-bootstrap">{{ bootstrap | safe }}</script>
+
+    <aside class="writing-rail" data-session-rail>
+        <div class="writing-rail__header">
+            <div>
+                <p class="eyebrow">{{ writing_ui.sessions }}</p>
+                <h2>{{ writing_ui.sessions }}</h2>
             </div>
-            <p>{{ writing_ui.hero_note }}</p>
-            <div class="page-banner__actions">
+            <button type="button" class="ghost-button" data-new-session>{{ writing_ui.new_session }}</button>
+        </div>
+        <div class="writing-session-list" data-session-list></div>
+    </aside>
+
+    <section class="writing-stage">
+        <header class="writing-channel-header">
+            <div class="writing-channel-header__copy">
+                <button type="button" class="ghost-button writing-channel-header__toggle" data-toggle-sessions>
+                    {{ writing_ui.toggle_sessions }}
+                </button>
+                <p class="eyebrow">{{ writing_ui.channel_live }}</p>
+                <h1 data-channel-title>{{ channel_title }}</h1>
+                <div class="writing-channel-header__chips">
+                    <span class="writing-pill writing-pill--baseline" data-baseline-pill>{{ writing_ui.baseline_missing_analysis }}</span>
+                    <span class="writing-pill" data-session-title>{{ writing_ui.untitled_session }}</span>
+                </div>
+            </div>
+            <div class="writing-channel-header__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
                 <a class="ghost-button" href="/projects/{{ project.id }}/analysis">analysis</a>
+                <button type="button" class="ghost-button" data-rename-session>{{ writing_ui.rename_session }}</button>
+                <button type="button" class="danger-button" data-delete-session>{{ writing_ui.delete_session }}</button>
             </div>
-        </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
-                <span class="page-banner__label">{{ writing_ui.sessions }}</span>
-                <span class="page-banner__label">{{ writing_ui.baseline_label }}</span>
-            </div>
-        </div>
-    </section>
+        </header>
 
-    <section class="page-content" data-writing-shell data-project-id="{{ project.id }}">
-        <script type="application/json" id="writing-bootstrap">{{ bootstrap | safe }}</script>
+        <section class="writing-pinned">
+            <div class="writing-pinned__label">{{ writing_ui.pinned_label }}</div>
+            <p data-baseline-note>{{ writing_ui.hero_note }}</p>
+        </section>
 
-        <aside class="panel-shell preprocess-sidebar slim-panel">
-            <div class="panel-header">
-                <div>
-                    <p class="eyebrow">Sessions</p>
-                    <h2>{{ writing_ui.sessions }}</h2>
-                </div>
-                <button type="button" class="ghost-button" data-new-session>{{ writing_ui.new_session }}</button>
-            </div>
-            <div class="panel-body panel-body--tight">
-                <div class="preprocess-session-list panel-scroll" data-session-list data-panel-scroll></div>
-            </div>
-        </aside>
+        <section class="writing-message-stage" data-live-feed>
+            <div class="writing-message-list" data-chat-list></div>
+        </section>
 
-        <main class="panel-shell preprocess-main">
-            <div class="panel-header preprocess-toolbar">
-                <div>
-                    <p class="eyebrow">Workspace</p>
-                    <h2 data-session-title>{{ writing_ui.untitled_session }}</h2>
+        <section class="writing-composer">
+            <label class="writing-composer__field" for="writing-message-input">
+                <span>{{ writing_ui.channel_live }}</span>
+                <textarea
+                    id="writing-message-input"
+                    rows="3"
+                    data-message-input
+                    placeholder="{{ writing_ui.composer_placeholder }}"
+                ></textarea>
+            </label>
+            <div class="writing-composer__footer">
+                <div class="writing-composer__status">
+                    <p class="muted" data-composer-hint>{{ writing_ui.message_hint }}</p>
+                    <p class="writing-composer__error" data-composer-error hidden></p>
                 </div>
-                <div class="button-row">
-                    <button type="button" class="ghost-button" data-rename-session>{{ writing_ui.rename_session }}</button>
-                    <button type="button" class="danger-button" data-delete-session>{{ writing_ui.delete_session }}</button>
-                </div>
+                <button type="button" class="primary-button" data-send-message>{{ writing_ui.send }}</button>
             </div>
-
-            <div class="panel-body">
-                <div class="turn-pill-row">
-                    <div class="turn-pill" data-baseline-pill>{{ writing_ui.baseline_missing_analysis }}</div>
-                </div>
-                <div class="panel-scroll" data-live-feed data-panel-scroll>
-                    <div class="preprocess-chat-scroll" data-chat-list></div>
-                </div>
-
-                <div class="preprocess-composer">
-                    <label>
-                        <span>{{ writing_ui.topic_label }}</span>
-                        <input type="text" data-topic-input placeholder="{{ writing_ui.composer_placeholder }}">
-                    </label>
-                    <label>
-                        <span>{{ writing_ui.target_word_count_label }}</span>
-                        <input type="number" min="100" step="50" value="800" data-target-word-count>
-                    </label>
-                    <label>
-                        <span>{{ writing_ui.extra_requirements_label }}</span>
-                        <textarea data-extra-requirements rows="4" placeholder="{{ writing_ui.composer_placeholder }}"></textarea>
-                    </label>
-                    <div class="preprocess-composer-actions">
-                        <span class="muted" data-composer-hint>{{ writing_ui.hero_note }}</span>
-                        <button type="button" class="primary-button" data-send-message>{{ writing_ui.send }}</button>
-                    </div>
-                </div>
-            </div>
-        </main>
-
-        <aside class="panel-shell preprocess-context slim-panel">
-            <div class="panel-body">
-                <div class="stack">
-                    <div>
-                        <p class="eyebrow">{{ writing_ui.stage_feed }}</p>
-                        <h2>{{ writing_ui.stage_feed }}</h2>
-                    </div>
-                    <div class="context-list panel-scroll" data-stage-feed-list data-panel-scroll></div>
-                </div>
-                <div class="stack">
-                    <div>
-                        <p class="eyebrow">Documents</p>
-                        <h2>{{ ui.documents }}</h2>
-                    </div>
-                    <div class="context-list panel-scroll" data-document-list data-panel-scroll></div>
-                </div>
-            </div>
-        </aside>
+        </section>
     </section>
 </div>
 {% endblock %}

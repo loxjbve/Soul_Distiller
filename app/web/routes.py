@@ -157,8 +157,9 @@ class PreprocessMessagePayload(BaseModel):
 
 
 class WritingMessagePayload(BaseModel):
-    topic: str
-    target_word_count: int = Field(..., ge=100)
+    message: str | None = None
+    topic: str | None = None
+    target_word_count: int | None = Field(default=None, ge=100)
     extra_requirements: str | None = None
 
 
@@ -325,35 +326,46 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
         "hero_note": (
             "Draft directly from the latest multi-facet analysis, let eight reviewers critique round one, then revise once into the final piece."
             if locale == "en-US"
-            else "直接读取最新多维分析出首稿，再由 8 个维度分别审稿，整合意见后修订一轮输出定稿。"
+            else "直接读取最新多维分析结论，先出首稿，再让 8 个维度逐条点评，最后修订成终稿。"
         ),
         "new_session": "New Session" if locale == "en-US" else "新建会话",
         "rename_session": "Rename" if locale == "en-US" else "重命名",
         "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
         "sessions": "Sessions" if locale == "en-US" else "会话",
+        "toggle_sessions": "Sessions" if locale == "en-US" else "会话列表",
+        "channel_live": "Live Channel" if locale == "en-US" else "群聊频道",
+        "pinned_label": "Pinned Baseline" if locale == "en-US" else "置顶基线",
         "composer_placeholder": (
-            "Enter the topic, target word count, and optional extra requirements."
+            "Write something like: Write about a rainy station, 800 words, restrained tone"
             if locale == "en-US"
-            else "输入主题、目标字数和可选附加要求。"
+            else "例如：写一篇雨夜车站，800字，克制一点"
         ),
-        "topic_label": "Topic" if locale == "en-US" else "主题",
-        "target_word_count_label": "Target Word Count" if locale == "en-US" else "目标字数",
-        "extra_requirements_label": "Extra Requirements" if locale == "en-US" else "附加要求",
-        "send": "Start Writing" if locale == "en-US" else "开始写作",
+        "message_hint": (
+            "Include an explicit word count such as 800 words."
+            if locale == "en-US"
+            else "消息里请带明确字数，例如：写一篇雨夜车站，800字，克制一点"
+        ),
+        "message_parse_error": (
+            "Please include an explicit word count such as 800 words."
+            if locale == "en-US"
+            else "请在消息里带上明确字数，例如 800字 或 800 words。"
+        ),
+        "send": "Send" if locale == "en-US" else "发送",
         "sending": "Writing..." if locale == "en-US" else "写作中...",
         "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
         "baseline_ready": "Using latest Stone analysis baseline." if locale == "en-US" else "当前使用最新 Stone 分析基线。",
-        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "先完成 Stone 预分析。",
-        "baseline_missing_analysis": "Run Stone analysis first." if locale == "en-US" else "先完成 Stone 多维分析。",
+        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "请先完成 Stone 预分析。",
+        "baseline_missing_analysis": "Run Stone analysis first." if locale == "en-US" else "请先完成 Stone 多维分析。",
         "baseline_running_analysis": "Stone analysis is still running." if locale == "en-US" else "Stone 分析仍在运行中。",
         "baseline_incomplete_analysis": "Latest Stone analysis is incomplete." if locale == "en-US" else "最新 Stone 分析还不完整。",
-        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作任务。",
-        "working": "Working..." if locale == "en-US" else "执行中...",
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
+        "working": "Working..." if locale == "en-US" else "处理中...",
         "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
         "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
         "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
         "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
-        "stage_feed": "Pipeline" if locale == "en-US" else "流水线",
+        "you_label": "You" if locale == "en-US" else "你",
+        "agent_label": "Writing Agent" if locale == "en-US" else "写作 Agent",
     }
     base.update(labels)
     return base
@@ -388,6 +400,60 @@ def _resolve_stone_writing_status(session: Session, project_id: str) -> dict[str
         "run_id": run.id,
         "label": f"run {run.id[:8]}",
         "missing_facets": [],
+    }
+
+
+def _resolve_stone_channel_title(session: Session, project) -> str:
+    run = repository.get_latest_analysis_run(session, project.id, load_facets=False, load_events=False)
+    summary = dict(getattr(run, "summary_json", None) or {})
+    owner_name = str(summary.get("target_role") or "").strip() or str(project.name or "").strip() or "Stone"
+    return f"{owner_name}的石生产线"
+
+
+_WRITING_MESSAGE_COUNT_PATTERN = re.compile(r"(?P<count>\d+)\s*(?P<unit>字|words)\b", re.IGNORECASE)
+_WRITING_TOPIC_PREFIX_PATTERN = re.compile(
+    r"^(?:请|帮我|麻烦)?\s*(?:写(?:一篇|篇|个)?|来(?:一篇|篇|个)?|draft|write(?:\s+me)?(?:\s+about)?)\s*",
+    re.IGNORECASE,
+)
+
+
+def _normalize_writing_topic(topic_text: str) -> str:
+    cleaned = _WRITING_TOPIC_PREFIX_PATTERN.sub("", str(topic_text or "").strip())
+    cleaned = re.sub(r"^(?:关于|围绕|以)\s*", "", cleaned)
+    return cleaned.strip(" ，,。.;；:：!！?？\"'“”‘’《》[]()（）")
+
+
+def _resolve_writing_request_payload(payload: WritingMessagePayload) -> dict[str, Any]:
+    raw_message = str(payload.message or "").strip() or None
+    if raw_message:
+        match = _WRITING_MESSAGE_COUNT_PATTERN.search(raw_message)
+        if not match:
+            raise ValueError("请在消息里带上明确字数，例如 800字 或 800 words。")
+        target_word_count = int(match.group("count"))
+        if target_word_count < 100:
+            raise ValueError("目标字数至少为 100。")
+        topic_text = raw_message[: match.start()].strip(" ，,。.;；:：!！?？\n\t")
+        extra_text = raw_message[match.end() :].strip(" ，,。.;；:：!！?？\n\t")
+        topic = _normalize_writing_topic(topic_text)
+        if not topic:
+            raise ValueError("请把写作主题写在字数前面。")
+        return {
+            "message": raw_message,
+            "topic": topic,
+            "target_word_count": target_word_count,
+            "extra_requirements": extra_text or None,
+        }
+
+    topic = str(payload.topic or "").strip()
+    if not topic:
+        raise ValueError("Topic is required.")
+    if payload.target_word_count is None:
+        raise ValueError("Target word count is required.")
+    return {
+        "message": None,
+        "topic": topic,
+        "target_word_count": int(payload.target_word_count),
+        "extra_requirements": str(payload.extra_requirements or "").strip() or None,
     }
 
 
@@ -1061,13 +1127,14 @@ def writing_page(
             selected_session = explicit
     locale = get_locale(request)
     writing_ui = _writing_workspace_ui(locale)
+    channel_title = _resolve_stone_channel_title(session, project)
     bootstrap = {
         "project": {"id": project.id, "name": project.name, "mode": project.mode},
         "sessions": [_serialize_chat_session(item) for item in sessions],
         "selected_session_id": selected_session.id,
         "selected_session": _serialize_writing_session_detail(selected_session),
-        "documents": [_serialize_document(item) for item in repository.list_project_documents(session, project_id)],
         "baseline": _resolve_stone_writing_status(session, project_id),
+        "channel_title": channel_title,
         "locale": locale,
         "ui_strings": writing_ui,
     }
@@ -1080,6 +1147,7 @@ def writing_page(
             project=project,
             bootstrap=json.dumps(bootstrap, ensure_ascii=False),
             writing_ui=writing_ui,
+            channel_title=channel_title,
         ),
     )
 
@@ -2289,12 +2357,14 @@ def create_writing_message_api(
 ):
     _ensure_stone_project(session, project_id)
     try:
+        request_payload = _resolve_writing_request_payload(payload)
         result = request.app.state.writing_service.start_stream(
             project_id=project_id,
             session_id=session_id,
-            topic=payload.topic,
-            target_word_count=payload.target_word_count,
-            extra_requirements=payload.extra_requirements,
+            topic=request_payload["topic"],
+            target_word_count=request_payload["target_word_count"],
+            extra_requirements=request_payload["extra_requirements"],
+            raw_message=request_payload["message"],
         )
     except ValueError as exc:
         detail = str(exc)
@@ -3681,10 +3751,166 @@ def _serialize_preprocess_session_detail(chat_session) -> dict[str, Any]:
 
 def _serialize_writing_session_detail(chat_session) -> dict[str, Any]:
     turns = sorted(chat_session.turns, key=lambda item: item.created_at)
+    timeline_turns: list[dict[str, Any]] = []
+    for turn in turns:
+        timeline_turns.extend(_expand_writing_timeline_turn(turn))
     return {
         **_serialize_chat_session(chat_session),
-        "turns": [_serialize_chat_turn(turn) for turn in turns],
+        "turns": timeline_turns,
+        "timeline_turn_count": len(timeline_turns),
     }
+
+
+def _expand_writing_timeline_turn(turn) -> list[dict[str, Any]]:
+    trace = turn.trace_json or {}
+    if turn.role == "user":
+        return [_serialize_writing_user_turn(turn)]
+    if turn.role == "assistant" and trace.get("kind") == "writing_result":
+        timeline = trace.get("timeline")
+        if not isinstance(timeline, list) or not timeline:
+            timeline = _build_writing_timeline_from_trace(trace)
+        if timeline:
+            return [
+                _serialize_writing_timeline_item(
+                    turn,
+                    item,
+                    index=index,
+                    is_final=index == len(timeline) - 1,
+                    parent_trace=trace,
+                )
+                for index, item in enumerate(timeline)
+            ]
+    return [_serialize_writing_generic_turn(turn)]
+
+
+def _serialize_writing_user_turn(turn) -> dict[str, Any]:
+    trace = turn.trace_json or {}
+    raw_message = str(trace.get("raw_message") or "").strip()
+    return {
+        "id": turn.id,
+        "role": "user",
+        "content": raw_message or turn.content,
+        "trace": trace,
+        "created_at": turn.created_at.isoformat(),
+        "actor_id": "user",
+        "actor_name": "你",
+        "actor_role": "user",
+        "message_kind": "request",
+    }
+
+
+def _serialize_writing_generic_turn(turn) -> dict[str, Any]:
+    trace = turn.trace_json or {}
+    actor_role = "writer" if turn.role == "assistant" else turn.role
+    actor_name = "写作 Agent" if turn.role == "assistant" else "你"
+    return {
+        "id": turn.id,
+        "role": turn.role,
+        "content": turn.content,
+        "trace": trace,
+        "created_at": turn.created_at.isoformat(),
+        "actor_id": actor_role,
+        "actor_name": actor_name,
+        "actor_role": actor_role,
+        "message_kind": "final" if turn.role == "assistant" else "request",
+    }
+
+
+def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    draft = str(trace.get("draft") or "").strip()
+    if draft:
+        timeline.append(
+            {
+                "actor_id": "writer-draft",
+                "actor_name": "写作 Agent",
+                "actor_role": "writer",
+                "message_kind": "draft",
+                "body": draft,
+                "detail": {},
+            }
+        )
+    for review in trace.get("reviews") or []:
+        if not isinstance(review, dict):
+            continue
+        timeline.append(
+            {
+                "actor_id": f"reviewer-{review.get('dimension_key') or 'reviewer'}",
+                "actor_name": review.get("dimension_label") or review.get("dimension") or "Reviewer",
+                "actor_role": "reviewer",
+                "message_kind": "review",
+                "body": _render_writing_review_message(review),
+                "detail": review,
+            }
+        )
+    final_text = str(trace.get("final_text") or "").strip()
+    if final_text:
+        timeline.append(
+            {
+                "actor_id": "writer-final",
+                "actor_name": "写作 Agent",
+                "actor_role": "writer",
+                "message_kind": "final",
+                "body": final_text,
+                "detail": {
+                    "review_plan": trace.get("review_plan"),
+                    "final_assessment": trace.get("final_assessment"),
+                },
+            }
+        )
+    return timeline
+
+
+def _serialize_writing_timeline_item(
+    turn,
+    item: dict[str, Any],
+    *,
+    index: int,
+    is_final: bool,
+    parent_trace: dict[str, Any],
+) -> dict[str, Any]:
+    detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+    trace = {
+        "message_kind": item.get("message_kind"),
+        "debug": detail,
+        "source_turn_id": turn.id,
+    }
+    if is_final:
+        trace = {**parent_trace, **trace}
+    return {
+        "id": f"{turn.id}:{index}",
+        "role": "assistant",
+        "content": str(item.get("body") or "").strip(),
+        "trace": trace,
+        "created_at": str(item.get("created_at") or turn.created_at.isoformat()),
+        "actor_id": str(item.get("actor_id") or f"assistant-{index}"),
+        "actor_name": str(item.get("actor_name") or "写作 Agent"),
+        "actor_role": str(item.get("actor_role") or "assistant"),
+        "message_kind": str(item.get("message_kind") or "update"),
+    }
+
+
+def _render_writing_review_message(review: dict[str, Any]) -> str:
+    parts = [
+        f"结论：{'通过' if review.get('pass') else '需要修改'}",
+        f"分数：{int(round(float(review.get('score') or 0.0) * 100))}/100",
+    ]
+    strengths = [str(item).strip() for item in review.get("strengths") or [] if str(item).strip()]
+    issues = [str(item).strip() for item in review.get("issues") or [] if str(item).strip()]
+    instructions = [str(item).strip() for item in review.get("revision_instructions") or [] if str(item).strip()]
+    if strengths:
+        parts.append("")
+        parts.append("保留：")
+        parts.extend(f"- {item}" for item in strengths[:4])
+    if issues:
+        parts.append("")
+        parts.append("问题：")
+        parts.extend(f"- {item}" for item in issues[:4])
+    if instructions:
+        parts.append("")
+        parts.append("修改建议：")
+        parts.extend(f"- {item}" for item in instructions[:5])
+    return "\n".join(parts).strip()
 
 
 def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]:

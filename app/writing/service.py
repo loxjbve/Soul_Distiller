@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from queue import Empty, Queue
 from threading import Event, Lock
 from typing import Any
@@ -17,6 +18,7 @@ from app.runtime_limits import background_task_slot
 from app.storage import repository
 
 STONE_WRITING_FACETS: tuple[FacetDefinition, ...] = get_facets_for_mode("stone")
+WRITER_ACTOR_NAME = "写作 Agent"
 
 
 @dataclass(slots=True)
@@ -28,6 +30,7 @@ class WritingStreamState:
     topic: str
     target_word_count: int
     extra_requirements: str | None
+    raw_message: str | None
     events: Queue[dict[str, Any]] = field(default_factory=Queue)
     done: Event = field(default_factory=Event)
     cancelled: Event = field(default_factory=Event)
@@ -101,12 +104,15 @@ class WritingAgentService:
         topic: str,
         target_word_count: int,
         extra_requirements: str | None,
+        raw_message: str | None = None,
     ) -> dict[str, str]:
         normalized_topic = str(topic or "").strip()
         if not normalized_topic:
             raise ValueError("Topic is required.")
         normalized_target = max(100, int(target_word_count or 0))
         normalized_extra = str(extra_requirements or "").strip() or None
+        normalized_message = str(raw_message or "").strip() or None
+
         with self.db.session() as session:
             chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
             if not chat_session or chat_session.project_id != project_id:
@@ -115,12 +121,13 @@ class WritingAgentService:
                 session,
                 session_id=session_id,
                 role="user",
-                content=render_writing_request(normalized_topic, normalized_target, normalized_extra),
+                content=normalized_message or render_writing_request(normalized_topic, normalized_target, normalized_extra),
                 trace_json={
                     "kind": "writing_request",
                     "topic": normalized_topic,
                     "target_word_count": normalized_target,
                     "extra_requirements": normalized_extra,
+                    "raw_message": normalized_message,
                 },
             )
             if not chat_session.title:
@@ -134,9 +141,11 @@ class WritingAgentService:
                 topic=normalized_topic,
                 target_word_count=normalized_target,
                 extra_requirements=normalized_extra,
+                raw_message=normalized_message,
             )
             with self.lock:
                 self.streams[stream_id] = state
+
         if self.run_inline:
             self._execute(state)
         else:
@@ -150,6 +159,7 @@ class WritingAgentService:
             state = self.streams.get(stream_id)
         if not state:
             raise KeyError(stream_id)
+
         while True:
             try:
                 event = state.events.get(timeout=0.25)
@@ -160,6 +170,7 @@ class WritingAgentService:
             yield _format_sse(event["type"], event["payload"])
             if state.done.is_set() and state.events.empty():
                 break
+
         with self.lock:
             self.streams.pop(stream_id, None)
             self.futures.pop(stream_id, None)
@@ -186,7 +197,8 @@ class WritingAgentService:
                         content=f"Writing failed: {exc}",
                         trace_json={
                             "kind": "writing_result",
-                            "blocks": [{"type": "stage", "stage": "failed", "label": "Writing failed"}],
+                            "status": "failed",
+                            "timeline": [],
                             "reviews": [],
                             "review_plan": None,
                             "final_assessment": None,
@@ -206,13 +218,14 @@ class WritingAgentService:
         analysis_bundle = self._resolve_analysis_bundle(session, state.project_id)
         self._emit(
             state,
-            "stage",
+            "status",
             {
                 "stage": "analysis_loaded",
+                "label": "Loaded latest Stone analysis baseline",
                 "baseline_source": analysis_bundle.source,
                 "analysis_run_id": analysis_bundle.run_id,
                 "analysis_version": analysis_bundle.version_label,
-                "label": "Loaded latest Stone analysis baseline",
+                "analysis_target_role": analysis_bundle.target_role,
             },
         )
 
@@ -220,43 +233,30 @@ class WritingAgentService:
         client = self._build_client(config)
 
         initial_draft = self._generate_initial_draft(state, analysis_bundle, client)
-        self._emit(
-            state,
-            "stage",
-            {
-                "stage": "drafter",
-                "label": "First draft completed",
-                "draft": initial_draft,
-                "word_count": estimate_word_count(initial_draft),
-            },
+        draft_payload = _build_writer_message_payload(
+            message_kind="draft",
+            label="首稿已完成",
+            body=initial_draft,
+            detail={"word_count": estimate_word_count(initial_draft)},
         )
+        self._emit(state, "stage", draft_payload)
 
-        reviews = [
-            self._review_with_facet(
-                state,
-                facet,
-                initial_draft,
-                analysis_bundle,
-                client,
-            )
-            for facet in analysis_bundle.facets
-        ]
+        reviews = self._run_reviews_in_parallel(
+            state,
+            analysis_bundle,
+            initial_draft,
+            repository.get_service_config(session, "chat_service"),
+        )
+        review_messages: list[dict[str, Any]] = []
         for review in reviews:
-            self._emit(
-                state,
-                "stage",
-                {
-                    "stage": "reviewer",
-                    "label": f"Reviewer {review['dimension_label']}",
-                    "dimension": review["dimension_label"],
-                    "review": review,
-                },
-            )
+            review_payload = _build_reviewer_message_payload(review)
+            review_messages.append(review_payload)
+            self._emit(state, "stage", review_payload)
 
         review_plan = self._synthesize_review_plan(state, analysis_bundle, initial_draft, reviews, client)
         self._emit(
             state,
-            "stage",
+            "status",
             {
                 "stage": "review_synthesis",
                 "label": "Merged eight reviewer notes",
@@ -279,24 +279,24 @@ class WritingAgentService:
             state.topic,
             state.target_word_count,
         )
-
-        self._emit(
-            state,
-            "stage",
-            {
-                "stage": "reviser",
-                "label": "Final revision completed",
-                "draft": final_text,
+        final_payload = _build_writer_message_payload(
+            message_kind="final",
+            label="终稿已完成",
+            body=final_text,
+            detail={
                 "word_count": estimate_word_count(final_text),
+                "review_plan": review_plan,
                 "final_assessment": final_assessment,
             },
         )
 
         trace = {
             "kind": "writing_result",
+            "status": "completed",
             "topic": state.topic,
             "target_word_count": state.target_word_count,
             "extra_requirements": state.extra_requirements,
+            "raw_message": state.raw_message,
             "baseline_source": analysis_bundle.source,
             "analysis_run_id": analysis_bundle.run_id,
             "analysis_version": analysis_bundle.version_label,
@@ -309,6 +309,7 @@ class WritingAgentService:
             "draft": initial_draft,
             "final_text": final_text,
             "final_assessment": final_assessment,
+            "timeline": [draft_payload, *review_messages, final_payload],
         }
         assistant_turn = repository.add_chat_turn(
             session,
@@ -317,19 +318,16 @@ class WritingAgentService:
             content=final_text,
             trace_json=trace,
         )
-        self._emit(
-            state,
-            "done",
-            {
-                "assistant_turn_id": assistant_turn.id,
-                "final_text": final_text,
-                "word_count": estimate_word_count(final_text),
-                "baseline_source": analysis_bundle.source,
-                "analysis_run_id": analysis_bundle.run_id,
-                "review_count": len(reviews),
-                "final_assessment": final_assessment,
-            },
-        )
+
+        done_payload = {
+            **final_payload,
+            "assistant_turn_id": assistant_turn.id,
+            "baseline_source": analysis_bundle.source,
+            "analysis_run_id": analysis_bundle.run_id,
+            "review_count": len(reviews),
+            "final_assessment": final_assessment,
+        }
+        self._emit(state, "done", done_payload)
 
     def _build_client(self, config) -> OpenAICompatibleClient | None:
         if not config:
@@ -397,8 +395,8 @@ class WritingAgentService:
                                 f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
                                 f"Stone multi-facet baseline:\n{analysis_bundle.prompt_text}\n\n"
                                 "Requirements:\n"
-                                "- Let the topic be explicit in the article body.\n"
-                                "- Use the analyzed voice, diction, imagery, stance, emotional arc, and constraints.\n"
+                                "- Make the topic visible in the article body.\n"
+                                "- Follow the analyzed voice, diction, imagery, stance, emotional arc, and constraints.\n"
                                 "- This is round one, so focus on a strong but revisable first draft.\n"
                                 "- Return only the article body."
                             ),
@@ -441,28 +439,28 @@ class WritingAgentService:
                         {
                             "role": "system",
                             "content": (
-                                "You are one reviewer in the Stone writing pipeline.\n"
-                                "Evaluate the draft only against the assigned facet.\n"
-                                "Be strict, concrete, and actionable.\n"
-                                "Return JSON only."
+                                "你是 Stone 写作流水线中的一个评审 agent。\n"
+                                "你只负责当前分配到的单一维度。\n"
+                                "请用中文给出严格、具体、可执行的判断。\n"
+                                "只返回 JSON，不要输出额外解释。"
                             ),
                         },
                         {
                             "role": "user",
                             "content": (
-                                f"Assigned facet:\n{_build_single_facet_prompt(facet)}\n\n"
-                                f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
-                                f"Candidate article:\n{draft}\n\n"
-                                "Return JSON with keys:\n"
+                                f"当前维度：\n{_build_single_facet_prompt(facet)}\n\n"
+                                f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                                f"候选文章：\n{draft}\n\n"
+                                "请返回 JSON，字段如下：\n"
                                 "{\n"
                                 '  "pass": boolean,\n'
                                 '  "score": number,\n'
-                                '  "strengths": [string],\n'
-                                '  "issues": [string],\n'
-                                '  "revision_instructions": [string],\n'
-                                '  "supporting_signals": [string]\n'
+                                '  "strengths": [中文字符串],\n'
+                                '  "issues": [中文字符串],\n'
+                                '  "revision_instructions": [中文字符串],\n'
+                                '  "supporting_signals": [中文字符串]\n'
                                 "}\n"
-                                "Only judge this single facet."
+                                "只判断这一维，不要谈其他维度。"
                             ),
                         },
                     ],
@@ -497,26 +495,26 @@ class WritingAgentService:
                         {
                             "role": "system",
                             "content": (
-                                "You are the review integrator in the Stone writing pipeline.\n"
-                                "Merge eight reviewer notes into one revision brief.\n"
-                                "Preserve the strongest parts and prioritize the few changes that matter most.\n"
-                                "Return JSON only."
+                                "你是 Stone 写作流水线里的评审整合 agent。\n"
+                                "请把 8 个评审意见合并成一份中文修订提纲。\n"
+                                "保留已经成立的部分，优先指出最值得修改的几件事。\n"
+                                "只返回 JSON。"
                             ),
                         },
                         {
                             "role": "user",
                             "content": (
-                                f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
-                                f"Stone baseline:\n{analysis_bundle.prompt_text}\n\n"
-                                f"First draft:\n{draft}\n\n"
-                                f"Reviewer outputs JSON:\n{json.dumps(reviews, ensure_ascii=False, indent=2)}\n\n"
-                                "Return JSON with keys:\n"
+                                f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                                f"Stone 基线：\n{analysis_bundle.prompt_text}\n\n"
+                                f"首稿：\n{draft}\n\n"
+                                f"8 个评审 JSON：\n{json.dumps(reviews, ensure_ascii=False, indent=2)}\n\n"
+                                "请返回 JSON，字段如下：\n"
                                 "{\n"
-                                '  "summary": string,\n'
-                                '  "keep": [string],\n'
-                                '  "priorities": [string],\n'
-                                '  "revision_blueprint": [string],\n'
-                                '  "risk_watch": [string]\n'
+                                '  "summary": 中文字符串,\n'
+                                '  "keep": [中文字符串],\n'
+                                '  "priorities": [中文字符串],\n'
+                                '  "revision_blueprint": [中文字符串],\n'
+                                '  "risk_watch": [中文字符串]\n'
                                 "}"
                             ),
                         },
@@ -588,6 +586,50 @@ class WritingAgentService:
             state.target_word_count,
             state.extra_requirements,
         )
+
+    def _run_reviews_in_parallel(
+        self,
+        state: WritingStreamState,
+        analysis_bundle: StoneWritingAnalysisBundle,
+        draft: str,
+        config,
+    ) -> list[dict[str, Any]]:
+        facets = list(analysis_bundle.facets)
+        if not facets:
+            return []
+
+        if self.run_inline:
+            return [
+                self._review_with_facet(
+                    state,
+                    facet,
+                    draft,
+                    analysis_bundle,
+                    self._build_client(config),
+                )
+                for facet in facets
+            ]
+
+        results: dict[str, dict[str, Any]] = {}
+        max_workers = min(len(facets), 8)
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="stone-reviewer") as executor:
+            future_map = {
+                executor.submit(
+                    self._review_with_facet,
+                    state,
+                    facet,
+                    draft,
+                    analysis_bundle,
+                    self._build_client(config),
+                ): facet
+                for facet in facets
+            }
+            for future in as_completed(future_map):
+                self._ensure_stream_active(state)
+                facet = future_map[future]
+                results[facet.key] = future.result()
+
+        return [results[facet.key] for facet in facets if facet.key in results]
 
     def _ensure_stream_active(self, state: WritingStreamState) -> None:
         if state.cancelled.is_set():
@@ -683,56 +725,94 @@ def _build_single_facet_prompt(facet: StoneWritingFacetContext) -> str:
     return "\n".join(lines).strip()
 
 
+def _build_writer_message_payload(
+    *,
+    message_kind: str,
+    label: str,
+    body: str,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "stage": "writer",
+        "label": label,
+        "actor_id": f"writer-{message_kind}",
+        "actor_name": WRITER_ACTOR_NAME,
+        "actor_role": "writer",
+        "message_kind": message_kind,
+        "body": body,
+        "detail": detail or {},
+        "created_at": _iso_now(),
+    }
+
+
+def _build_reviewer_message_payload(review: dict[str, Any]) -> dict[str, Any]:
+    key = str(review.get("dimension_key") or "reviewer").strip() or "reviewer"
+    label = str(review.get("dimension_label") or review.get("dimension") or "Reviewer").strip() or "Reviewer"
+    return {
+        "stage": "reviewer",
+        "label": f"{label} 评审",
+        "actor_id": f"reviewer-{key}",
+        "actor_name": label,
+        "actor_role": "reviewer",
+        "message_kind": "review",
+        "body": _render_review_message(review),
+        "detail": review,
+        "created_at": _iso_now(),
+    }
+
+
+def _render_review_message(review: dict[str, Any]) -> str:
+    lines = [
+        f"结论：{'通过' if review.get('pass') else '需要修改'}",
+        f"分数：{int(round(float(review.get('score') or 0.0) * 100))}/100",
+    ]
+    strengths = _normalize_string_list(review.get("strengths"), limit=4)
+    issues = _normalize_string_list(review.get("issues"), limit=4)
+    instructions = _normalize_string_list(review.get("revision_instructions"), limit=5)
+    signals = _normalize_string_list(review.get("supporting_signals"), limit=4)
+
+    if strengths:
+        lines.append("")
+        lines.append("保留：")
+        lines.extend(f"- {item}" for item in strengths)
+    if issues:
+        lines.append("")
+        lines.append("问题：")
+        lines.extend(f"- {item}" for item in issues)
+    if instructions:
+        lines.append("")
+        lines.append("修改建议：")
+        lines.extend(f"- {item}" for item in instructions)
+    if signals:
+        lines.append("")
+        lines.append("参考信号：")
+        lines.extend(f"- {item}" for item in signals)
+    return "\n".join(lines).strip()
+
+
 def _heuristic_initial_draft(
     topic: str,
     target_word_count: int,
     analysis_bundle: StoneWritingAnalysisBundle,
     extra_requirements: str | None,
 ) -> str:
-    voice = _facet_lookup(analysis_bundle, "voice_signature")
-    imagery = _facet_lookup(analysis_bundle, "imagery_theme")
-    stance = _facet_lookup(analysis_bundle, "stance_values")
-    emotion = _facet_lookup(analysis_bundle, "emotional_arc")
-    constraints = _facet_lookup(analysis_bundle, "creative_constraints")
-
-    voice_cues = _facet_terms(voice)[:3]
-    imagery_cues = _facet_terms(imagery)[:3]
-    stance_cues = _facet_terms(stance)[:3]
-    emotion_cues = _facet_terms(emotion)[:3]
-    constraint_cues = _facet_terms(constraints)[:3]
+    voice_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "voice_signature"))[:3], fallback="压低声调、克制推进")
+    imagery_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "imagery_theme"))[:3], fallback="夜色、旧物、余温")
+    stance_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "stance_values"))[:3], fallback="代价、边界、判断")
+    emotion_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "emotional_arc"))[:3], fallback="迟疑、压抑、回收")
     anchor_quote = _first_anchor_quote(analysis_bundle)
 
     paragraphs = [
-        (
-            f"{topic}并不是一个适合被说成答案的题目。"
-            f"它更像一块压在桌角的旧石头，平时不响，一碰就把白天没说完的话重新顶出来。"
-        ),
-        (
-            f"如果沿着{_join_terms(voice_cues, fallback='那种压低声调、先收后放的说法')}往下写，"
-            f"我不会急着把情绪摊平，反而会让它顺着"
-            f"{_join_terms(emotion_cues, fallback='克制、迟疑和回收')}慢慢露出来。"
-        ),
-        (
-            f"这件事最后还是会落到{_join_terms(stance_cues, fallback='代价、边界和立场')}上。"
-            f"真正值得写的，不是表面的起因，而是一个人怎么在现实里把自己一点点收紧，"
-            f"又怎么在必须开口的时候把那口气缓慢地放出来。"
-        ),
-        (
-            f"所以文章里的场景，我更愿意让它沾着"
-            f"{_join_terms(imagery_cues, fallback='夜色、旧物和没有收好的余温')}，"
-            f"而不是把它写成一段整齐的解释。这样收口，才比较接近这个作者本来的路数。"
-        ),
+        f"{topic}不是那种适合被大声宣告的题目，它更像一块压在心口的旧石头，白天不响，夜里才慢慢显出重量。",
+        f"如果沿着{voice_hint}去写，叙述就不该急着解释一切，而是让人、物和动作先站到前面，再让情绪从缝隙里露出来。",
+        f"场景里可以反复回到{imagery_hint}，因为真正支撑这篇文章的，不是结论本身，而是这些意象如何把主题一点点压回现实。",
+        f"写到最后，仍然要落到{stance_hint}，以及情绪在{emotion_hint}之间的来回折返，让文章的收口留有余味，而不是把话说尽。",
     ]
     if anchor_quote:
-        paragraphs.append(f"有时候一句旧话就已经够重了：{anchor_quote}")
-    if constraint_cues:
-        paragraphs.append(
-            f"写到最后，我会提醒自己别把它写得太满，尤其别偏离{_join_terms(constraint_cues[:2], fallback='作者本来的约束')}。"
-        )
+        paragraphs.append(f"分析里最能充当锚点的一句原话是：{anchor_quote}")
     if extra_requirements:
-        paragraphs.append(f"附加要求我会留在句子内部处理：{extra_requirements}。")
-    text = "\n\n".join(paragraphs)
-    return _fit_word_count(text, target_word_count, analysis_bundle, topic, extra_requirements)
+        paragraphs.append(f"这次写作还要继续守住一个额外要求：{extra_requirements}。")
+    return _fit_word_count("\n\n".join(paragraphs), target_word_count, analysis_bundle, topic, extra_requirements)
 
 
 def _fit_word_count(
@@ -747,32 +827,41 @@ def _fit_word_count(
     upper = int(target * 1.05)
     current = estimate_word_count(text)
 
-    imagery_terms = _facet_terms(_facet_lookup(analysis_bundle, "imagery_theme"))[:2]
-    stance_terms = _facet_terms(_facet_lookup(analysis_bundle, "stance_values"))[:2]
-    emotion_terms = _facet_terms(_facet_lookup(analysis_bundle, "emotional_arc"))[:2]
-
     while current < lower:
-        addition = (
-            f"\n\n说到底，{topic}之所以难写，不是因为它新，而是因为它总会重新碰到"
-            f"{_join_terms(imagery_terms, fallback='那些旧场景')}"
-            f"，又把{_join_terms(stance_terms, fallback='代价和立场')}重新照亮。"
-            f"等视线再往里收一层，情绪也还是会回到{_join_terms(emotion_terms, fallback='克制和回落')}。"
-        )
-        if extra_requirements and current < lower - 60:
-            addition += f" 我会把{extra_requirements}也顺手压进这层叙述里。"
-        text += addition
-        current = estimate_word_count(text)
-        if len(addition) < 20:
+        text = f"{text}\n\n{_expansion_paragraph(analysis_bundle, topic, extra_requirements)}".strip()
+        next_count = estimate_word_count(text)
+        if next_count <= current:
             break
+        current = next_count
 
-    if current > upper:
-        trimmed = text
-        while estimate_word_count(trimmed) > upper and len(trimmed) > 40:
-            trimmed = trimmed[:-20].rstrip("，。！？；： ")
-        if trimmed and trimmed[-1] not in "。！？":
-            trimmed = f"{trimmed}。"
-        text = trimmed
-    return text.strip()
+    if current <= upper:
+        return text.strip()
+
+    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", text) if item.strip()]
+    while paragraphs and estimate_word_count("\n\n".join(paragraphs)) > upper:
+        if len(paragraphs[-1]) > 120:
+            paragraphs[-1] = paragraphs[-1][:-40].rstrip("，。；：、 ")
+            if paragraphs[-1] and paragraphs[-1][-1] not in "。！？":
+                paragraphs[-1] = f"{paragraphs[-1]}。"
+        else:
+            paragraphs.pop()
+    trimmed = "\n\n".join(paragraphs).strip()
+    return trimmed or text.strip()
+
+
+def _expansion_paragraph(
+    analysis_bundle: StoneWritingAnalysisBundle,
+    topic: str,
+    extra_requirements: str | None,
+) -> str:
+    imagery_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "imagery_theme"))[:2], fallback="旧物和夜色")
+    stance_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "stance_values"))[:2], fallback="代价与边界")
+    emotion_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "emotional_arc"))[:2], fallback="克制和回落")
+    note = f" 同时继续守住“{extra_requirements}”这个要求。" if extra_requirements else ""
+    return (
+        f"{topic}真正难写的地方，不在于事件本身，而在于它总会重新碰到{imagery_hint}，"
+        f"再把{stance_hint}慢慢照亮。视线只要再往里收一层，情绪就会回到{emotion_hint}这条线上。{note}"
+    ).strip()
 
 
 def _heuristic_review_payload(
@@ -787,98 +876,59 @@ def _heuristic_review_payload(
     cue_hits = [item for item in cue_terms if item and item in draft]
     paragraphs = [item.strip() for item in re.split(r"\n\s*\n+", draft) if item.strip()]
     word_count = estimate_word_count(draft)
-    target = max(100, int(target_word_count or 0))
-    lower = int(target * 0.85)
-    upper = int(target * 1.15)
+    lower = int(max(100, int(target_word_count or 0)) * 0.9)
+    upper = int(max(100, int(target_word_count or 0)) * 1.05)
 
     strengths: list[str] = []
     issues: list[str] = []
-    revision_instructions: list[str] = []
-    score = 0.66
+    instructions: list[str] = []
+    score = 0.7
 
-    if facet.key == "voice_signature":
-        if cue_hits:
-            strengths.append("声音底色已经开始稳定下来。")
-            score = 0.8
-        else:
-            issues.append("还需要把语气压得更像作者本人，而不是通用抒情写法。")
-            revision_instructions.append("加强叙述口吻的收束感和第一反应式表达。")
-            score = 0.62
-    elif facet.key == "lexicon_idiolect":
-        if len(cue_hits) >= 2:
-            strengths.append("已经出现了一部分作者自己的词汇气味。")
-            score = 0.79
-        else:
-            issues.append("作者私方言还不够明显，词面太平。")
-            revision_instructions.append("补回分析里提到的词汇偏好和惯用转折。")
-            score = 0.61
-    elif facet.key == "structure_composition":
+    if cue_hits:
+        strengths.append("文章已经和该维度的基线信号建立了连接。")
+        score += 0.1
+    else:
+        issues.append("这一维度的作者特征还不够明确。")
+        instructions.append("回到该维度的分析结论，把对应的表达痕迹补进正文。")
+        score -= 0.08
+
+    if facet.key == "structure_composition":
         if len(paragraphs) < 3:
-            issues.append("结构推进偏平，需要更清楚的段落层次。")
-            revision_instructions.append("把开头、推进和收口分成更明确的节拍。")
-            score = 0.6
-        elif len(paragraphs) > 6:
-            issues.append("段落太散，影响整体构图。")
-            revision_instructions.append("压缩段落数量，避免解释过多。")
-            score = 0.66
+            issues.append("段落推进偏平，首稿的结构节拍还不够清楚。")
+            instructions.append("把起笔、推进和收口拆成更明确的段落层次。")
+            score -= 0.08
         else:
-            strengths.append("段落节拍基本成立。")
-            score = 0.8
-    elif facet.key == "imagery_theme":
-        if cue_hits:
-            strengths.append("意象和母题已经开始回到作者熟悉的场域。")
-            score = 0.78
-        else:
-            issues.append("还没把作者常用的意象母题真正写进来。")
-            revision_instructions.append("让场景、物件或反复出现的母题承担更多表达。")
-            score = 0.6
+            strengths.append("段落层次基本成立。")
     elif facet.key == "stance_values":
-        if topic not in draft:
-            issues.append("题目在正文里还不够可见。")
-            revision_instructions.append("让主题直接进入正文，而不是只停留在外围。")
-            score = 0.58
-        elif cue_hits:
-            strengths.append("主题和立场已经发生了绑定。")
-            score = 0.81
+        if topic and topic not in draft:
+            issues.append("主题在正文里的可见度偏弱。")
+            instructions.append("让主题直接进入正文，而不是只停留在命题层。")
+            score -= 0.1
         else:
-            issues.append("立场判断还不够像作者自己的价值排序。")
-            revision_instructions.append("把主题翻译成作者熟悉的代价、边界或判断逻辑。")
-            score = 0.63
+            strengths.append("主题与立场已经发生绑定。")
+    elif facet.key == "creative_constraints":
+        if not lower <= word_count <= upper:
+            issues.append("字数还没有稳稳落在目标附近。")
+            instructions.append("收紧或扩展篇幅，让终稿贴近目标字数。")
+            score -= 0.1
+        if _duplicate_sentence_ratio(draft) > 0.22:
+            issues.append("部分句意有重复，容易把文风写平。")
+            instructions.append("去掉重复表述，让每一段只保留必要动作。")
+            score -= 0.06
     elif facet.key == "emotional_arc":
         if len(paragraphs) >= 3:
-            strengths.append("情绪推进开始出现层次。")
-            score = 0.77
+            strengths.append("情绪推进已经开始形成层次。")
         else:
-            issues.append("情绪弧线还太短，缺少转折后的回落。")
-            revision_instructions.append("补出情绪从压低到显露再到收回的过程。")
-            score = 0.62
-    elif facet.key == "nonclinical_psychodynamics":
-        introspection_markers = ("我", "自己", "不愿意", "害怕", "忍", "收回", "边界")
-        if any(marker in draft for marker in introspection_markers):
-            strengths.append("文本里有了向内收的心理动力。")
-            score = 0.76
-        else:
-            issues.append("心理动力还偏表层，没有把防御、拉扯和自我收缩写出来。")
-            revision_instructions.append("增加一层内在回收或自我防守的动作。")
-            score = 0.61
-    elif facet.key == "creative_constraints":
-        if _duplicate_sentence_ratio(draft) > 0.28:
-            issues.append("重复句式偏多，容易把文风写平。")
-            revision_instructions.append("去掉重叠句意，让每一段只留必要动作。")
-            score = 0.58
-        if not lower <= word_count <= upper:
-            issues.append("字数开始偏离目标范围。")
-            revision_instructions.append("把字数收回到目标附近。")
-            score = min(score, 0.6)
-        if not issues:
-            strengths.append("基本守住了写作约束。")
-            score = 0.8
+            issues.append("情绪弧线还不够完整。")
+            instructions.append("补出情绪从压低到显影再到回落的过程。")
+            score -= 0.06
 
     if not strengths:
-        strengths.append("当前稿子已经有一个可修的基础。")
-    if not revision_instructions:
-        revision_instructions = list(issues) or ["保持当前优势，只做细部收束。"]
+        strengths.append("首稿已经有一个可继续修的基础。")
+    if not instructions:
+        instructions = issues[:] or ["保持当前优势，只做必要收束。"]
 
+    score = max(0.0, min(score, 0.95))
     passed = score >= 0.72 and not issues
     return {
         "dimension": facet.label,
@@ -888,7 +938,7 @@ def _heuristic_review_payload(
         "score": round(score, 3),
         "strengths": strengths[:4],
         "issues": issues[:4],
-        "revision_instructions": revision_instructions[:5],
+        "revision_instructions": instructions[:5],
         "supporting_signals": cue_hits[:4] or cue_terms[:4] or facet.bullets[:2],
     }
 
@@ -906,9 +956,9 @@ def _normalize_review_payload(payload: dict[str, Any], facet: StoneWritingFacetC
         limit=4,
     )
     if not strengths:
-        strengths = ["当前稿子已经有一个可修的基础。"]
+        strengths = ["首稿已经有一个可继续修的基础。"]
     if not revision_instructions:
-        revision_instructions = issues[:] or ["保持当前优势，只做细部收束。"]
+        revision_instructions = issues[:] or ["保持当前优势，只做必要收束。"]
     passed = bool(payload.get("pass")) if "pass" in payload else (score >= 0.72 and not issues)
     return {
         "dimension": facet.label,
@@ -925,9 +975,7 @@ def _normalize_review_payload(payload: dict[str, Any], facet: StoneWritingFacetC
 
 def _heuristic_review_plan(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     keep = _unique_preserve_order(item for review in reviews for item in review.get("strengths", []))
-    priorities = _unique_preserve_order(
-        item for review in reviews for item in review.get("revision_instructions", [])
-    )
+    priorities = _unique_preserve_order(item for review in reviews for item in review.get("revision_instructions", []))
     risk_watch = _unique_preserve_order(
         f"{review.get('dimension_label')}: {issue}"
         for review in reviews
@@ -935,12 +983,12 @@ def _heuristic_review_plan(reviews: list[dict[str, Any]]) -> dict[str, Any]:
     )
     pass_count = sum(1 for review in reviews if review.get("pass"))
     return {
-        "summary": f"{pass_count}/8 个维度初步达标，优先修补最不稳的声音、结构和约束问题。",
-        "keep": keep[:4] or ["保留当前稿子里已经形成的压低声调和收束感。"],
-        "priorities": priorities[:6] or ["保持声音稳定，只做必要收束。"],
+        "summary": f"{pass_count}/8 个维度已经达标，优先修补最不稳的维度，不要平均用力。",
+        "keep": keep[:4] or ["保留首稿里已经成立的语气和收束感。"],
+        "priorities": priorities[:6] or ["只做必要修订，让终稿更贴近分析基线。"],
         "revision_blueprint": [
-            "先补足最弱的 2-3 个维度，不要平均用力。",
-            "保留首稿已经成立的语气和收口方式。",
+            "先补最弱的 2-3 个维度，不平均摊开修改。",
+            "保留首稿已经建立起来的语气与节奏。",
             "让主题在正文中更可见，但不要写成说明文。",
         ],
         "risk_watch": risk_watch[:4],
@@ -952,10 +1000,7 @@ def _normalize_review_plan_payload(payload: dict[str, Any], reviews: list[dict[s
     summary = str(payload.get("summary") or heuristic["summary"]).strip()
     keep = _normalize_string_list(payload.get("keep"), limit=4) or heuristic["keep"]
     priorities = _normalize_string_list(payload.get("priorities"), limit=6) or heuristic["priorities"]
-    revision_blueprint = _normalize_string_list(
-        payload.get("revision_blueprint"),
-        limit=6,
-    ) or heuristic["revision_blueprint"]
+    revision_blueprint = _normalize_string_list(payload.get("revision_blueprint"), limit=6) or heuristic["revision_blueprint"]
     risk_watch = _normalize_string_list(payload.get("risk_watch"), limit=4) or heuristic["risk_watch"]
     return {
         "summary": summary,
@@ -976,55 +1021,40 @@ def _heuristic_revise_draft(
     extra_requirements: str | None,
 ) -> str:
     revised = str(draft or "").strip()
-    priorities = _normalize_string_list(review_plan.get("priorities"), limit=6)
     failed_keys = {str(review.get("dimension_key") or "") for review in reviews if not review.get("pass")}
+    priorities = _normalize_string_list(review_plan.get("priorities"), limit=6)
 
     if topic and topic not in revised:
-        revised = f"{topic}，这件事真正难写的，不是表面，而是它会把人重新拖回现实里。\n\n{revised}"
+        revised = f"{topic}，真正难写的，从来不是表面的事情，而是它会把人重新拖回现实里。\n\n{revised}"
 
-    if "structure_composition" in failed_keys:
-        sentences = [item.strip() for item in re.split(r"(?<=[。！？])", revised) if item.strip()]
-        if len(sentences) >= 5:
-            revised = "\n\n".join(
-                [
-                    "".join(sentences[:2]).strip(),
-                    "".join(sentences[2:4]).strip(),
-                    "".join(sentences[4:]).strip(),
-                ]
-            ).strip()
-
+    additions: list[str] = []
     if "voice_signature" in failed_keys:
-        voice_terms = _facet_terms(_facet_lookup(analysis_bundle, "voice_signature"))[:2]
-        revised += f"\n\n我还是愿意把口气收回到{_join_terms(voice_terms, fallback='更低、更稳的声音')}里。"
-
+        voice_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "voice_signature"))[:2], fallback="更低、更稳的声调")
+        additions.append(f"写到这里，口气还是要继续往{voice_hint}里收，不能突然拔高。")
     if "lexicon_idiolect" in failed_keys:
-        lexicon_terms = _facet_terms(_facet_lookup(analysis_bundle, "lexicon_idiolect"))[:2]
-        revised += f"\n\n真正留下来的说法，往往不是漂亮，而是{_join_terms(lexicon_terms, fallback='作者自己惯用的那种转折和落点')}。"
-
+        lexicon_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "lexicon_idiolect"))[:2], fallback="作者惯用的转折和落点")
+        additions.append(f"真正该留下来的说法，往往不是漂亮，而是{lexicon_hint}。")
     if "imagery_theme" in failed_keys:
-        imagery_terms = _facet_terms(_facet_lookup(analysis_bundle, "imagery_theme"))[:2]
-        revised += f"\n\n等到情绪沉下来，场景还是会回到{_join_terms(imagery_terms, fallback='那些熟悉的意象和旧场景')}里。"
-
+        imagery_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "imagery_theme"))[:2], fallback="熟悉的意象和旧场景")
+        additions.append(f"等到情绪再往里沉一点，场景还是会回到{imagery_hint}。")
     if "stance_values" in failed_keys:
-        stance_terms = _facet_terms(_facet_lookup(analysis_bundle, "stance_values"))[:2]
-        revised += f"\n\n归根到底，我更愿意把它理解成{_join_terms(stance_terms, fallback='代价、边界和个人立场')}，而不是一个干净的结论。"
-
+        stance_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "stance_values"))[:2], fallback="代价、边界和判断")
+        additions.append(f"归根到底，这件事还是要落到{stance_hint}上，而不是变成一个干净的结论。")
     if "emotional_arc" in failed_keys:
-        emotion_terms = _facet_terms(_facet_lookup(analysis_bundle, "emotional_arc"))[:2]
-        revised += f"\n\n情绪也不该一下子摊开，它应该先往里压，再沿着{_join_terms(emotion_terms, fallback='迟疑和回落')}慢慢显出来。"
-
+        emotion_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "emotional_arc"))[:2], fallback="迟疑和回落")
+        additions.append(f"情绪不该一下子摊开，它应该先往里压，再沿着{emotion_hint}慢慢显出来。")
     if "nonclinical_psychodynamics" in failed_keys:
-        psycho_terms = _facet_terms(_facet_lookup(analysis_bundle, "nonclinical_psychodynamics"))[:2]
-        revised += f"\n\n人真正用来保护自己的，很多时候就是{_join_terms(psycho_terms, fallback='那点退缩、防御和回身的动作')}。"
-
+        psycho_hint = _join_terms(_facet_terms(_facet_lookup(analysis_bundle, "nonclinical_psychodynamics"))[:2], fallback="退缩、防卫和自我回收")
+        additions.append(f"人真正用来保护自己的，很多时候就是{psycho_hint}这些动作。")
     if "creative_constraints" in failed_keys:
         revised = _dedupe_sentences(revised)
 
-    if extra_requirements and extra_requirements not in revised:
-        revised += f"\n\n附加要求我也会继续守住：{extra_requirements}。"
-
     if priorities:
-        revised += "\n\n" + " ".join(f"我会继续记住：{item}" for item in priorities[:2])
+        additions.append(f"这次修订最重要的两件事是：{ '；'.join(priorities[:2]) }。")
+    if extra_requirements:
+        additions.append(f"同时继续守住这个附加要求：{extra_requirements}。")
+    if additions:
+        revised = f"{revised}\n\n" + "\n\n".join(additions)
 
     return _fit_word_count(revised, target_word_count, analysis_bundle, topic, extra_requirements)
 
@@ -1038,14 +1068,14 @@ def _build_final_assessment(
 ) -> dict[str, Any]:
     word_count = estimate_word_count(final_text)
     target = max(100, int(target_word_count or 0))
-    lower = int(target * 0.85)
-    upper = int(target * 1.15)
+    lower = int(target * 0.9)
+    upper = int(target * 1.05)
     pass_count = sum(1 for review in reviews if review.get("pass"))
     remaining_risks = _normalize_string_list(review_plan.get("risk_watch"), limit=4)
     if not lower <= word_count <= upper:
-        remaining_risks = remaining_risks + ["字数仍然需要人工再确认。"]
+        remaining_risks.append("字数仍然需要人工复核。")
     if topic and topic not in final_text:
-        remaining_risks = remaining_risks + ["主题在正文中的可见度仍然偏弱。"]
+        remaining_risks.append("主题在正文里的可见度仍然偏弱。")
     return {
         "reviewer_pass_count": pass_count,
         "reviewer_total": len(reviews),
@@ -1108,7 +1138,7 @@ def _normalize_string_list(value: Any, *, limit: int = 6) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        pieces = re.split(r"[\n;；]+", value)
+        pieces = re.split(r"[\n;,，；]+", value)
         return [piece.strip() for piece in pieces if piece.strip()][:limit]
     if isinstance(value, dict):
         flattened: list[str] = []
@@ -1116,7 +1146,7 @@ def _normalize_string_list(value: Any, *, limit: int = 6) -> list[str]:
             flattened.extend(_normalize_string_list(item, limit=limit))
         return _unique_preserve_order(flattened)[:limit]
     if isinstance(value, (list, tuple)):
-        flattened = []
+        flattened: list[str] = []
         for item in value:
             flattened.extend(_normalize_string_list(item, limit=limit))
         return _unique_preserve_order(flattened)[:limit]
@@ -1188,9 +1218,7 @@ def _extract_terms(value: Any) -> list[str]:
     text = str(value or "").strip()
     if not text:
         return []
-    pieces = re.split(r"[\s,，。！？；：、()\[\]{}<>\"'|/\\-]+", text)
-    cleaned = [piece.strip() for piece in pieces if len(piece.strip()) >= 2]
-    return cleaned[:12]
+    return re.findall(r"[\u4e00-\u9fffA-Za-z0-9]{2,}", text)[:12]
 
 
 def _first_anchor_quote(bundle: StoneWritingAnalysisBundle) -> str:
@@ -1239,7 +1267,7 @@ def _unique_preserve_order(values) -> list[str]:
 
 
 def _duplicate_sentence_ratio(text: str) -> float:
-    sentences = [item.strip() for item in re.split(r"[。！？]+", text) if item.strip()]
+    sentences = [item.strip() for item in re.split(r"[。！？!?]+", text) if item.strip()]
     if not sentences:
         return 0.0
     unique_count = len(set(sentences))
@@ -1247,10 +1275,14 @@ def _duplicate_sentence_ratio(text: str) -> float:
 
 
 def _dedupe_sentences(text: str) -> str:
-    sentences = [item.strip() for item in re.split(r"(?<=[。！？])", text) if item.strip()]
+    sentences = [item.strip() for item in re.split(r"(?<=[。！？!?])", text) if item.strip()]
     unique: list[str] = []
     for sentence in sentences:
         if sentence in unique:
             continue
         unique.append(sentence)
     return "".join(unique).strip()
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

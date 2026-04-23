@@ -4,6 +4,7 @@ import {
     renderMarkdownInto,
     safeParseJson,
     setButtonBusy,
+    shouldAutoScroll,
 } from "./shared.js";
 
 const shell = document.querySelector("[data-writing-shell]");
@@ -16,10 +17,9 @@ if (shell) {
         projectId: shell.dataset.projectId,
         sessions: bootstrap.sessions || [],
         currentSessionId: bootstrap.selected_session_id || null,
-        currentSession: bootstrap.selected_session || null,
-        documents: bootstrap.documents || [],
+        currentSession: bootstrap.selected_session || { turns: [] },
         baseline: bootstrap.baseline || { status: "missing_analysis" },
-        stageFeed: [],
+        channelTitle: bootstrap.channel_title || "",
         eventSource: null,
         sending: false,
     };
@@ -27,18 +27,19 @@ if (shell) {
     const elements = {
         sessionList: shell.querySelector("[data-session-list]"),
         sessionTitle: shell.querySelector("[data-session-title]"),
-        chatList: shell.querySelector("[data-chat-list]"),
-        documentList: shell.querySelector("[data-document-list]"),
-        stageFeedList: shell.querySelector("[data-stage-feed-list]"),
+        channelTitle: shell.querySelector("[data-channel-title]"),
         baselinePill: shell.querySelector("[data-baseline-pill]"),
-        topic: shell.querySelector("[data-topic-input]"),
-        targetWordCount: shell.querySelector("[data-target-word-count]"),
-        extraRequirements: shell.querySelector("[data-extra-requirements]"),
+        baselineNote: shell.querySelector("[data-baseline-note]"),
+        chatList: shell.querySelector("[data-chat-list]"),
+        liveFeed: shell.querySelector("[data-live-feed]"),
+        messageInput: shell.querySelector("[data-message-input]"),
         composerHint: shell.querySelector("[data-composer-hint]"),
+        composerError: shell.querySelector("[data-composer-error]"),
         send: shell.querySelector("[data-send-message]"),
         newSession: shell.querySelector("[data-new-session]"),
         renameSession: shell.querySelector("[data-rename-session]"),
         deleteSession: shell.querySelector("[data-delete-session]"),
+        toggleSessions: shell.querySelector("[data-toggle-sessions]"),
     };
 
     bindEvents();
@@ -48,7 +49,7 @@ if (shell) {
         elements.newSession?.addEventListener("click", async () => {
             const payload = await fetchJson(`/api/projects/${state.projectId}/writing/sessions`, {
                 method: "POST",
-                body: JSON.stringify({ title: ui.new_session || "新建写作会话" }),
+                body: JSON.stringify({ title: ui.new_session || "新建会话" }),
             });
             syncSessionSummary(payload);
             await loadSession(payload.id);
@@ -58,7 +59,10 @@ if (shell) {
             if (!state.currentSessionId) {
                 return;
             }
-            const nextTitle = window.prompt(ui.rename_prompt || "输入新的会话标题", state.currentSession?.title || "");
+            const nextTitle = window.prompt(
+                ui.rename_prompt || "输入新的会话标题",
+                state.currentSession?.title || ""
+            );
             if (nextTitle === null) {
                 return;
             }
@@ -71,7 +75,7 @@ if (shell) {
                 state.currentSession.title = payload.title;
             }
             renderSessions();
-            elements.sessionTitle.textContent = payload.title || ui.untitled_session || "未命名会话";
+            renderHeader();
         });
 
         elements.deleteSession?.addEventListener("click", async () => {
@@ -88,7 +92,7 @@ if (shell) {
             if (!state.sessions.length) {
                 const created = await fetchJson(`/api/projects/${state.projectId}/writing/sessions`, {
                     method: "POST",
-                    body: JSON.stringify({ title: ui.new_session || "新建写作会话" }),
+                    body: JSON.stringify({ title: ui.new_session || "新建会话" }),
                 });
                 syncSessionSummary(created);
                 state.sessions = [created];
@@ -97,55 +101,71 @@ if (shell) {
         });
 
         elements.send?.addEventListener("click", () => sendMessage());
+
+        elements.messageInput?.addEventListener("keydown", (event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                sendMessage();
+            }
+        });
+
+        elements.toggleSessions?.addEventListener("click", () => {
+            const next = shell.dataset.sessionsOpen !== "true";
+            shell.dataset.sessionsOpen = String(next);
+        });
     }
 
     async function sendMessage() {
-        const topic = elements.topic?.value?.trim() || "";
-        const targetWordCount = Number(elements.targetWordCount?.value || 0);
-        const extraRequirements = elements.extraRequirements?.value?.trim() || "";
-        if (!topic || !state.currentSessionId || state.sending) {
+        const message = elements.messageInput?.value?.trim() || "";
+        if (!message || !state.currentSessionId || state.sending) {
             return;
         }
 
+        const parsed = parseWritingMessage(message);
+        if (!parsed.ok) {
+            showComposerError(parsed.error || ui.message_parse_error || "请补全字数格式。");
+            return;
+        }
+
+        hideComposerError();
         closeStream();
-        state.stageFeed = [];
-        state.currentSession.turns.push({
-            id: `local-${Date.now()}`,
+        appendTurn({
+            id: `local-user-${Date.now()}`,
             role: "user",
-            content: `Topic: ${topic}\nTarget Word Count: ${targetWordCount}${extraRequirements ? `\nExtra Requirements: ${extraRequirements}` : ""}`,
-            trace: {},
+            content: message,
+            actor_id: "user",
+            actor_name: ui.you_label || "你",
+            actor_role: "user",
+            message_kind: "request",
+            trace: {
+                topic: parsed.topic,
+                target_word_count: parsed.targetWordCount,
+                extra_requirements: parsed.extraRequirements,
+            },
             created_at: new Date().toISOString(),
         });
+
         state.sending = true;
         setButtonBusy(elements.send, true, ui.sending || "写作中...");
-        if (elements.topic) {
-            elements.topic.disabled = true;
+        if (elements.messageInput) {
+            elements.messageInput.disabled = true;
         }
-        if (elements.targetWordCount) {
-            elements.targetWordCount.disabled = true;
-        }
-        if (elements.extraRequirements) {
-            elements.extraRequirements.disabled = true;
-        }
-        renderAll();
 
         try {
             const payload = await fetchJson(
                 `/api/projects/${state.projectId}/writing/sessions/${state.currentSessionId}/messages`,
                 {
                     method: "POST",
-                    body: JSON.stringify({
-                        topic,
-                        target_word_count: targetWordCount,
-                        extra_requirements: extraRequirements || null,
-                    }),
+                    body: JSON.stringify({ message }),
                 }
             );
+            if (elements.messageInput) {
+                elements.messageInput.value = "";
+            }
             openStream(payload.stream_id);
         } catch (error) {
             appendLocalError(error.message);
             restoreComposer();
-            renderAll();
         }
     }
 
@@ -155,24 +175,24 @@ if (shell) {
         );
         state.eventSource = source;
 
+        source.addEventListener("status", (event) => {
+            const payload = safeParseJson(event.data, {});
+            if (payload.stage === "analysis_loaded") {
+                state.baseline.status = "ready";
+                renderBaseline();
+            }
+        });
+
         source.addEventListener("stage", (event) => {
             const payload = safeParseJson(event.data, {});
-            state.stageFeed.push(payload);
-            renderStageFeed();
+            appendTurn(normalizeStreamTurn(payload));
         });
 
         source.addEventListener("done", async (event) => {
             const payload = safeParseJson(event.data, {});
-            state.stageFeed.push({ stage: "done", label: "Final text ready", result: payload });
-            renderStageFeed();
+            appendTurn(normalizeStreamTurn(payload));
             closeStream();
             await loadSession(state.currentSessionId);
-        });
-
-        source.addEventListener("status", (event) => {
-            const payload = safeParseJson(event.data, {});
-            state.stageFeed.push(payload);
-            renderStageFeed();
         });
 
         source.addEventListener("error", async (event) => {
@@ -200,61 +220,69 @@ if (shell) {
         state.currentSessionId = sessionId;
         state.currentSession = payload;
         syncSessionSummary(payload);
+        shell.dataset.sessionsOpen = "false";
         restoreComposer();
         renderAll();
+        scrollToBottom(true);
     }
 
     function renderAll() {
+        renderHeader();
         renderBaseline();
         renderSessions();
         renderChat();
-        renderDocuments();
-        renderStageFeed();
-        elements.sessionTitle.textContent = state.currentSession?.title || ui.untitled_session || "未命名会话";
+    }
+
+    function renderHeader() {
+        if (elements.channelTitle) {
+            elements.channelTitle.textContent = state.channelTitle || "";
+        }
+        if (elements.sessionTitle) {
+            elements.sessionTitle.textContent = state.currentSession?.title || ui.untitled_session || "未命名会话";
+        }
     }
 
     function renderBaseline() {
-        if (!elements.baselinePill) {
-            return;
+        const label = resolveBaselineLabel(state.baseline);
+        if (elements.baselinePill) {
+            elements.baselinePill.textContent = label;
         }
-        if (state.baseline.status === "ready") {
-            elements.baselinePill.textContent = ui.baseline_ready || "当前使用最新 Stone 分析基线。";
-            return;
+        if (elements.baselineNote) {
+            const missing = Array.isArray(state.baseline?.missing_facets) && state.baseline.missing_facets.length
+                ? ` ${state.baseline.missing_facets.join(" / ")}`
+                : "";
+            elements.baselineNote.textContent = `${ui.hero_note || ""}${missing}`.trim() || label;
         }
-        if (state.baseline.status === "missing_preprocess") {
-            elements.baselinePill.textContent = ui.baseline_missing_preprocess || "先完成 Stone 预分析。";
-            return;
-        }
-        if (state.baseline.status === "running_analysis") {
-            elements.baselinePill.textContent = ui.baseline_running_analysis || "Stone 分析仍在运行中。";
-            return;
-        }
-        if (state.baseline.status === "incomplete_analysis") {
-            elements.baselinePill.textContent = ui.baseline_incomplete_analysis || "最新 Stone 分析还不完整。";
-            return;
-        }
-        elements.baselinePill.textContent = ui.baseline_missing_analysis || "先完成 Stone 多维分析。";
     }
 
     function renderSessions() {
+        if (!elements.sessionList) {
+            return;
+        }
         elements.sessionList.innerHTML = "";
         state.sessions.forEach((item) => {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = `session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
-            button.innerHTML = `<strong>${escapeHtml(item.title || ui.untitled_session || "未命名会话")}</strong><small>${item.turn_count || 0} 轮消息</small>`;
+            button.className = `writing-session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
+            button.innerHTML = `
+                <strong>${escapeHtml(item.title || ui.untitled_session || "未命名会话")}</strong>
+                <small>${escapeHtml(String(item.turn_count || 0))} · ${escapeHtml(formatSessionTime(item.last_active_at || item.created_at))}</small>
+            `;
             button.addEventListener("click", () => loadSession(item.id));
             elements.sessionList.appendChild(button);
         });
     }
 
     function renderChat() {
+        if (!elements.chatList) {
+            return;
+        }
         elements.chatList.innerHTML = "";
         const turns = state.currentSession?.turns || [];
         if (!turns.length) {
             const empty = document.createElement("p");
             empty.className = "muted";
-            empty.textContent = ui.empty_turns || "还没有写作任务。";
+            empty.textContent = ui.empty_turns || "还没有写作消息，先发一条命令开始。";
             elements.chatList.appendChild(empty);
             return;
         }
@@ -265,118 +293,96 @@ if (shell) {
 
     function renderTurn(turn) {
         const row = document.createElement("article");
-        row.className = `chat-row chat-row--${turn.role === "user" ? "user" : "assistant"}`;
+        const role = turn.role === "user" ? "user" : "assistant";
+        const kind = turn.message_kind || "update";
+        row.className = `group-message group-message--${role} group-message--${kind}`;
 
-        if (turn.role === "assistant") {
-            normalizeTraceBlocks(turn.trace || {}).forEach((block) => {
-                row.appendChild(renderTraceBlock(block));
-            });
-        }
+        const avatar = document.createElement("div");
+        avatar.className = "group-message__avatar";
+        avatar.textContent = avatarLetter(turn);
+        row.appendChild(avatar);
 
-        const bubble = document.createElement("div");
-        bubble.className = `chat-bubble chat-bubble--${turn.role === "user" ? "user" : "assistant"}`;
-        if (turn.role === "assistant") {
-            renderMarkdownInto(bubble, turn.content || "");
-        } else {
-            bubble.textContent = turn.content || "";
-        }
-        row.appendChild(bubble);
+        const inner = document.createElement("div");
+        inner.className = "group-message__inner";
 
         const meta = document.createElement("div");
-        meta.className = "chat-meta";
-        meta.textContent = formatTime(turn.created_at);
-        row.appendChild(meta);
+        meta.className = "group-message__meta";
+        meta.innerHTML = `
+            <strong>${escapeHtml(resolveActorName(turn))}</strong>
+            <span>${escapeHtml(formatMessageTime(turn.created_at))}</span>
+        `;
+        inner.appendChild(meta);
+
+        const bubble = document.createElement("div");
+        bubble.className = "group-message__bubble";
+        if (turn.role === "user") {
+            bubble.textContent = turn.content || "";
+        } else {
+            renderMarkdownInto(bubble, turn.content || "");
+        }
+        inner.appendChild(bubble);
+
+        const debugPayload = turn.trace?.debug;
+        if (debugPayload && Object.keys(debugPayload).length) {
+            const details = document.createElement("details");
+            details.className = "group-message__details";
+            details.innerHTML = `
+                <summary>展开详情</summary>
+                <pre>${escapeHtml(JSON.stringify(debugPayload, null, 2))}</pre>
+            `;
+            inner.appendChild(details);
+        }
+
+        row.appendChild(inner);
         return row;
     }
 
-    function renderTraceBlock(block) {
-        if (block.type === "stage") {
-            const pill = document.createElement("div");
-            pill.className = "turn-pill";
-            pill.textContent = block.label || block.stage || ui.working || "执行中...";
-            return pill;
+    function appendTurn(turn) {
+        if (!state.currentSession) {
+            state.currentSession = { turns: [] };
         }
-        if (block.type === "review") {
-            const details = document.createElement("details");
-            details.className = "tool-call";
-            details.innerHTML = `
-                <summary><span>${escapeHtml(block.dimension || "review")}</span><span>score ${escapeHtml(String(block.score ?? ""))}</span></summary>
-                <div class="tool-call__body">
-                    <pre>${escapeHtml(JSON.stringify({
-                        must_fix: block.must_fix || [],
-                        keep: block.keep || [],
-                    }, null, 2))}</pre>
-                </div>
-            `;
-            return details;
+        if (!Array.isArray(state.currentSession.turns)) {
+            state.currentSession.turns = [];
         }
-        if (block.type === "review_plan") {
-            const details = document.createElement("details");
-            details.className = "tool-call";
-            details.innerHTML = `
-                <summary><span>${escapeHtml(block.label || "review plan")}</span><span>merged</span></summary>
-                <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify({
-                    summary: block.summary || "",
-                    priorities: block.priorities || [],
-                    keep: block.keep || [],
-                }, null, 2))}</pre></div>
-            `;
-            return details;
+        const shouldStick = shouldAutoScroll(elements.liveFeed || elements.chatList);
+        state.currentSession.turns.push(turn);
+        if (typeof state.currentSession.timeline_turn_count === "number") {
+            state.currentSession.timeline_turn_count += 1;
         }
-        if (block.type === "judge") {
-            const details = document.createElement("details");
-            details.className = "tool-call";
-            details.innerHTML = `
-                <summary><span>judge round ${escapeHtml(String(block.round || ""))}</span><span>${block.result?.pass ? "pass" : "revise"}</span></summary>
-                <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify(block.result || {}, null, 2))}</pre></div>
-            `;
-            return details;
+        renderChat();
+        if (shouldStick) {
+            scrollToBottom();
         }
-        const fallback = document.createElement("details");
-        fallback.className = "tool-call";
-        fallback.innerHTML = `
-            <summary><span>${escapeHtml(block.type || "trace")}</span><span>detail</span></summary>
-            <div class="tool-call__body"><pre>${escapeHtml(JSON.stringify(block, null, 2))}</pre></div>
-        `;
-        return fallback;
     }
 
-    function renderStageFeed() {
-        elements.stageFeedList.innerHTML = "";
-        if (!state.stageFeed.length) {
-            const empty = document.createElement("p");
-            empty.className = "muted";
-            empty.textContent = ui.empty_turns || "还没有写作任务。";
-            elements.stageFeedList.appendChild(empty);
-            return;
-        }
-        state.stageFeed.forEach((item) => {
-            const card = document.createElement("div");
-            card.className = "context-card";
-            const label = item.label || item.stage || item.message || "stage";
-            card.innerHTML = `<strong>${escapeHtml(label)}</strong><small>${escapeHtml(JSON.stringify(item, null, 2))}</small>`;
-            elements.stageFeedList.appendChild(card);
+    function appendLocalError(message) {
+        appendTurn({
+            id: `error-${Date.now()}`,
+            role: "assistant",
+            content: `${ui.execution_failed || "写作失败"}\n\n${message}`,
+            actor_id: "writer-error",
+            actor_name: ui.agent_label || "写作 Agent",
+            actor_role: "writer",
+            message_kind: "error",
+            trace: { debug: { message } },
+            created_at: new Date().toISOString(),
         });
     }
 
-    function renderDocuments() {
-        elements.documentList.innerHTML = "";
-        if (!state.documents.length) {
-            const empty = document.createElement("p");
-            empty.className = "muted";
-            empty.textContent = ui.document_empty || "当前项目还没有可引用文档。";
-            elements.documentList.appendChild(empty);
-            return;
-        }
-        state.documents.forEach((item) => {
-            const card = document.createElement("div");
-            card.className = "context-card";
-            card.innerHTML = `
-                <strong>${escapeHtml(item.title || item.filename)}</strong>
-                <small>${escapeHtml(item.source_type || "text")} · ${escapeHtml(item.ingest_status || "pending")}</small>
-            `;
-            elements.documentList.appendChild(card);
-        });
+    function normalizeStreamTurn(payload) {
+        return {
+            id: `${payload.actor_id || "assistant"}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            role: "assistant",
+            content: payload.body || "",
+            actor_id: payload.actor_id || "assistant",
+            actor_name: payload.actor_name || ui.agent_label || "写作 Agent",
+            actor_role: payload.actor_role || "assistant",
+            message_kind: payload.message_kind || "update",
+            trace: {
+                debug: payload.detail || {},
+            },
+            created_at: payload.created_at || new Date().toISOString(),
+        };
     }
 
     function syncSessionSummary(detail) {
@@ -386,7 +392,7 @@ if (shell) {
             session_kind: detail.session_kind,
             created_at: detail.created_at,
             last_active_at: detail.last_active_at,
-            turn_count: detail.turn_count,
+            turn_count: detail.timeline_turn_count || detail.turn_count || detail.turns?.length || 0,
         };
         const index = state.sessions.findIndex((item) => item.id === summary.id);
         if (index >= 0) {
@@ -406,33 +412,82 @@ if (shell) {
     function restoreComposer() {
         closeStream();
         state.sending = false;
-        if (elements.topic) {
-            elements.topic.disabled = false;
-        }
-        if (elements.targetWordCount) {
-            elements.targetWordCount.disabled = false;
-        }
-        if (elements.extraRequirements) {
-            elements.extraRequirements.disabled = false;
+        if (elements.messageInput) {
+            elements.messageInput.disabled = false;
         }
         setButtonBusy(elements.send, false);
     }
 
-    function appendLocalError(message) {
-        state.currentSession.turns.push({
-            id: `error-${Date.now()}`,
-            role: "assistant",
-            content: `${ui.execution_failed || "写作失败"}：\n\n${message}`,
-            trace: { blocks: [{ type: "stage", label: ui.execution_failed || "写作失败" }] },
-            created_at: new Date().toISOString(),
-        });
+    function showComposerError(message) {
+        if (!elements.composerError) {
+            return;
+        }
+        elements.composerError.hidden = false;
+        elements.composerError.textContent = message;
     }
 
-    function formatTime(value) {
+    function hideComposerError() {
+        if (!elements.composerError) {
+            return;
+        }
+        elements.composerError.hidden = true;
+        elements.composerError.textContent = "";
+    }
+
+    function resolveBaselineLabel(baseline) {
+        if (baseline.status === "ready") {
+            return ui.baseline_ready || "当前使用最新 Stone 分析基线。";
+        }
+        if (baseline.status === "missing_preprocess") {
+            return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
+        }
+        if (baseline.status === "running_analysis") {
+            return ui.baseline_running_analysis || "Stone 分析仍在运行中。";
+        }
+        if (baseline.status === "incomplete_analysis") {
+            return ui.baseline_incomplete_analysis || "最新 Stone 分析还不完整。";
+        }
+        return ui.baseline_missing_analysis || "请先完成 Stone 多维分析。";
+    }
+
+    function resolveActorName(turn) {
+        if (turn.role === "user") {
+            return ui.you_label || turn.actor_name || "你";
+        }
+        return turn.actor_name || ui.agent_label || "写作 Agent";
+    }
+
+    function avatarLetter(turn) {
+        const name = resolveActorName(turn);
+        const first = Array.from(name)[0];
+        return first || "S";
+    }
+
+    function parseWritingMessage(message) {
+        const match = String(message || "").match(/(\d+)\s*(字|words)(?=\s|$|[，,。.;；:：!?！？])/i);
+        if (!match) {
+            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+        }
+        const targetWordCount = Number(match[1]);
+        if (!Number.isFinite(targetWordCount) || targetWordCount < 100) {
+            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+        }
+        const topicText = message.slice(0, match.index).trim().replace(/^[请帮我麻烦\s]*(写(?:一篇|篇|个)?|来(?:一篇|篇|个)?)/, "").trim();
+        if (!topicText) {
+            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+        }
+        const extraRequirements = message.slice((match.index || 0) + match[0].length).trim().replace(/^[，,。.;；:：\s]+/, "");
+        return {
+            ok: true,
+            topic: topicText,
+            targetWordCount,
+            extraRequirements: extraRequirements || null,
+        };
+    }
+
+    function formatMessageTime(value) {
         try {
-            return new Intl.DateTimeFormat("zh-CN", {
-                month: "2-digit",
-                day: "2-digit",
+            return new Intl.DateTimeFormat(document.body.dataset.locale || "zh-CN", {
                 hour: "2-digit",
                 minute: "2-digit",
             }).format(new Date(value));
@@ -440,8 +495,26 @@ if (shell) {
             return value || "--";
         }
     }
-}
 
-function normalizeTraceBlocks(trace) {
-    return Array.isArray(trace.blocks) ? trace.blocks : [];
+    function formatSessionTime(value) {
+        try {
+            return new Intl.DateTimeFormat(document.body.dataset.locale || "zh-CN", {
+                month: "2-digit",
+                day: "2-digit",
+            }).format(new Date(value));
+        } catch {
+            return value || "--";
+        }
+    }
+
+    function scrollToBottom(force = false) {
+        const scroller = elements.liveFeed;
+        if (!scroller) {
+            return;
+        }
+        if (!force && !shouldAutoScroll(scroller)) {
+            return;
+        }
+        scroller.scrollTop = scroller.scrollHeight;
+    }
 }

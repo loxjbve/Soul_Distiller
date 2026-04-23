@@ -1,0 +1,398 @@
+.page-writing {
+    --writing-bg: linear-gradient(180deg, rgba(248, 240, 228, 0.72), rgba(241, 233, 218, 0.24));
+    --writing-panel: rgba(255, 249, 241, 0.92);
+    --writing-panel-strong: rgba(255, 252, 247, 0.98);
+    --writing-border: rgba(112, 79, 42, 0.14);
+    --writing-shadow: 0 22px 48px rgba(107, 73, 37, 0.11);
+    --writing-text: #24170c;
+    --writing-muted: #7b6853;
+    --writing-accent: #9d5f28;
+    --writing-accent-soft: rgba(157, 95, 40, 0.12);
+    --writing-review: rgba(134, 93, 58, 0.08);
+    --writing-user: linear-gradient(135deg, #bb6d2c, #8a4a1e);
+}
+
+.page-writing .writing-shell {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr);
+    gap: 1.25rem;
+    min-height: calc(100vh - 11rem);
+}
+
+.page-writing .writing-rail,
+.page-writing .writing-stage {
+    min-height: 0;
+    border: 1px solid var(--writing-border);
+    background: var(--writing-panel);
+    box-shadow: var(--writing-shadow);
+    backdrop-filter: blur(18px);
+}
+
+.page-writing .writing-rail {
+    border-radius: 1.75rem;
+    padding: 1rem;
+    background-image: linear-gradient(180deg, rgba(255, 250, 244, 0.98), rgba(247, 239, 228, 0.94));
+}
+
+.page-writing .writing-rail__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.page-writing .writing-rail__header h2 {
+    margin: 0.15rem 0 0;
+}
+
+.page-writing .writing-session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-height: calc(100vh - 17rem);
+    overflow: auto;
+    padding-right: 0.25rem;
+}
+
+.page-writing .writing-session-item {
+    width: 100%;
+    padding: 0.95rem 1rem;
+    border: 1px solid rgba(112, 79, 42, 0.12);
+    border-radius: 1.15rem;
+    background: rgba(255, 252, 247, 0.92);
+    color: var(--writing-text);
+    text-align: left;
+    transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.page-writing .writing-session-item:hover,
+.page-writing .writing-session-item:focus-visible {
+    transform: translateY(-1px);
+    border-color: rgba(157, 95, 40, 0.28);
+    background: rgba(255, 248, 238, 0.98);
+}
+
+.page-writing .writing-session-item.is-active {
+    border-color: rgba(157, 95, 40, 0.36);
+    background: linear-gradient(135deg, rgba(239, 220, 193, 0.65), rgba(255, 248, 238, 0.96));
+}
+
+.page-writing .writing-session-item strong,
+.page-writing .writing-session-item small {
+    display: block;
+}
+
+.page-writing .writing-session-item small {
+    margin-top: 0.35rem;
+    color: var(--writing-muted);
+}
+
+.page-writing .writing-stage {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    gap: 1rem;
+    border-radius: 2rem;
+    padding: 1.1rem;
+    background-image:
+        radial-gradient(circle at top right, rgba(233, 199, 148, 0.2), transparent 28%),
+        var(--writing-bg);
+}
+
+.page-writing .writing-channel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.page-writing .writing-channel-header__copy {
+    min-width: 0;
+}
+
+.page-writing .writing-channel-header__copy h1 {
+    margin: 0.15rem 0 0;
+    color: var(--writing-text);
+    font-size: clamp(1.8rem, 2vw, 2.6rem);
+    line-height: 1.02;
+    letter-spacing: -0.04em;
+}
+
+.page-writing .writing-channel-header__toggle {
+    display: none;
+    margin-bottom: 0.75rem;
+}
+
+.page-writing .writing-channel-header__chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-top: 0.9rem;
+}
+
+.page-writing .writing-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 2rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid rgba(112, 79, 42, 0.12);
+    background: rgba(255, 252, 247, 0.78);
+    color: var(--writing-text);
+    font-size: 0.88rem;
+}
+
+.page-writing .writing-pill--baseline {
+    background: rgba(245, 231, 210, 0.82);
+    border-color: rgba(157, 95, 40, 0.18);
+}
+
+.page-writing .writing-channel-header__actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.65rem;
+}
+
+.page-writing .writing-pinned {
+    padding: 1rem 1.1rem;
+    border-radius: 1.4rem;
+    border: 1px solid rgba(157, 95, 40, 0.16);
+    background: linear-gradient(135deg, rgba(247, 235, 216, 0.96), rgba(255, 250, 243, 0.88));
+}
+
+.page-writing .writing-pinned__label {
+    margin-bottom: 0.45rem;
+    color: var(--writing-accent);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.page-writing .writing-pinned p {
+    margin: 0;
+    color: var(--writing-text);
+}
+
+.page-writing .writing-message-stage {
+    min-height: 0;
+    overflow: auto;
+    padding-right: 0.35rem;
+}
+
+.page-writing .writing-message-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    min-height: 100%;
+}
+
+.page-writing .group-message {
+    display: grid;
+    grid-template-columns: 3rem minmax(0, 1fr);
+    gap: 0.85rem;
+    align-items: start;
+}
+
+.page-writing .group-message--user {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: end;
+}
+
+.page-writing .group-message--user .group-message__avatar {
+    display: none;
+}
+
+.page-writing .group-message__avatar {
+    display: grid;
+    place-items: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 1rem;
+    background: linear-gradient(135deg, rgba(157, 95, 40, 0.88), rgba(205, 153, 91, 0.92));
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 12px 24px rgba(157, 95, 40, 0.18);
+}
+
+.page-writing .group-message--review .group-message__avatar {
+    background: linear-gradient(135deg, rgba(103, 77, 46, 0.92), rgba(151, 116, 72, 0.92));
+}
+
+.page-writing .group-message--final .group-message__avatar {
+    background: linear-gradient(135deg, rgba(188, 112, 37, 0.92), rgba(122, 68, 25, 0.92));
+}
+
+.page-writing .group-message__inner {
+    min-width: 0;
+    max-width: min(52rem, 100%);
+}
+
+.page-writing .group-message--user .group-message__inner {
+    max-width: min(42rem, 82%);
+}
+
+.page-writing .group-message__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-bottom: 0.45rem;
+    color: var(--writing-muted);
+    font-size: 0.86rem;
+}
+
+.page-writing .group-message__meta strong {
+    color: var(--writing-text);
+}
+
+.page-writing .group-message__bubble {
+    padding: 1rem 1.05rem;
+    border-radius: 1.4rem;
+    border: 1px solid rgba(112, 79, 42, 0.12);
+    background: var(--writing-panel-strong);
+    color: var(--writing-text);
+}
+
+.page-writing .group-message--user .group-message__bubble {
+    border-color: transparent;
+    background: var(--writing-user);
+    color: #fff;
+    border-bottom-right-radius: 0.4rem;
+}
+
+.page-writing .group-message--review .group-message__bubble {
+    background: linear-gradient(135deg, rgba(255, 251, 246, 0.96), var(--writing-review));
+}
+
+.page-writing .group-message--final .group-message__bubble {
+    background: linear-gradient(135deg, rgba(255, 248, 236, 0.98), rgba(255, 255, 255, 0.98));
+    border-color: rgba(157, 95, 40, 0.22);
+}
+
+.page-writing .group-message__bubble > :first-child {
+    margin-top: 0;
+}
+
+.page-writing .group-message__bubble > :last-child {
+    margin-bottom: 0;
+}
+
+.page-writing .group-message__details {
+    margin-top: 0.55rem;
+    border: 1px solid rgba(112, 79, 42, 0.1);
+    border-radius: 1rem;
+    background: rgba(255, 251, 246, 0.82);
+    overflow: hidden;
+}
+
+.page-writing .group-message__details summary {
+    cursor: pointer;
+    padding: 0.75rem 0.9rem;
+    color: var(--writing-muted);
+    font-size: 0.87rem;
+}
+
+.page-writing .group-message__details pre {
+    margin: 0;
+    padding: 0 0.9rem 0.9rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--writing-text);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}
+
+.page-writing .writing-composer {
+    padding: 1rem;
+    border-radius: 1.5rem;
+    border: 1px solid rgba(112, 79, 42, 0.12);
+    background: rgba(255, 252, 247, 0.94);
+}
+
+.page-writing .writing-composer__field {
+    display: block;
+}
+
+.page-writing .writing-composer__field span {
+    display: inline-block;
+    margin-bottom: 0.55rem;
+    color: var(--writing-muted);
+    font-size: 0.88rem;
+    font-weight: 700;
+}
+
+.page-writing .writing-composer textarea {
+    width: 100%;
+    min-height: 6rem;
+    resize: vertical;
+    padding: 0.95rem 1rem;
+    border: 1px solid rgba(112, 79, 42, 0.12);
+    border-radius: 1.15rem;
+    background: rgba(255, 255, 255, 0.82);
+    color: var(--writing-text);
+}
+
+.page-writing .writing-composer textarea:focus {
+    outline: 2px solid rgba(157, 95, 40, 0.18);
+    outline-offset: 0;
+    border-color: rgba(157, 95, 40, 0.24);
+}
+
+.page-writing .writing-composer__footer {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-top: 0.9rem;
+}
+
+.page-writing .writing-composer__status {
+    min-width: 0;
+}
+
+.page-writing .writing-composer__status p {
+    margin: 0;
+}
+
+.page-writing .writing-composer__error {
+    margin-top: 0.4rem;
+    color: #a53e23;
+}
+
+@media (max-width: 980px) {
+    .page-writing .writing-shell {
+        grid-template-columns: 1fr;
+    }
+
+    .page-writing .writing-channel-header {
+        flex-direction: column;
+    }
+
+    .page-writing .writing-channel-header__actions {
+        justify-content: flex-start;
+    }
+
+    .page-writing .writing-channel-header__toggle {
+        display: inline-flex;
+    }
+
+    .page-writing .writing-rail {
+        display: none;
+    }
+
+    .page-writing [data-sessions-open="true"] .writing-rail {
+        display: block;
+    }
+
+    .page-writing .writing-composer__footer {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .page-writing .group-message--user .group-message__inner {
+        max-width: 100%;
+    }
+}
