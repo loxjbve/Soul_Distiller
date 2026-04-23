@@ -107,14 +107,11 @@ def _seed_stone_analysis(app, project_id: str) -> None:
             language="zh",
             metadata_json={
                 "stone_profile": {
-                    "article_theme": "代价、关系、沉默",
-                    "narrative_pov": "first_person",
-                    "tone": "cool_and_observational",
-                    "structure_template": "setup_then_turn",
-                    "lexical_markers": ["代价", "关系", "沉默"],
-                    "emotional_progression": "steady_pressure_with_small_turns",
-                    "nonclinical_signals": ["边界和克制感反复出现"],
-                    "representative_lines": ["夜里写字的人，总会回到代价、关系和沉默。"],
+                    "content_summary": "夜里写字的人总会回到代价、关系和沉默这些母题。",
+                    "content_type": "抽象",
+                    "length_label": "短文",
+                    "emotion_label": "不确定",
+                    "selected_passages": ["夜里写字的人，总会回到代价、关系和沉默。"],
                 }
             },
             ingest_status="ready",
@@ -198,6 +195,16 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     preprocess_run_id = preprocess_response.json()["id"]
     preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_run_id)
     assert preprocess_payload["status"] == "completed"
+    detail_profile = preprocess_payload["documents"][0]["stone_profile"]
+    assert set(detail_profile) == {
+        "content_summary",
+        "content_type",
+        "length_label",
+        "emotion_label",
+        "selected_passages",
+    }
+    assert detail_profile["content_summary"]
+    assert detail_profile["selected_passages"]
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -216,10 +223,18 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     refreshed_docs = client.get(f"/api/projects/{project_id}/documents").json()["documents"]
     profiled_doc = next(item for item in refreshed_docs if item["id"] == document_id)
     stone_profile = profiled_doc["metadata_json"]["stone_profile"]
-    assert stone_profile["article_theme"]
-    assert stone_profile["narrative_pov"]
-    assert stone_profile["tone"]
-    assert stone_profile["structure_template"]
+    assert set(stone_profile) == {
+        "content_summary",
+        "content_type",
+        "length_label",
+        "emotion_label",
+        "selected_passages",
+    }
+    assert stone_profile["content_summary"]
+    assert stone_profile["content_type"] in {"诉苦", "抽象", "玩笑", "分享", "其他"}
+    assert stone_profile["length_label"] in {"长文", "短文"}
+    assert stone_profile["emotion_label"] in {"消极", "积极", "不确定", "无情绪表达"}
+    assert 1 <= len(stone_profile["selected_passages"]) <= 3
 
 
 def test_stone_preprocess_form_route_redirects_and_completes(client):
@@ -367,14 +382,11 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
 
     def fake_chat_completion_result(self, messages, **kwargs):
         payload = {
-            "article_theme": "压低声调后的情绪回收",
-            "narrative_pov": "first_person",
-            "tone": "restrained_and_heavy",
-            "structure_template": "setup_then_turn",
-            "lexical_markers": ["声调", "情绪", "收口"],
-            "emotional_progression": "steady_pressure_with_small_turns",
-            "nonclinical_signals": ["边界感和回收式表达反复出现"],
-            "representative_lines": ["作者总是先压低声调，再把情绪推回句子深处。"],
+            "content_summary": "作者习惯先压低声调，再把情绪往句子深处回收。",
+            "content_type": "抽象",
+            "length_label": "短文",
+            "emotion_label": "消极",
+            "selected_passages": ["作者总是先压低声调，再把情绪推回句子深处。"],
         }
         return ChatCompletionResult(
             content=json.dumps(payload, ensure_ascii=False),
@@ -438,6 +450,10 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
     preprocess_run_id = preprocess_response.json()["id"]
     preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_run_id)
     assert preprocess_payload["status"] == "completed"
+    assert preprocess_payload["prompt_tokens"] == 12
+    assert preprocess_payload["completion_tokens"] == 8
+    assert preprocess_payload["total_tokens"] == 20
+    assert preprocess_payload["documents"][0]["stone_profile"]["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -456,7 +472,15 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
 
     refreshed_docs = client.get(f"/api/projects/{project_id}/documents").json()["documents"]
     stone_profile = refreshed_docs[0]["metadata_json"]["stone_profile"]
-    assert stone_profile["lexical_markers"] == ["声调", "情绪", "收口"]
+    assert set(stone_profile) == {
+        "content_summary",
+        "content_type",
+        "length_label",
+        "emotion_label",
+        "selected_passages",
+    }
+    assert stone_profile["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
+    assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处。"]
 
 
 def test_stone_writing_guide_generation_and_writing_workspace_prefers_published_version(client, app):

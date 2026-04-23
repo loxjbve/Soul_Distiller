@@ -1,134 +1,224 @@
 {% extends "base.html" %}
 {% block body_class %}theme-ambient--stone{% endblock %}
 {% block page_class %}page-stone-preprocess{% endblock %}
-{% block title %}{{ project.name }} | 搬石预处理{% endblock %}
+{% block title %}{{ project.name }} | Stone 预分析{% endblock %}
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='stone-preprocess-page.css') }}?v=20260422b">
+<link rel="stylesheet" href="{{ request.url_for('static', path='stone-preprocess-page.css') }}?v=20260423c">
 {% endblock %}
 
 {% block content %}
 <div class="page-frame">
-    <section class="page-banner page-banner--stone-preprocess-compact">
-        <div class="page-banner__main">
-            <span class="page-banner__eyebrow">Stone</span>
-            <div class="page-banner__title-row">
-                <h1>{{ project.name }} | 逐篇文章预分析</h1>
-                <span class="page-banner__label">Article Preprocess</span>
+    <section class="page-banner page-banner--stone-preprocess-shell">
+        <div class="stone-banner">
+            <div class="stone-banner__intro">
+                <span class="page-banner__eyebrow">Stone Workspace</span>
+                <div class="stone-banner__title-line">
+                    <h1>{{ project.name }} | 逐篇文章预分析</h1>
+                    <span class="page-banner__label">Article Profiling</span>
+                </div>
+                <p>
+                    为每篇文章生成极简画像，只保留内容总结、性质、长短、情绪和精选段落。
+                    预分析完成后，将鼠标移到文章卡片上，就能直接查看该篇文章的结果。
+                </p>
             </div>
-            <p>自动提取每篇文章的主题、视角、结构和词汇特征，为后续作者分析提供基础。</p>
-            <div class="page-banner__actions">
-                <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
-                <a class="ghost-button" href="/projects/{{ project.id }}/analysis">去分析作者维度</a>
-                <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="inline-form stone-preprocess-start-form">
-                    <label class="inline-number-field" style="display: inline-flex; align-items: center; gap: 8px; margin: 0; color: var(--text-soft);">
-                        <span>并发分析线程</span>
-                        <input
-                            type="number"
-                            name="concurrency"
-                            min="1"
-                            max="20"
-                            value="{{ selected_run_data.concurrency if selected_run_data else 1 }}"
-                            style="width: 68px; min-height: 32px; padding: 0 10px;"
-                        >
-                    </label>
-                    <button type="submit" class="primary-button stone-preprocess-start-form__submit" {% if not can_start %}disabled{% endif %}>
-                        {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
-                            正在分析...
-                        {% else %}
-                            开始预分析
-                        {% endif %}
-                    </button>
-                </form>
+
+            <div class="stone-banner__side">
+                <div class="stone-banner__stats">
+                    <article class="stone-banner__stat">
+                        <span>当前状态</span>
+                        <strong id="stone-banner-status-text">{{ selected_run_data.status if selected_run_data else "idle" }}</strong>
+                        <small id="stone-banner-stage-text">{{ selected_run_data.current_stage if selected_run_data else "等待运行" }}</small>
+                    </article>
+                    <article class="stone-banner__stat">
+                        <span>文章进度</span>
+                        <strong id="stone-banner-progress-text">
+                            {% if selected_run_data %}
+                                {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
+                            {% else %}
+                                0/{{ documents | length }}
+                            {% endif %}
+                        </strong>
+                        <small>已完成画像 / 全部文章</small>
+                    </article>
+                    <article class="stone-banner__stat">
+                        <span>输入 Tokens</span>
+                        <strong id="stone-banner-input-tokens">{{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</strong>
+                        <small id="stone-banner-output-tokens">输出 {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</small>
+                    </article>
+                    <article class="stone-banner__stat">
+                        <span>分析模型</span>
+                        <strong id="stone-banner-model">{{ selected_run_data.llm_model if selected_run_data and selected_run_data.llm_model else "Heuristic / LLM" }}</strong>
+                        <small>{% if selected_run_data and selected_run_data.created_at %}创建于 {{ selected_run_data.created_at }}{% else %}等待新的预分析运行{% endif %}</small>
+                    </article>
+                </div>
+
+                <div class="stone-banner__controls">
+                    <div class="stone-banner__actions">
+                        <a class="ghost-button" href="/projects/{{ project.id }}">返回项目</a>
+                        <a class="ghost-button" href="/projects/{{ project.id }}/analysis">进入作者分析</a>
+                    </div>
+                    <form method="post" action="/projects/{{ project.id }}/preprocess/run" class="inline-form stone-preprocess-start-form">
+                        <label class="inline-number-field">
+                            <span>并发线程</span>
+                            <input
+                                type="number"
+                                name="concurrency"
+                                min="1"
+                                max="20"
+                                value="{{ selected_run_data.concurrency if selected_run_data else 1 }}"
+                            >
+                        </label>
+                        <button type="submit" class="primary-button stone-preprocess-start-form__submit" {% if not can_start %}disabled{% endif %}>
+                            {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
+                                正在预分析...
+                            {% else %}
+                                开始预分析
+                            {% endif %}
+                        </button>
+                    </form>
+                </div>
             </div>
         </div>
     </section>
 
     <script type="application/json" id="stone-preprocess-bootstrap">{{ stone_preprocess_bootstrap | safe }}</script>
 
-    <section class="page-content">
-        <article class="panel-shell stone-preprocess-hub">
-            <div class="panel-header panel-header--slim stone-preprocess-hub__header">
+    <section class="page-content stone-preprocess-workbench">
+        <article class="panel-shell stone-preprocess-panel stone-preprocess-panel--overview">
+            <div class="panel-header panel-header--slim stone-preprocess-panel__header">
                 <div>
                     <p class="eyebrow">Run Pulse</p>
                     <h2 id="stone-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else "等待运行" }}</h2>
-                    <p class="section-note" id="stone-preprocess-live-note">预分析提取出的 profile 会自动附加在每篇文档上。</p>
+                    <p class="section-note" id="stone-preprocess-live-note">
+                        {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
+                            当前正在持续生成文章的极简画像，单篇完成后会立即写回文章卡片。
+                        {% elif selected_run_data and selected_run_data.status == "completed" %}
+                            本轮预分析已经完成，可以悬浮查看每篇文章画像，或直接进入作者分析。
+                        {% else %}
+                            运行后会为每篇文章生成可复用的极简画像，并写回文档元数据。
+                        {% endif %}
+                    </p>
                 </div>
                 <div class="stone-preprocess-hub__status">
                     <span class="status-chip tone-queued" id="stone-preprocess-status-chip">{{ selected_run_data.status if selected_run_data else "idle" }}</span>
                     <span class="analysis-live-pill" id="stone-preprocess-live-pill">{% if selected_run_data and selected_run_data.status in ["queued", "running"] %}LIVE{% else %}WAITING{% endif %}</span>
                 </div>
             </div>
-            <div class="panel-body stone-preprocess-hub__body">
-                <section class="stone-preprocess-progress-spotlight">
-                    <div class="stone-preprocess-progress-spotlight__head">
-                        <div>
-                            <p class="eyebrow">Overall Progress</p>
-                            <h3 id="stone-preprocess-current-topic-label">文档处理进度</h3>
-                            <p class="section-note" id="stone-preprocess-current-topic-progress">
-                                {% if selected_run_data %}
-                                    已处理文档 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
-                                {% else %}
-                                    待处理文档 {{ documents | length }}
-                                {% endif %}
-                            </p>
-                        </div>
-                        <div class="analysis-signal-chip-row">
-                            <span class="analysis-signal-chip" id="stone-preprocess-input-token-chip">Input Tokens {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
-                            <span class="analysis-signal-chip" id="stone-preprocess-output-token-chip">Output Tokens {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
-                        </div>
-                    </div>
-                    <div class="progress-shell progress-shell--slim">
-                        <div class="progress-labels">
-                            <strong>整体进度</strong>
-                            <span id="stone-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
-                        </div>
-                        <div class="progress-track">
-                            <div class="progress-fill" id="stone-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
-                        </div>
-                    </div>
-                </section>
 
-                <details class="stone-preprocess-topic-board" open>
-                    <summary class="stone-preprocess-topic-board__head">
-                        <div>
-                            <p class="eyebrow">Documents</p>
-                            <h3>文章指示灯</h3>
-                        </div>
-                        <p class="helper-text" id="stone-preprocess-topic-board-note">
+            <div class="panel-body stone-preprocess-panel__body">
+                <div class="stone-progress-hero">
+                    <div class="stone-progress-hero__copy">
+                        <p class="eyebrow">Overall Progress</p>
+                        <h3 id="stone-preprocess-current-topic-label">文章画像进度</h3>
+                        <p class="section-note" id="stone-preprocess-current-topic-progress">
                             {% if selected_run_data %}
-                                已处理文档 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
+                                已处理文章 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
                             {% else %}
-                                共 {{ documents | length }} 篇文档
+                                待处理文章 {{ documents | length }}
                             {% endif %}
                         </p>
-                    </summary>
-                    <div id="stone-preprocess-topic-lamps" class="stone-preprocess-agent-list panel-scroll" data-panel-scroll>
-                        {% if documents %}
-                            {% set concurrency = selected_run_data.concurrency if selected_run_data else 1 %}
-                            {% set completed = selected_run_data.stone_profile_completed if selected_run_data else 0 %}
-                            {% for doc in documents %}
-                                {% set has_profile = "stone_profile" in (doc.metadata_json or {}) %}
-                                {% set doc_index = loop.index %}
-                                {% set is_running = selected_run_data and selected_run_data.status in ["queued", "running"] and doc_index > completed and doc_index <= completed + concurrency %}
-                                {% set lamp_status = "completed" if has_profile else ("running is-live" if is_running else "queued") %}
-                                <article class="stone-agent-lamp status-{{ lamp_status }}">
-                                    <span class="stone-agent-lamp__dot" aria-hidden="true"></span>
-                                    <div class="stone-agent-lamp__body">
-                                        <div class="stone-agent-lamp__head">
-                                            <strong>{{ doc.title or doc.filename }}</strong>
-                                            <span class="stone-agent-lamp__index" style="color: var(--text-secondary); font: 600 0.72rem/1.35 var(--font-mono);">{{ "%02d"|format(loop.index) }}</span>
-                                        </div>
-                                        <small>{{ doc.id }}</small>
-                                    </div>
-                                </article>
-                            {% endfor %}
-                        {% else %}
-                            <div class="empty-panel">
-                                <strong>尚未上传文档</strong>
-                            </div>
-                        {% endif %}
                     </div>
-                </details>
+                    <div class="analysis-signal-chip-row stone-progress-hero__chips">
+                        <span class="analysis-signal-chip" id="stone-preprocess-input-token-chip">Input {{ selected_run_data.prompt_tokens if selected_run_data else 0 }}</span>
+                        <span class="analysis-signal-chip" id="stone-preprocess-output-token-chip">Output {{ selected_run_data.completion_tokens if selected_run_data else 0 }}</span>
+                        <span class="analysis-signal-chip" id="stone-preprocess-total-token-chip">Total {{ selected_run_data.total_tokens if selected_run_data else 0 }}</span>
+                    </div>
+                </div>
+
+                <div class="progress-shell stone-progress-shell">
+                    <div class="progress-labels">
+                        <strong>整体完成度</strong>
+                        <span id="stone-preprocess-progress-label">{{ selected_run_data.progress_percent if selected_run_data else 0 }}%</span>
+                    </div>
+                    <div class="progress-track">
+                        <div class="progress-fill" id="stone-preprocess-progress-fill" style="width: {{ selected_run_data.progress_percent if selected_run_data else 0 }}%;"></div>
+                    </div>
+                </div>
+
+                <div class="stone-progress-metrics">
+                    <article class="stone-metric-tile">
+                        <span>已完成画像</span>
+                        <strong id="stone-preprocess-docs-completed">{{ selected_run_data.stone_profile_completed if selected_run_data else 0 }}</strong>
+                        <small>当前 run 内已完成的文章数</small>
+                    </article>
+                    <article class="stone-metric-tile">
+                        <span>待处理文章</span>
+                        <strong id="stone-preprocess-docs-remaining">
+                            {% if selected_run_data %}
+                                {{ (selected_run_data.stone_profile_total or 0) - (selected_run_data.stone_profile_completed or 0) }}
+                            {% else %}
+                                {{ documents | length }}
+                            {% endif %}
+                        </strong>
+                        <small>还没有画像结果的文章数</small>
+                    </article>
+                    <article class="stone-metric-tile">
+                        <span>并发线程</span>
+                        <strong id="stone-preprocess-concurrency">{{ selected_run_data.concurrency if selected_run_data else 1 }}</strong>
+                        <small>当前 Stone 预分析并发配置</small>
+                    </article>
+                </div>
+            </div>
+        </article>
+
+        <article class="panel-shell stone-preprocess-panel stone-preprocess-panel--documents">
+            <div class="panel-header stone-preprocess-panel__header">
+                <div>
+                    <p class="eyebrow">Documents</p>
+                    <h3>文章指示灯</h3>
+                </div>
+                <p class="helper-text" id="stone-preprocess-topic-board-note">
+                    {% if selected_run_data %}
+                        已处理文章 {{ selected_run_data.stone_profile_completed or 0 }}/{{ selected_run_data.stone_profile_total or 0 }}
+                    {% else %}
+                        共 {{ documents | length }} 篇文章
+                    {% endif %}
+                </p>
+            </div>
+
+            <div class="panel-body stone-preprocess-panel__body">
+                <p class="section-note stone-preprocess-hover-hint">
+                    将鼠标移到任意文章卡片上，可以预览该篇文章的 LLM 极简画像结果。
+                </p>
+
+                <div id="stone-preprocess-topic-lamps" class="stone-preprocess-topic-lamps panel-scroll" data-panel-scroll>
+                    {% if documents %}
+                        {% for doc in documents %}
+                            <article
+                                class="stone-agent-lamp status-{{ doc.lamp_status }} {% if doc.lamp_status == 'running' %}is-live{% endif %}"
+                                data-doc-id="{{ doc.id }}"
+                                data-doc-index="{{ doc.document_index }}"
+                                data-has-profile="{{ 'true' if doc.has_profile else 'false' }}"
+                                tabindex="0"
+                            >
+                                <span class="stone-agent-lamp__dot" aria-hidden="true"></span>
+                                <div class="stone-agent-lamp__body">
+                                    <div class="stone-agent-lamp__head">
+                                        <strong>{{ doc.title }}</strong>
+                                        <span class="stone-agent-lamp__index">{{ "%02d"|format(doc.document_index) }}</span>
+                                    </div>
+                                    <small>{{ doc.filename }}</small>
+                                    <p class="stone-agent-lamp__preview">
+                                        {% if doc.profile_preview %}
+                                            {{ doc.profile_preview }}
+                                        {% elif doc.lamp_status == "running" %}
+                                            正在提取这篇文章的画像字段...
+                                        {% elif doc.lamp_status == "failed" %}
+                                            当前未完成，可重新运行预分析。
+                                        {% else %}
+                                            等待进入处理队列。
+                                        {% endif %}
+                                    </p>
+                                </div>
+                            </article>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty-panel stone-empty-panel">
+                            <strong>尚未上传文章。</strong>
+                            <p>先上传 Stone 文本或 JSON 文章，然后再运行逐篇预分析。</p>
+                        </div>
+                    {% endif %}
+                </div>
 
                 <p class="section-note stone-preprocess-error" id="stone-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
                     {{ selected_run_data.error_message if selected_run_data else "" }}
@@ -137,8 +227,19 @@
         </article>
     </section>
 </div>
+
+<aside class="stone-hovercard" id="stone-preprocess-hovercard" hidden aria-live="polite">
+    <div class="stone-hovercard__head">
+        <div>
+            <p class="eyebrow">LLM Profile</p>
+            <h3 id="stone-hovercard-title">文章画像</h3>
+        </div>
+        <span class="status-chip tone-ready" id="stone-hovercard-status">ready</span>
+    </div>
+    <div class="stone-hovercard__body" id="stone-hovercard-body"></div>
+</aside>
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='stone_preprocess.js') }}?v=20260422b"></script>
+<script type="module" defer src="{{ request.url_for('static', path='stone_preprocess.js') }}?v=20260423c"></script>
 {% endblock %}

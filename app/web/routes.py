@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.analysis.stone import normalize_stone_profile
 from app.analysis.facets import FACETS, get_facets_for_mode
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import (
@@ -1537,7 +1538,7 @@ def get_preprocess_run_api(project_id: str, run_id: str, session: SessionDep):
         run = repository.get_stone_preprocess_run(session, run_id)
         if not run or run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Run not found.")
-        return _ok_response("已返回 Stone 预分析详情。", **_serialize_stone_preprocess_run(run))
+        return _ok_response("已返回 Stone 预分析详情。", **_serialize_stone_preprocess_detail(session, project_id, run))
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
@@ -1601,6 +1602,14 @@ def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, se
         hub = request.app.state.stone_preprocess_stream_hub
         
         async def generate_stone():
+            with request.app.state.db.session() as live_session:
+                live_run = repository.get_stone_preprocess_run(live_session, run_id)
+                if live_run:
+                    initial_payload = _serialize_stone_preprocess_detail(live_session, project_id, live_run)
+                    yield _format_sse("snapshot", initial_payload)
+                    if live_run.status not in {"queued", "running"}:
+                        yield _format_sse("done", {"run_id": live_run.id, "status": live_run.status})
+                        return
             async for chunk in hub.stream_events(run.id):
                 yield chunk
                 
@@ -1608,7 +1617,7 @@ def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, se
                 with request.app.state.db.session() as live_session:
                     live_run = repository.get_stone_preprocess_run(live_session, run_id)
                     if live_run:
-                        payload = _serialize_stone_preprocess_run(live_run)
+                        payload = _serialize_stone_preprocess_detail(live_session, project_id, live_run)
                         yield _format_sse("snapshot", payload)
                         if live_run.status not in {"queued", "running"}:
                             yield _format_sse("done", {"run_id": live_run.id, "status": live_run.status})
@@ -2541,11 +2550,14 @@ def _stone_preprocess_context(
 ) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
     runs = repository.list_stone_preprocess_runs(session, project_id, limit=24)
+    active_run = repository.get_active_stone_preprocess_run(session, project_id)
     selected_run = None
     if run_id:
         selected_run = repository.get_stone_preprocess_run(session, run_id)
         if selected_run and selected_run.project_id != project_id:
             selected_run = None
+    if not selected_run and active_run:
+        selected_run = active_run
     if not selected_run:
         selected_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
     if not selected_run and runs:
@@ -2553,10 +2565,10 @@ def _stone_preprocess_context(
 
     documents = repository.list_project_documents(session, project_id)
     doc_counts = repository.count_project_documents(session, project_id)
-    serialized_run = _serialize_stone_preprocess_run(selected_run) if selected_run else None
+    serialized_documents = _serialize_stone_preprocess_documents(documents, selected_run)
+    serialized_run = _serialize_stone_preprocess_detail(session, project_id, selected_run) if selected_run else None
 
     # Check if a run is already active
-    active_run = repository.get_active_stone_preprocess_run(session, project_id)
     can_start = doc_counts["ready"] > 0 and not active_run
 
     ui_strings = page_strings("preprocess", "zh-CN")
@@ -2565,13 +2577,14 @@ def _stone_preprocess_context(
         "project": project,
         "runs": [_serialize_stone_preprocess_run(item) for item in runs],
         "selected_run_data": serialized_run,
-        "documents": [_serialize_document(d) for d in documents],
+        "documents": serialized_documents,
         "can_start": can_start,
         "stone_preprocess_bootstrap": json.dumps(
             {
                 "project_id": project.id,
                 "run_id": selected_run.id if selected_run else None,
                 "initial_run": serialized_run,
+                "initial_documents": serialized_documents,
                 "ui_strings": ui_strings,
             },
             ensure_ascii=False,
@@ -3614,6 +3627,80 @@ def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]
         "stone_profile_total": summary.get("stone_profile_total", 0),
         "concurrency": summary.get("concurrency", 1),
         "created_at": run.created_at.isoformat() + "Z",
+    }
+
+
+def _serialize_stone_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+    normalized = normalize_stone_profile(profile)
+    if not normalized["content_summary"] and not normalized["selected_passages"]:
+        return None
+    return {
+        "content_summary": normalized["content_summary"],
+        "content_type": normalized["content_type"],
+        "length_label": normalized["length_label"],
+        "emotion_label": normalized["emotion_label"],
+        "selected_passages": list(normalized.get("selected_passages") or [])[:3],
+    }
+
+
+def _stone_document_status(index: int, run: "StonePreprocessRun | None", has_profile: bool) -> str:
+    if has_profile:
+        return "completed"
+    if not run:
+        return "queued"
+    status = str(run.status or "").lower()
+    if status not in {"queued", "running", "failed"}:
+        return "queued"
+    summary = dict(run.summary_json or {})
+    completed = int(summary.get("stone_profile_completed") or 0)
+    concurrency = max(1, int(summary.get("concurrency") or 1))
+    if status in {"queued", "running"} and completed < index <= completed + concurrency:
+        return "running"
+    if status == "failed" and index == min(completed + 1, int(summary.get("stone_profile_total") or index)):
+        return "failed"
+    return "queued"
+
+
+def _serialize_stone_preprocess_documents(
+    documents: list[DocumentRecord],
+    run: "StonePreprocessRun | None" = None,
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for index, document in enumerate(documents, start=1):
+        metadata = dict(document.metadata_json or {})
+        stone_profile = _serialize_stone_profile(metadata.get("stone_profile"))
+        serialized.append(
+            {
+                "id": document.id,
+                "title": document.title or document.filename,
+                "filename": document.filename,
+                "document_index": index,
+                "ingest_status": document.ingest_status,
+                "lamp_status": _stone_document_status(index, run, stone_profile is not None),
+                "has_profile": stone_profile is not None,
+                "stone_profile": stone_profile,
+                "updated_at": document.updated_at.isoformat() if getattr(document, "updated_at", None) else None,
+                "profile_preview": (
+                    (stone_profile or {}).get("content_summary")
+                    or ((stone_profile or {}).get("selected_passages") or [None])[0]
+                    or ""
+                ),
+            }
+        )
+    return serialized
+
+
+def _serialize_stone_preprocess_detail(
+    session: Session,
+    project_id: str,
+    run: "StonePreprocessRun",
+) -> dict[str, Any]:
+    documents = repository.list_project_documents(session, project_id)
+    return {
+        **_serialize_stone_preprocess_run(run),
+        "documents": _serialize_stone_preprocess_documents(documents, run),
     }
 
 

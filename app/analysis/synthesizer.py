@@ -4,6 +4,7 @@ import json
 import re
 from typing import Any
 
+from app.analysis.stone import expand_stone_profile_for_analysis
 from app.analysis.prompts import build_asset_messages, build_cc_skill_messages
 from app.analysis.writing_guide import (
     build_writing_guide_payload_from_facets as _build_writing_guide_payload_from_facets,
@@ -1012,18 +1013,15 @@ class AssetSynthesizer:
             profile = metadata.get("stone_profile")
             if not isinstance(profile, dict):
                 continue
+            expanded = expand_stone_profile_for_analysis(
+                profile,
+                title=document.title or document.filename,
+            )
             profiles.append(
                 {
                     "document_id": document.id,
                     "title": document.title or document.filename,
-                    "article_theme": str(profile.get("article_theme") or "").strip(),
-                    "narrative_pov": str(profile.get("narrative_pov") or "").strip(),
-                    "tone": str(profile.get("tone") or "").strip(),
-                    "structure_template": str(profile.get("structure_template") or "").strip(),
-                    "lexical_markers": [str(item).strip() for item in (profile.get("lexical_markers") or []) if str(item).strip()],
-                    "emotional_progression": str(profile.get("emotional_progression") or "").strip(),
-                    "nonclinical_signals": [str(item).strip() for item in (profile.get("nonclinical_signals") or []) if str(item).strip()],
-                    "representative_lines": [str(item).strip() for item in (profile.get("representative_lines") or []) if str(item).strip()],
+                    **expanded,
                 }
             )
         return profiles

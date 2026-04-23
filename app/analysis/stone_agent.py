@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FacetDefinition
-from app.analysis.stone import build_stone_facet_messages, summarize_stone_profiles
+from app.analysis.stone import build_stone_facet_messages, expand_stone_profile_for_analysis, summarize_stone_profiles
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import DocumentRecord, Project
 from app.schemas import ServiceConfig
@@ -159,17 +159,14 @@ class StoneAnalysisAgent:
     @staticmethod
     def _profile_snapshot(document: DocumentRecord) -> dict[str, Any]:
         profile = dict((document.metadata_json or {}).get("stone_profile") or {})
+        expanded = expand_stone_profile_for_analysis(
+            profile,
+            title=document.title or document.filename,
+        )
         return {
             "document_id": document.id,
             "title": document.title or document.filename,
-            "article_theme": str(profile.get("article_theme") or "").strip(),
-            "narrative_pov": str(profile.get("narrative_pov") or "").strip(),
-            "tone": str(profile.get("tone") or "").strip(),
-            "structure_template": str(profile.get("structure_template") or "").strip(),
-            "lexical_markers": [str(item).strip() for item in (profile.get("lexical_markers") or []) if str(item).strip()],
-            "emotional_progression": str(profile.get("emotional_progression") or "").strip(),
-            "nonclinical_signals": [str(item).strip() for item in (profile.get("nonclinical_signals") or []) if str(item).strip()],
-            "representative_lines": [str(item).strip() for item in (profile.get("representative_lines") or []) if str(item).strip()],
+            **expanded,
         }
 
     def _run_tool_loop(
@@ -318,9 +315,14 @@ class StoneAnalysisAgent:
                     " ".join(
                         [
                             str(profile.get("title") or ""),
+                            str(profile.get("content_summary") or ""),
+                            str(profile.get("content_type") or ""),
+                            str(profile.get("length_label") or ""),
+                            str(profile.get("emotion_label") or ""),
                             str(profile.get("article_theme") or ""),
                             str(profile.get("tone") or ""),
                             str(profile.get("structure_template") or ""),
+                            " ".join(profile.get("selected_passages") or []),
                             " ".join(profile.get("lexical_markers") or []),
                             " ".join(profile.get("nonclinical_signals") or []),
                             " ".join(profile.get("representative_lines") or []),

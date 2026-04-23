@@ -32,6 +32,12 @@ class StoneDocumentSnapshot:
     metadata_json: dict[str, Any]
 
 
+@dataclass(slots=True)
+class StoneProfileResult:
+    profile: dict[str, Any]
+    usage: dict[str, int]
+
+
 class StonePreprocessWorker:
     def __init__(self, db: Database, stream_hub: "StonePreprocessStreamHub", llm_log_path: str | None = None) -> None:
         self.db = db
@@ -226,7 +232,7 @@ class StonePreprocessWorker:
                     )
 
                 try:
-                    profile_payload = await asyncio.to_thread(
+                    profile_result = await asyncio.to_thread(
                         self._build_stone_profile_payload,
                         document,
                         project_name=project.name,
@@ -234,18 +240,22 @@ class StonePreprocessWorker:
                     )
                 except Exception as e:
                     logger.exception("Failed to build stone profile for document %s", document.id)
-                    profile_payload = build_stone_profile(document)
+                    profile_result = StoneProfileResult(profile=build_stone_profile(document), usage={})
 
                 with self.db.session() as session:
                     doc = repository.get_document(session, document.id)
                     if doc:
                         metadata = dict(doc.metadata_json or {})
-                        metadata["stone_profile"] = profile_payload
+                        metadata["stone_profile"] = profile_result.profile
                         doc.metadata_json = metadata
                         session.add(doc)
 
                     run = repository.get_stone_preprocess_run(session, run_id)
                     if run:
+                        usage = dict(profile_result.usage or {})
+                        run.prompt_tokens = int(run.prompt_tokens or 0) + int(usage.get("prompt_tokens") or 0)
+                        run.completion_tokens = int(run.completion_tokens or 0) + int(usage.get("completion_tokens") or 0)
+                        run.total_tokens = int(run.total_tokens or 0) + int(usage.get("total_tokens") or 0)
                         completed_count += 1
                         self._update_progress(session, run, completed_count, total_docs, "Profiling documents")
 
@@ -282,12 +292,12 @@ class StonePreprocessWorker:
         *,
         project_name: str,
         chat_config: "ServiceConfig | None",
-    ) -> dict[str, str]:
+    ) -> StoneProfileResult:
         text = str(document.clean_text or document.raw_text or "").strip()
         if not text:
-            return build_stone_profile(document)
+            return StoneProfileResult(profile=build_stone_profile(document), usage={})
         if not chat_config:
-            return build_stone_profile(document)
+            return StoneProfileResult(profile=build_stone_profile(document), usage={})
             
         client = OpenAICompatibleClient(chat_config, log_path=self.llm_log_path)
         messages = build_stone_profile_messages(
@@ -302,13 +312,14 @@ class StonePreprocessWorker:
                 temperature=0.2,
                 max_tokens=1200,
             )
-            # We don't update token usage in DB here yet to keep it simple, 
-            # but we could update run.prompt_tokens etc.
             parsed = parse_json_response(response.content, fallback=True)
-            return normalize_stone_profile(parsed)
+            return StoneProfileResult(
+                profile=normalize_stone_profile(parsed),
+                usage=dict(response.usage or {}),
+            )
         except Exception as e:
             logger.exception("Failed to build stone profile for document %s", document.id)
-            return build_stone_profile(document)
+            return StoneProfileResult(profile=build_stone_profile(document), usage={})
 
     def _mark_failed(self, run_id: str, error_message: str) -> None:
         with self.db.session() as session:
