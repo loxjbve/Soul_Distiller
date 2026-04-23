@@ -11,7 +11,7 @@ from app.analysis.stone import build_stone_profile, build_stone_profile_messages
 from app.llm import OpenAICompatibleClient, parse_json_response
 from app.models import DocumentRecord, Project, StonePreprocessRun
 from app.storage import repository
-from app.storage.database import Database
+from app.db import Database
 
 logger = logging.getLogger(__name__)
 
