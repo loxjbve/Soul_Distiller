@@ -5,6 +5,15 @@ import re
 from typing import Any
 
 from app.analysis.prompts import build_asset_messages, build_cc_skill_messages
+from app.analysis.writing_guide import (
+    build_writing_guide_payload_from_facets as _build_writing_guide_payload_from_facets,
+    guide_facet_material as _guide_facet_material,
+    guide_profile_terms as _guide_profile_terms,
+    normalize_fewshot_anchors as _normalize_fewshot_anchors,
+    normalize_guide_object as _normalize_guide_object,
+    normalize_string_list as _normalize_string_list,
+    string_block as _string_block,
+)
 from app.llm.client import LLMError, OpenAICompatibleClient, parse_json_response
 from app.models import AnalysisFacet, Project
 from app.schemas import ASSET_KINDS, AssetBundle, ServiceConfig
@@ -81,6 +90,7 @@ class AssetSynthesizer:
                 facets,
                 target_role=target_role,
                 analysis_context=analysis_context,
+                session=session,
             )
         )
         if not config:
@@ -102,6 +112,9 @@ class AssetSynthesizer:
         elif normalized_kind == "cc_skill":
             markdown = self._get_cc_skill_markdown(structured)
             prompt_text = markdown
+        elif normalized_kind == "writing_guide":
+            markdown = self._render_writing_guide_markdown(project.name, structured)
+            prompt_text = self._render_writing_guide_prompt(project.name, structured)
         else:
             markdown = self._render_profile_report_markdown(project.name, structured)
             prompt_text = self._render_profile_report_prompt(project.name, structured)
@@ -199,6 +212,35 @@ class AssetSynthesizer:
                     facets,
                     target_role=target_role,
                     analysis_context=analysis_context,
+                )
+
+        if asset_kind == "writing_guide":
+            try:
+                return self._build_writing_guide_with_llm(
+                    client,
+                    config,
+                    project,
+                    facet_dump,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                    stream_callback=stream_callback,
+                    progress_callback=progress_callback,
+                    session=session,
+                )
+            except (LLMError, ValueError, KeyError, TypeError):
+                self._emit_progress(
+                    progress_callback,
+                    phase="fallback",
+                    progress_percent=68,
+                    message="Model output was unusable, falling back to local heuristics.",
+                )
+                return self._heuristic(
+                    asset_kind,
+                    project,
+                    facets,
+                    target_role=target_role,
+                    analysis_context=analysis_context,
+                    session=session,
                 )
 
         messages = build_asset_messages(
@@ -958,6 +1000,96 @@ class AssetSynthesizer:
                     lines.append(f"- evidence: {quote}")
         return "\n".join(lines).strip()
 
+    def _load_stone_profiles(self, session: Any | None, project_id: str) -> list[dict[str, Any]]:
+        if session is None:
+            return []
+        from app.storage import repository
+
+        profiles: list[dict[str, Any]] = []
+        for document in repository.list_project_documents(session, project_id):
+            metadata = dict(document.metadata_json or {})
+            profile = metadata.get("stone_profile")
+            if not isinstance(profile, dict):
+                continue
+            profiles.append(
+                {
+                    "document_id": document.id,
+                    "title": document.title or document.filename,
+                    "article_theme": str(profile.get("article_theme") or "").strip(),
+                    "narrative_pov": str(profile.get("narrative_pov") or "").strip(),
+                    "tone": str(profile.get("tone") or "").strip(),
+                    "structure_template": str(profile.get("structure_template") or "").strip(),
+                    "lexical_markers": [str(item).strip() for item in (profile.get("lexical_markers") or []) if str(item).strip()],
+                    "emotional_progression": str(profile.get("emotional_progression") or "").strip(),
+                    "nonclinical_signals": [str(item).strip() for item in (profile.get("nonclinical_signals") or []) if str(item).strip()],
+                    "representative_lines": [str(item).strip() for item in (profile.get("representative_lines") or []) if str(item).strip()],
+                }
+            )
+        return profiles
+
+    def _build_writing_guide_with_llm(
+        self,
+        client: OpenAICompatibleClient,
+        config: ServiceConfig,
+        project: Project,
+        facet_dump: str,
+        *,
+        target_role: str | None,
+        analysis_context: str | None,
+        stream_callback: Any | None,
+        progress_callback: Any | None,
+        session: Any | None,
+    ) -> dict[str, Any]:
+        stone_profiles = self._load_stone_profiles(session, project.id)
+        self._emit_progress(
+            progress_callback,
+            phase="synthesis",
+            progress_percent=52,
+            message="LLM is generating the writing guide.",
+            document_key="guide",
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are building a structured writing guide from author analysis.\n"
+                    "Do not diagnose clinical disorders and do not infer exploitability or vulnerability maps.\n"
+                    "Return only JSON.\n"
+                    "Required keys: author_snapshot, voice_dna, sentence_mechanics, structure_patterns, motif_theme_bank, "
+                    "worldview_and_stance, emotional_tendencies, nonclinical_psychodynamics, do_and_dont, "
+                    "topic_translation_rules, word_count_strategies, revision_rubric, fewshot_anchors, external_slots.\n"
+                    "external_slots must contain clinical_profile and vulnerability_map, both empty, plus reserved_external=true.\n"
+                    "Prefer arrays or nested objects over long monolithic paragraphs."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Project: {project.name}\n"
+                    f"Target role: {target_role or project.name}\n"
+                    f"Analysis context: {analysis_context or ''}\n\n"
+                    f"Facet dump:\n{facet_dump}\n\n"
+                    f"Per-document profiles:\n{json.dumps(stone_profiles, ensure_ascii=False, indent=2)}"
+                ),
+            },
+        ]
+        response = client.chat_completion_result(
+            messages,
+            model=config.model,
+            temperature=0.2,
+            max_tokens=None,
+            stream_handler=stream_callback,
+        )
+        self._flush_stream_callback(stream_callback)
+        parsed = parse_json_response(response.content, fallback=True)
+        return self._normalize_writing_guide_payload(
+            parsed,
+            project.name,
+            target_role=target_role,
+            analysis_context=analysis_context,
+            stone_profiles=stone_profiles,
+        )
+
     def _get_skill_merge_markdown(self, payload: dict[str, Any]) -> str:
         documents = payload.get("documents") if isinstance(payload, dict) else {}
         if isinstance(documents, dict):
@@ -1017,6 +1149,7 @@ class AssetSynthesizer:
         *,
         target_role: str | None,
         analysis_context: str | None,
+        session: Any | None = None,
     ) -> dict[str, Any]:
         summary_by_key = {facet.facet_key: (facet.findings_json or {}) for facet in facets}
         evidence_by_key = {facet.facet_key: (facet.evidence_json or []) for facet in facets}
@@ -1077,6 +1210,21 @@ class AssetSynthesizer:
                 project_id=project.id,
                 target_role=target_role,
                 analysis_context=analysis_context,
+            )
+        if asset_kind == "writing_guide":
+            return self._normalize_writing_guide_payload(
+                _build_writing_guide_payload_from_facets(
+                    project_name=project.name,
+                    target_role=target_role or project.name,
+                    analysis_context=analysis_context or "",
+                    summary_by_key=summary_by_key,
+                    evidence_by_key=evidence_by_key,
+                    stone_profiles=self._load_stone_profiles(session, project.id) if session else [],
+                ),
+                project.name,
+                target_role=target_role,
+                analysis_context=analysis_context,
+                stone_profiles=self._load_stone_profiles(session, project.id) if session else [],
             )
         return _build_profile_report_payload_from_facets(
             project_name=project.name,
@@ -1398,6 +1546,96 @@ class AssetSynthesizer:
             "source_context": str(payload.get("source_context", analysis_context or "")),
         }
 
+    def _normalize_writing_guide_payload(
+        self,
+        payload: dict[str, Any],
+        project_name: str,
+        *,
+        target_role: str | None,
+        analysis_context: str | None,
+        stone_profiles: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "author_snapshot": _string_block(
+                payload.get("author_snapshot"),
+                fallback=f"Target author: {target_role or project_name}. Preserve the corpus pressure, worldview, and sentence habits.",
+            ),
+            "voice_dna": _normalize_guide_object(
+                payload.get("voice_dna"),
+                defaults={
+                    "tone_profile": "cool, restrained, specific",
+                    "signature_phrases": _guide_profile_terms(stone_profiles, "lexical_markers", 8),
+                    "distance_rules": ["Prefer intimate observation over public proclamation.", "Keep certainty below total closure."],
+                },
+            ),
+            "sentence_mechanics": _normalize_guide_object(
+                payload.get("sentence_mechanics"),
+                defaults={
+                    "cadence": ["short setup, then a turn", "let pressure arrive before explanation"],
+                    "transitions": ["but", "still", "so", "therefore"],
+                    "closure_style": "close on residue, not on slogans",
+                },
+            ),
+            "structure_patterns": _normalize_string_list(
+                payload.get("structure_patterns"),
+                fallback=_guide_profile_terms(stone_profiles, "structure_template", 4),
+            ),
+            "motif_theme_bank": _normalize_string_list(
+                payload.get("motif_theme_bank"),
+                fallback=_guide_facet_material(payload, "motif_theme_bank"),
+            ),
+            "worldview_and_stance": _normalize_string_list(
+                payload.get("worldview_and_stance"),
+                fallback=_guide_facet_material(payload, "worldview_and_stance"),
+            ),
+            "emotional_tendencies": _normalize_string_list(
+                payload.get("emotional_tendencies"),
+                fallback=_guide_profile_terms(stone_profiles, "emotional_progression", 4),
+            ),
+            "nonclinical_psychodynamics": _normalize_string_list(
+                payload.get("nonclinical_psychodynamics"),
+                fallback=_guide_profile_terms(stone_profiles, "nonclinical_signals", 6),
+            ),
+            "do_and_dont": _normalize_guide_object(
+                payload.get("do_and_dont"),
+                defaults={
+                    "do": ["keep tonal restraint", "translate topics through recurring motifs", "preserve latent pressure"],
+                    "dont": ["do not drift into generic self-help tone", "do not invent clinical diagnosis", "do not overwrite ambiguity with slogans"],
+                },
+            ),
+            "topic_translation_rules": _normalize_string_list(
+                payload.get("topic_translation_rules"),
+                fallback=[
+                    "Map the topic onto recurring reality anchors before drafting.",
+                    "Translate abstract claims into scenes, costs, or relationship pressure.",
+                ],
+            ),
+            "word_count_strategies": _normalize_guide_object(
+                payload.get("word_count_strategies"),
+                defaults={
+                    "short": "Open from one image and close before full explanation.",
+                    "medium": "Use 3 to 4 paragraphs with one central turn.",
+                    "long": "Layer motif, worldview, and aftertaste over 4 to 6 paragraphs.",
+                },
+            ),
+            "revision_rubric": _normalize_string_list(
+                payload.get("revision_rubric"),
+                fallback=[
+                    "Check voice markers before checking idea completeness.",
+                    "Cut generic transitions first.",
+                    "Verify the topic is translated through worldview, not pasted on top.",
+                ],
+            ),
+            "fewshot_anchors": _normalize_fewshot_anchors(payload.get("fewshot_anchors"), stone_profiles),
+            "external_slots": {
+                "clinical_profile": {},
+                "vulnerability_map": {},
+                "reserved_external": True,
+            },
+            "target_role": str(payload.get("target_role", target_role or project_name)),
+            "source_context": str(payload.get("source_context", analysis_context or "")),
+        }
+
     def _render_skill_markdown(self, project_name: str, payload: dict[str, Any]) -> str:
         lines = [
             f"# System Role: 扮演 {payload['target_role'] or project_name}",
@@ -1549,6 +1787,82 @@ class AssetSynthesizer:
             f"主要矛盾：\n{contradictions}\n\n"
             f"成长路径与走势预测：{payload['growth_and_prediction']}\n\n"
             f"观察者结论：{payload['observer_conclusion']}"
+        )
+
+    def _render_writing_guide_markdown(self, project_name: str, payload: dict[str, Any]) -> str:
+        lines = [
+            f"# {payload.get('target_role') or project_name} Writing Guide",
+            "",
+            "## author_snapshot",
+            str(payload.get("author_snapshot") or "").strip(),
+            "",
+            "## voice_dna",
+            json.dumps(payload.get("voice_dna") or {}, ensure_ascii=False, indent=2),
+            "",
+            "## sentence_mechanics",
+            json.dumps(payload.get("sentence_mechanics") or {}, ensure_ascii=False, indent=2),
+            "",
+            "## structure_patterns",
+            *[f"- {item}" for item in (payload.get("structure_patterns") or [])],
+            "",
+            "## motif_theme_bank",
+            *[f"- {item}" for item in (payload.get("motif_theme_bank") or [])],
+            "",
+            "## worldview_and_stance",
+            *[f"- {item}" for item in (payload.get("worldview_and_stance") or [])],
+            "",
+            "## emotional_tendencies",
+            *[f"- {item}" for item in (payload.get("emotional_tendencies") or [])],
+            "",
+            "## nonclinical_psychodynamics",
+            *[f"- {item}" for item in (payload.get("nonclinical_psychodynamics") or [])],
+            "",
+            "## do_and_dont",
+            json.dumps(payload.get("do_and_dont") or {}, ensure_ascii=False, indent=2),
+            "",
+            "## topic_translation_rules",
+            *[f"- {item}" for item in (payload.get("topic_translation_rules") or [])],
+            "",
+            "## word_count_strategies",
+            json.dumps(payload.get("word_count_strategies") or {}, ensure_ascii=False, indent=2),
+            "",
+            "## revision_rubric",
+            *[f"- {item}" for item in (payload.get("revision_rubric") or [])],
+            "",
+            "## fewshot_anchors",
+        ]
+        for item in payload.get("fewshot_anchors") or []:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"- {item.get('title') or 'anchor'}: {item.get('quote') or ''}")
+        lines.extend(
+            [
+                "",
+                "## external_slots",
+                json.dumps(payload.get("external_slots") or {}, ensure_ascii=False, indent=2),
+            ]
+        )
+        if payload.get("source_context"):
+            lines.extend(["", "## source_context", str(payload["source_context"]).strip()])
+        return "\n".join(line for line in lines if line is not None).strip()
+
+    def _render_writing_guide_prompt(self, project_name: str, payload: dict[str, Any]) -> str:
+        return (
+            f"Use the latest writing guide for {payload.get('target_role') or project_name}.\n\n"
+            f"author_snapshot:\n{payload.get('author_snapshot') or ''}\n\n"
+            f"voice_dna:\n{json.dumps(payload.get('voice_dna') or {}, ensure_ascii=False, indent=2)}\n\n"
+            f"sentence_mechanics:\n{json.dumps(payload.get('sentence_mechanics') or {}, ensure_ascii=False, indent=2)}\n\n"
+            f"structure_patterns:\n{json.dumps(payload.get('structure_patterns') or [], ensure_ascii=False)}\n\n"
+            f"motif_theme_bank:\n{json.dumps(payload.get('motif_theme_bank') or [], ensure_ascii=False)}\n\n"
+            f"worldview_and_stance:\n{json.dumps(payload.get('worldview_and_stance') or [], ensure_ascii=False)}\n\n"
+            f"emotional_tendencies:\n{json.dumps(payload.get('emotional_tendencies') or [], ensure_ascii=False)}\n\n"
+            f"nonclinical_psychodynamics:\n{json.dumps(payload.get('nonclinical_psychodynamics') or [], ensure_ascii=False)}\n\n"
+            f"do_and_dont:\n{json.dumps(payload.get('do_and_dont') or {}, ensure_ascii=False, indent=2)}\n\n"
+            f"topic_translation_rules:\n{json.dumps(payload.get('topic_translation_rules') or [], ensure_ascii=False)}\n\n"
+            f"word_count_strategies:\n{json.dumps(payload.get('word_count_strategies') or {}, ensure_ascii=False, indent=2)}\n\n"
+            f"revision_rubric:\n{json.dumps(payload.get('revision_rubric') or [], ensure_ascii=False)}\n\n"
+            f"fewshot_anchors:\n{json.dumps(payload.get('fewshot_anchors') or [], ensure_ascii=False, indent=2)}\n\n"
+            "Ignore external_slots during drafting and review."
         )
 
 

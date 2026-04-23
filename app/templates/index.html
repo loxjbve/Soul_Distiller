@@ -47,6 +47,8 @@
                                                     {{ ui.mode_group }}
                                                 {% elif project.mode == 'telegram' %}
                                                     {{ ui.mode_telegram }}
+                                                {% elif project.mode == 'stone' %}
+                                                    {{ stone_mode_label }}
                                                 {% else %}
                                                     {{ ui.mode_single }}
                                                 {% endif %}
@@ -106,6 +108,7 @@
                     <option value="group">{{ ui.mode_group }} · {{ ui.mode_group_hint }}</option>
                     <option value="single">{{ ui.mode_single }} · {{ ui.mode_single_hint }}</option>
                     <option value="telegram">{{ ui.mode_telegram }} · {{ ui.mode_telegram_hint }}</option>
+                    <option value="stone">{{ stone_mode_label }} · {{ stone_mode_hint }}</option>
                 </select>
             </label>
             <label>
@@ -145,6 +148,7 @@
                         <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.mode_single }}</option>
                         <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.mode_group }}</option>
                         <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.mode_telegram }}</option>
+                        <option value="stone" {% if project.mode == 'stone' %}selected{% endif %}>{{ stone_mode_label }}</option>
                     </select>
                 </label>
                 <div class="button-row button-row--end">

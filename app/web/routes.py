@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.facets import FACETS
+from app.analysis.facets import FACETS, get_facets_for_mode
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import (
     AnalysisFacet,
@@ -73,6 +73,7 @@ ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
+    {"value": "writing_guide", "label": "Writing Guide"},
 )
 
 
@@ -86,6 +87,7 @@ ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
+    {"value": "writing_guide", "label": "Writing Guide"},
 )
 
 ANALYSIS_EVENT_LIMIT = 48
@@ -134,6 +136,13 @@ class DocumentUpdatePayload(BaseModel):
     user_note: str | None = None
 
 
+class TextDocumentCreatePayload(BaseModel):
+    title: str
+    content: str
+    source_type: str | None = None
+    user_note: str | None = None
+
+
 class PreprocessSessionCreatePayload(BaseModel):
     title: str | None = None
 
@@ -144,6 +153,12 @@ class PreprocessSessionUpdatePayload(BaseModel):
 
 class PreprocessMessagePayload(BaseModel):
     message: str
+
+
+class WritingMessagePayload(BaseModel):
+    topic: str
+    target_word_count: int = Field(..., ge=100)
+    extra_requirements: str | None = None
 
 
 class TelegramPreprocessRunCreatePayload(BaseModel):
@@ -197,6 +212,104 @@ def _page_context(request: Request, page_name: str, **kwargs: Any) -> dict[str, 
     }
 
 
+def _stone_mode_label(locale: str) -> str:
+    return "Stone Mode" if locale == "en-US" else "搬石模式"
+
+
+def _stone_mode_hint(locale: str) -> str:
+    if locale == "en-US":
+        return "For single-author corpus, article profiling, writing guide synthesis, and controlled article drafting"
+    return "适合单作者文本、逐篇预分析、写作指南生成与定向写作"
+
+
+def _writing_workspace_ui(locale: str) -> dict[str, Any]:
+    base = page_strings("preprocess", locale)
+    labels = {
+        "title": "Writing Workspace" if locale == "en-US" else "写作台",
+        "eyebrow": "Writing Workspace" if locale == "en-US" else "搬石写作台",
+        "hero_note": (
+            "Draft against the latest writing guide, run reviewer passes, and keep style fidelity visible."
+            if locale == "en-US"
+            else "围绕最新 writing_guide 出稿，查看 reviewer 维度意见，并显式展示文风一致性。"
+        ),
+        "new_session": "New Session" if locale == "en-US" else "新建会话",
+        "rename_session": "Rename" if locale == "en-US" else "重命名",
+        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
+        "sessions": "Sessions" if locale == "en-US" else "会话",
+        "composer_placeholder": (
+            "Enter the topic, target word count, and optional extra requirements."
+            if locale == "en-US"
+            else "输入主题、目标字数和可选附加要求。"
+        ),
+        "topic_label": "Topic" if locale == "en-US" else "主题",
+        "target_word_count_label": "Target Word Count" if locale == "en-US" else "目标字数",
+        "extra_requirements_label": "Extra Requirements" if locale == "en-US" else "附加要求",
+        "send": "Start Writing" if locale == "en-US" else "开始写作",
+        "sending": "Writing..." if locale == "en-US" else "写作中...",
+        "guide_label": "Guide" if locale == "en-US" else "当前指南",
+        "guide_missing": "No writing guide yet." if locale == "en-US" else "还没有 writing_guide。",
+        "guide_unpublished": "Using latest draft guide." if locale == "en-US" else "当前使用未发布指南。",
+        "guide_published": "Using latest published guide." if locale == "en-US" else "当前使用已发布指南。",
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作任务。",
+        "working": "Working..." if locale == "en-US" else "执行中...",
+        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
+        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
+        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
+        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
+        "stage_feed": "Pipeline" if locale == "en-US" else "流水线",
+    }
+    base.update(labels)
+    return base
+
+
+def _primary_asset_kind_for_mode(mode: str | None) -> str:
+    return "writing_guide" if str(mode or "").strip().lower() == "stone" else "cc_skill"
+
+
+def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
+    if str(project.mode or "").strip().lower() == "stone":
+        return (
+            {"value": "writing_guide", "label": "Writing Guide"},
+        )
+    return (
+        {"value": "cc_skill", "label": "Claude Code Skill"},
+        {"value": "profile_report", "label": "用户画像报告"},
+    )
+
+
+def _resolve_asset_kind_for_project(project, requested_kind: str | None) -> str:
+    default_kind = _primary_asset_kind_for_mode(project.mode)
+    asset_kind = _normalize_asset_kind(requested_kind or default_kind)
+    if str(project.mode or "").strip().lower() == "stone" and asset_kind != "writing_guide":
+        return "writing_guide"
+    return asset_kind
+
+
+def _ensure_stone_project(session: Session, project_id: str):
+    project = _ensure_project(session, project_id)
+    if project.mode != "stone":
+        raise HTTPException(status_code=400, detail="Only stone projects support this workspace.")
+    return project
+
+
+def _resolve_writing_guide_status(session: Session, project_id: str) -> dict[str, Any]:
+    version = repository.get_latest_asset_version(session, project_id, asset_kind="writing_guide")
+    if version:
+        return {
+            "status": "published",
+            "asset_id": version.id,
+            "label": f"v{version.version_number}",
+        }
+    draft = repository.get_latest_asset_draft(session, project_id, asset_kind="writing_guide")
+    if draft:
+        return {
+            "status": "draft",
+            "asset_id": draft.id,
+            "label": "draft",
+        }
+    return {"status": "missing", "asset_id": None, "label": None}
+
+
 def _ok_response(message: str, **payload: Any) -> dict[str, Any]:
     return {"status": "ok", "message": message, **payload}
 
@@ -215,6 +328,7 @@ def _task_response(message: str, task: dict[str, Any], **payload: Any) -> dict[s
 
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request, session: SessionDep):
+    locale = get_locale(request)
     return templates.TemplateResponse(
         request=request,
         name="index.html",
@@ -223,6 +337,8 @@ def index(request: Request, session: SessionDep):
             projects=repository.list_projects(session),
             chat_configured=repository.get_service_config(session, "chat_service") is not None,
             embedding_configured=repository.get_service_config(session, "embedding_service") is not None,
+            stone_mode_label=_stone_mode_label(locale),
+            stone_mode_hint=_stone_mode_hint(locale),
         ),
     )
 
@@ -424,7 +540,8 @@ def analysis_page(
             run=run,
             serialized_run=json.dumps(serialized_run, ensure_ascii=False) if serialized_run else "null",
             run_id=run.id if run else "",
-            facet_catalog=FACETS,
+            facet_catalog=get_facets_for_mode(project.mode),
+            primary_asset_kind=_primary_asset_kind_for_mode(project.mode),
         ),
     )
 
@@ -494,10 +611,10 @@ def assets_page(
     request: Request,
     project_id: str,
     session: SessionDep,
-    kind: str = Query(default="cc_skill"),
+    kind: str | None = Query(default=None),
 ):
     project = _ensure_project(session, project_id)
-    asset_kind = _normalize_asset_kind(kind)
+    asset_kind = _resolve_asset_kind_for_project(project, kind)
     draft = repository.get_latest_asset_draft(session, project_id, asset_kind=asset_kind)
     versions = repository.list_asset_versions(session, project_id, asset_kind=asset_kind)
     latest_run = repository.get_latest_analysis_run(session, project_id)
@@ -514,10 +631,7 @@ def assets_page(
             project=project,
             asset_kind=asset_kind,
             asset_label=_asset_label(asset_kind),
-            asset_options=(
-                {"value": "cc_skill", "label": "Claude Code Skill"},
-                {"value": "profile_report", "label": "用户画像报告"},
-            ),
+            asset_options=_asset_options_for_project(project),
             draft=draft,
             draft_documents=draft_documents,
             versions=versions,
@@ -834,6 +948,55 @@ def preprocess_page(
     )
 
 
+@router.get("/projects/{project_id}/writing", response_class=HTMLResponse)
+def writing_page(
+    request: Request,
+    project_id: str,
+    session: SessionDep,
+    session_id: str | None = Query(default=None),
+):
+    project = _ensure_stone_project(session, project_id)
+    sessions = repository.list_chat_sessions(session, project_id, session_kind="writing")
+    if not sessions:
+        sessions = [
+            repository.create_chat_session(
+                session,
+                project_id=project_id,
+                session_kind="writing",
+                title="新建写作会话",
+            )
+        ]
+    selected_session = sessions[0]
+    if session_id:
+        explicit = repository.get_chat_session(session, session_id, session_kind="writing")
+        if explicit and explicit.project_id == project_id:
+            selected_session = explicit
+    locale = get_locale(request)
+    writing_ui = _writing_workspace_ui(locale)
+    bootstrap = {
+        "project": {"id": project.id, "name": project.name, "mode": project.mode},
+        "sessions": [_serialize_chat_session(item) for item in sessions],
+        "selected_session_id": selected_session.id,
+        "selected_session": _serialize_writing_session_detail(selected_session),
+        "documents": [_serialize_document(item) for item in repository.list_project_documents(session, project_id)],
+        "guide": _resolve_writing_guide_status(session, project_id),
+        "locale": locale,
+        "ui_strings": writing_ui,
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="writing.html",
+        context=_page_context(
+            request,
+            "preprocess",
+            project=project,
+            bootstrap=json.dumps(bootstrap, ensure_ascii=False),
+            writing_ui=writing_ui,
+            primary_asset_kind="writing_guide",
+        ),
+    )
+
+
 @router.post("/projects/{project_id}/preprocess/run")
 def start_telegram_preprocess_form(
     request: Request,
@@ -1055,6 +1218,40 @@ async def upload_documents_api(
 
 
 
+
+
+@router.post("/api/projects/{project_id}/documents/text")
+def create_text_document_api(
+    request: Request,
+    project_id: str,
+    payload: TextDocumentCreatePayload,
+    session: SessionDep,
+):
+    project = _ensure_stone_project(session, project_id)
+    content = str(payload.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required.")
+    ingest = request.app.state.ingest_service
+    document = ingest.create_text_document(
+        session,
+        project_id=project.id,
+        title=payload.title,
+        content=content,
+        source_type=payload.source_type,
+        user_note=payload.user_note,
+    )
+    document.ingest_status = "queued"
+    task_manager = request.app.state.ingest_task_manager
+    task_manager.set_embedding_config(repository.get_service_config(session, "embedding_service"))
+    session.commit()
+    task = task_manager.submit(
+        project_id=project.id,
+        document_id=document.id,
+        filename=document.filename,
+        storage_path=document.storage_path,
+        mime_type=document.mime_type,
+    )
+    return _task_response("文本文章已创建并加入处理队列。", task, **_serialize_document(document))
 
 
 @router.get("/api/projects/{project_id}/documents")
@@ -1519,7 +1716,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
 
     events: Queue[dict[str, Any] | None] = Queue()
     asset_kind = _normalize_asset_kind(payload.asset_kind)
-    default_document_key = "asset" if asset_kind == "profile_report" else "skill"
+    default_document_key = "skill" if asset_kind == "cc_skill" else "asset"
 
     def emit_status(
         phase: str,
@@ -1838,6 +2035,100 @@ def stream_preprocess_events_api(request: Request, project_id: str, session_id: 
     )
 
 
+@router.get("/api/projects/{project_id}/writing/sessions")
+def list_writing_sessions_api(project_id: str, session: SessionDep):
+    _ensure_stone_project(session, project_id)
+    sessions = repository.list_chat_sessions(session, project_id, session_kind="writing")
+    return _ok_response("已返回写作会话列表。", sessions=[_serialize_chat_session(item) for item in sessions])
+
+
+@router.post("/api/projects/{project_id}/writing/sessions")
+def create_writing_session_api(project_id: str, payload: PreprocessSessionCreatePayload, session: SessionDep):
+    _ensure_stone_project(session, project_id)
+    chat_session = repository.create_chat_session(
+        session,
+        project_id=project_id,
+        session_kind="writing",
+        title=payload.title or "新建写作会话",
+    )
+    return _ok_response("写作会话已创建。", **_serialize_chat_session(chat_session))
+
+
+@router.get("/api/projects/{project_id}/writing/sessions/{session_id}")
+def get_writing_session_api(project_id: str, session_id: str, session: SessionDep):
+    _ensure_stone_project(session, project_id)
+    chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="未找到写作会话。")
+    return _ok_response("已返回写作会话详情。", **_serialize_writing_session_detail(chat_session))
+
+
+@router.patch("/api/projects/{project_id}/writing/sessions/{session_id}")
+def update_writing_session_api(
+    project_id: str,
+    session_id: str,
+    payload: PreprocessSessionUpdatePayload,
+    session: SessionDep,
+):
+    _ensure_stone_project(session, project_id)
+    chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="未找到写作会话。")
+    repository.rename_chat_session(session, chat_session, title=payload.title)
+    return _ok_response("写作会话已更新。", **_serialize_chat_session(chat_session))
+
+
+@router.delete("/api/projects/{project_id}/writing/sessions/{session_id}")
+def delete_writing_session_api(project_id: str, session_id: str, session: SessionDep):
+    _ensure_stone_project(session, project_id)
+    chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="未找到写作会话。")
+    repository.delete_chat_session(session, chat_session)
+    return _ok_response("写作会话已删除。", ok=True, session_id=session_id)
+
+
+@router.post("/api/projects/{project_id}/writing/sessions/{session_id}/messages")
+def create_writing_message_api(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    payload: WritingMessagePayload,
+    session: SessionDep,
+):
+    _ensure_stone_project(session, project_id)
+    try:
+        result = request.app.state.writing_service.start_stream(
+            project_id=project_id,
+            session_id=session_id,
+            topic=payload.topic,
+            target_word_count=payload.target_word_count,
+            extra_requirements=payload.extra_requirements,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+    return _ok_response("写作任务已提交。", **result)
+
+
+@router.get("/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}")
+def stream_writing_events_api(request: Request, project_id: str, session_id: str, stream_id: str, session: SessionDep):
+    _ensure_stone_project(session, project_id)
+    chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
+    if not chat_session or chat_session.project_id != project_id:
+        raise HTTPException(status_code=404, detail="未找到写作会话。")
+    try:
+        generator = request.app.state.writing_service.stream_events(stream_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="未找到写作流。") from exc
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
+
+
 @router.get("/api/projects/{project_id}/preprocess/artifacts/{artifact_id}/download")
 def download_preprocess_artifact_api(project_id: str, artifact_id: str, session: SessionDep):
     artifact = repository.get_generated_artifact(session, artifact_id)
@@ -1958,16 +2249,18 @@ def _enrich_telegram_binding(
 
 def _project_context(request: Request, session: Session, project_id: str, *, document_limit: int = 20, document_offset: int = 0) -> dict[str, Any]:
     project = _ensure_project(session, project_id)
+    primary_asset_kind = _primary_asset_kind_for_mode(project.mode)
     source_project_id = repository.get_target_project_id(session, project_id)
     telegram_data_project_id = source_project_id if project.mode == "telegram" else project.id
     documents = repository.list_project_documents(session, project_id, limit=document_limit, offset=document_offset)
     doc_counts = repository.count_project_documents(session, project_id)
     source_doc_counts = doc_counts if source_project_id == project_id else repository.count_project_documents(session, source_project_id)
     latest_run = repository.get_latest_analysis_run(session, project_id, load_facets=False, load_events=False)
-    latest_draft = repository.get_latest_skill_draft(session, project_id)
-    latest_version = repository.get_latest_skill_version(session, project_id)
+    latest_draft = repository.get_latest_asset_draft(session, project_id, asset_kind=primary_asset_kind)
+    latest_version = repository.get_latest_asset_version(session, project_id, asset_kind=primary_asset_kind)
     latest_summary = latest_run.summary_json or {} if latest_run else {}
     preprocess_sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
+    writing_guide_status = _resolve_writing_guide_status(session, project_id) if project.mode == "stone" else None
     latest_preprocess_run = (
         repository.get_latest_telegram_preprocess_run(session, telegram_data_project_id)
         if project.mode == "telegram"
@@ -2051,6 +2344,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
         "project_bootstrap": json.dumps(
             {
                 "project": {"id": project.id, "name": project.name, "mode": project.mode},
+                "primary_asset_kind": primary_asset_kind,
                 "telegram": {
                     "is_parent_workspace": telegram_is_parent_workspace,
                     "is_child_persona": telegram_is_child_persona,
@@ -2085,6 +2379,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
                 },
                 "locale": get_locale(request),
                 "ui_strings": page_strings("project", get_locale(request)),
+                "writing_guide_status": writing_guide_status,
             },
             ensure_ascii=False,
         ),
@@ -2099,10 +2394,14 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
         "telegram_is_parent_workspace": telegram_is_parent_workspace,
         "telegram_is_child_persona": telegram_is_child_persona,
         "preprocess_project_id": source_project_id if project.mode == "telegram" else project.id,
+        "primary_asset_kind": primary_asset_kind,
         "can_analyze": can_analyze,
         "latest_draft": latest_draft,
         "latest_version": latest_version,
+        "writing_guide_status": writing_guide_status,
         "preprocess_sessions": preprocess_sessions,
+        "stone_mode_label": _stone_mode_label(get_locale(request)),
+        "stone_mode_hint": _stone_mode_hint(get_locale(request)),
         "stats": {
             "document_count": doc_counts["total"],
             "ready_count": doc_counts["ready"],
@@ -2673,8 +2972,11 @@ def _normalize_saved_asset_content(
     return payload, markdown_text
 
 
-def _ordered_facets(facets: list[AnalysisFacet]) -> list[AnalysisFacet]:
-    order = {facet.key: index for index, facet in enumerate(FACETS)}
+def _ordered_facets(facets: list[AnalysisFacet], summary: dict[str, Any] | None = None) -> list[AnalysisFacet]:
+    facet_keys = [str(item).strip() for item in ((summary or {}).get("facet_keys") or []) if str(item).strip()]
+    if not facet_keys:
+        facet_keys = [facet.key for facet in FACETS]
+    order = {facet_key: index for index, facet_key in enumerate(facet_keys)}
     return sorted(facets, key=lambda item: order.get(item.facet_key, 999))
 
 
@@ -2955,12 +3257,14 @@ def _serialize_analysis_facet(facet: AnalysisFacet) -> dict[str, Any]:
 
 def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     ordered_events = sorted(run.events, key=lambda item: item.created_at, reverse=True)[:ANALYSIS_EVENT_LIMIT]
-    serialized_facets = [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets)]
     summary = dict(run.summary_json or {})
+    facet_keys = [str(item).strip() for item in (summary.get("facet_keys") or []) if str(item).strip()]
+    facet_total = len(facet_keys) or len(FACETS)
+    serialized_facets = [_serialize_analysis_facet(facet) for facet in _ordered_facets(run.facets, summary)]
     requested_concurrency = _normalize_analysis_concurrency(
         summary.get("requested_concurrency") or summary.get("concurrency")
     )
-    summary["total_facets"] = int(summary.get("total_facets") or len(FACETS))
+    summary["total_facets"] = int(summary.get("total_facets") or facet_total)
     summary["concurrency"] = requested_concurrency
     summary["requested_concurrency"] = requested_concurrency
 
@@ -2968,7 +3272,7 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     failed = sum(1 for facet in serialized_facets if facet["status"] == "failed")
     active = [facet for facet in serialized_facets if facet["status"] in {"preparing", "running"}]
     queued = [facet for facet in serialized_facets if facet["status"] == "queued"]
-    effective_concurrency = min(requested_concurrency, len(FACETS))
+    effective_concurrency = min(requested_concurrency, facet_total)
     agent_tracks = []
 
     queue_position = 1
@@ -2986,7 +3290,7 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
     summary["effective_concurrency"] = effective_concurrency
     summary["active_agents"] = len(active)
     summary["effective_active_agents"] = len(active)
-    progress_total = max(1, int(summary.get("total_facets") or len(FACETS) or 1))
+    progress_total = max(1, int(summary.get("total_facets") or facet_total or 1))
     summary["progress_percent"] = int(((completed + failed) / progress_total) * 100)
 
     for facet in active:
@@ -3034,6 +3338,9 @@ def _serialize_analysis_run(run: AnalysisRun) -> dict[str, Any]:
         summary["current_facet"] = None
         summary["current_phase"] = "failed"
         summary["current_stage"] = _analysis_stage_label(None, "failed")
+    elif summary.get("current_phase") == "document_profiling":
+        summary["current_facet"] = None
+        summary["current_stage"] = str(summary.get("current_stage") or _analysis_stage_label(None, "document_profiling"))
     elif queued:
         summary["current_facet"] = None
         summary["current_phase"] = "queued"
@@ -3111,6 +3418,14 @@ def _serialize_preprocess_session_detail(chat_session) -> dict[str, Any]:
         **_serialize_chat_session(chat_session),
         "turns": [_serialize_chat_turn(turn) for turn in turns],
         "artifacts": [_serialize_artifact(artifact) for artifact in artifacts],
+    }
+
+
+def _serialize_writing_session_detail(chat_session) -> dict[str, Any]:
+    turns = sorted(chat_session.turns, key=lambda item: item.created_at)
+    return {
+        **_serialize_chat_session(chat_session),
+        "turns": [_serialize_chat_turn(turn) for turn in turns],
     }
 
 
@@ -3557,6 +3872,8 @@ def _normalize_asset_kind(value: str | None) -> str:
 
 
 def _asset_label(asset_kind: str) -> str:
+    if asset_kind == "writing_guide":
+        return "Writing Guide"
     if asset_kind == "profile_report":
         return "用户画像报告"
     return "Claude Code Skill"
@@ -3786,6 +4103,8 @@ def _get_project_document(session: Session, project_id: str, document_id: str) -
 
 def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
     label = facet_label or "分析任务"
+    if phase == "document_profiling":
+        return "逐篇文章预分析中"
     if phase == "retrieving":
         return f"{label}：检索证据中"
     if phase == "llm":
@@ -3804,6 +4123,8 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
 
 
 def _asset_label(asset_kind: str) -> str:
+    if asset_kind == "writing_guide":
+        return "Writing Guide"
     if asset_kind == "profile_report":
         return "用户画像报告"
     return "Claude Code Skill"

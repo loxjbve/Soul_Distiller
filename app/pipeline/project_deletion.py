@@ -32,6 +32,7 @@ from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.vector_store import VectorStoreManager
 from app.storage import repository
+from app.writing.service import WritingAgentService
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class ProjectDeletionManager:
         rechunk_manager: RechunkTaskManager,
         analysis_runner,
         preprocess_service: PreprocessAgentService,
+        writing_service: WritingAgentService | None = None,
         telegram_preprocess_manager=None,
         max_workers: int = 1,
         batch_size: int = 1000,
@@ -61,6 +63,7 @@ class ProjectDeletionManager:
         self.rechunk_manager = rechunk_manager
         self.analysis_runner = analysis_runner
         self.preprocess_service = preprocess_service
+        self.writing_service = writing_service
         self.telegram_preprocess_manager = telegram_preprocess_manager
         self.batch_size = max(1, batch_size)
         self.stop_timeout_s = max(1.0, stop_timeout_s)
@@ -181,6 +184,8 @@ class ProjectDeletionManager:
             self.rechunk_manager.cancel_project(project_id)
             self.analysis_runner.cancel_project(project_id)
             self.preprocess_service.cancel_project(project_id)
+            if self.writing_service:
+                self.writing_service.cancel_project(project_id)
             if self.telegram_preprocess_manager:
                 self.telegram_preprocess_manager.cancel_project(project_id)
 
@@ -199,6 +204,9 @@ class ProjectDeletionManager:
                 self.rechunk_manager.has_project_activity(project_id),
                 self.analysis_runner.has_project_activity(project_id),
                 self.preprocess_service.has_project_activity(project_id),
+                self.writing_service.has_project_activity(project_id)
+                if self.writing_service
+                else False,
                 self.telegram_preprocess_manager.has_project_activity(project_id)
                 if self.telegram_preprocess_manager
                 else False,

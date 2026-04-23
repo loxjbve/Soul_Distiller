@@ -287,13 +287,18 @@ class IngestTaskManager:
         with self.db.session() as session:
             document = repository.get_document(session, task.document_id)
             if document:
+                preserved_metadata = dict(document.metadata_json or {})
                 document.title = extraction_result.title or task.filename
                 document.author_guess = extraction_result.author_guess
                 document.created_at_guess = extraction_result.created_at_guess
                 document.raw_text = extraction_result.raw_text
                 document.clean_text = extraction_result.clean_text
                 document.language = extraction_result.language
-                document.metadata_json = extraction_result.metadata
+                metadata = dict(extraction_result.metadata or {})
+                for key in ("user_note", "stone_text_entry"):
+                    if key in preserved_metadata:
+                        metadata[key] = preserved_metadata[key]
+                document.metadata_json = metadata
                 document.ingest_status = "processing"
                 session.flush()
             repository.replace_document_chunks(

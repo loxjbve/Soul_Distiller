@@ -32,6 +32,7 @@ from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
 from app.storage import repository
 from app.telegram_preprocess import TelegramPreprocessManager
 from app.web.routes import router
+from app.writing.service import WritingAgentService
 
 
 def _recover_interrupted_analysis_runs(database: Database) -> None:
@@ -94,6 +95,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     )
     asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
     preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
+    writing_service = WritingAgentService(database, config, max_workers=4)
     telegram_preprocess_manager = TelegramPreprocessManager(
         database,
         llm_log_path=str(config.llm_log_path),
@@ -108,6 +110,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         rechunk_manager=rechunk_manager,
         analysis_runner=analysis_runner,
         preprocess_service=preprocess_service,
+        writing_service=writing_service,
         telegram_preprocess_manager=telegram_preprocess_manager,
     )
 
@@ -123,6 +126,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             project_deletion_manager.shutdown()
             analysis_runner.shutdown()
             preprocess_service.shutdown()
+            writing_service.shutdown()
             telegram_preprocess_manager.shutdown()
             rechunk_manager.shutdown()
             ingest_task_manager.shutdown()
@@ -144,6 +148,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.state.asset_synthesizer = asset_synthesizer
     app.state.skill_synthesizer = asset_synthesizer
     app.state.preprocess_service = preprocess_service
+    app.state.writing_service = writing_service
     app.state.telegram_preprocess_manager = telegram_preprocess_manager
     app.state.project_deletion_manager = project_deletion_manager
 

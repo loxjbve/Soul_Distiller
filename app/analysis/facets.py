@@ -81,6 +81,59 @@ FACETS: tuple[FacetDefinition, ...] = (
     ),
 )
 
+STONE_FACETS: tuple[FacetDefinition, ...] = (
+    FacetDefinition(
+        key="voice_signature",
+        label="声音指纹",
+        purpose="总结作者最稳定的叙述音色、语气张力、距离感和第一反应表达方式。",
+        search_query="语气 口吻 声音 风格 节奏 自我表达 叙述距离 张力",
+    ),
+    FacetDefinition(
+        key="lexicon_idiolect",
+        label="词汇私方言",
+        purpose="提取高频词、固定搭配、偏好句式、常用转折和作者独有的措辞习惯。",
+        search_query="高频词 固定搭配 用词 句式 转折 口头禅 词汇 偏好",
+    ),
+    FacetDefinition(
+        key="structure_composition",
+        label="结构与构图",
+        purpose="分析文章常见的开头方式、段落推进、收束方式和整体构图模板。",
+        search_query="结构 开头 结尾 段落 推进 构图 节奏 模板",
+    ),
+    FacetDefinition(
+        key="imagery_theme",
+        label="意象与母题",
+        purpose="识别重复出现的意象、场景母题、主题偏好和隐喻材料。",
+        search_query="意象 母题 隐喻 场景 主题 象征 反复出现",
+    ),
+    FacetDefinition(
+        key="stance_values",
+        label="立场与价值",
+        purpose="归纳作者稳定的价值取向、判断方式、偏见边界和表达立场。",
+        search_query="价值 立场 判断 原则 偏好 厌恶 边界 信念",
+    ),
+    FacetDefinition(
+        key="emotional_arc",
+        label="情绪弧线",
+        purpose="描摹作者在文章中的情绪底色、推进路径、转折点和回落方式。",
+        search_query="情绪 弧线 推进 转折 压力 回落 波动 情感",
+    ),
+    FacetDefinition(
+        key="nonclinical_psychodynamics",
+        label="非临床心理动力",
+        purpose="提炼非临床的防御、边界、压力反应、自我叙事和关系处理线索。",
+        search_query="防御 边界 压力 自我叙事 回避 克制 控制 羞耻",
+    ),
+    FacetDefinition(
+        key="creative_constraints",
+        label="创作约束",
+        purpose="总结作者写作时的禁区、必须保留的风格约束、常见失真点和不该触碰的表达。",
+        search_query="禁区 约束 不要 避免 失真 保留 必须 文风一致",
+    ),
+)
+
+ALL_FACETS: tuple[FacetDefinition, ...] = FACETS + STONE_FACETS
+
 
 DEFAULT_FACET_PROMPT_PROFILE = FacetPromptProfile(
     focus="只抽取当前维度直接支撑的行为证据，不补写其他维度的人设总卡。",
@@ -145,3 +198,14 @@ FACET_PROMPT_PROFILES: dict[str, FacetPromptProfile] = {
 
 def get_facet_prompt_profile(facet_key: str) -> FacetPromptProfile:
     return FACET_PROMPT_PROFILES.get(facet_key, DEFAULT_FACET_PROMPT_PROFILE)
+
+
+def get_facets_for_mode(mode: str | None) -> tuple[FacetDefinition, ...]:
+    if str(mode or "").strip().lower() == "stone":
+        return STONE_FACETS
+    return FACETS
+
+
+def get_facet_definition(facet_key: str, *, mode: str | None = None) -> FacetDefinition | None:
+    catalog = ALL_FACETS if mode is None else get_facets_for_mode(mode)
+    return next((item for item in catalog if item.key == facet_key), None)

@@ -42,6 +42,12 @@ if (bootstrap.project?.id) {
         modalTitle: document.getElementById("document-modal-title"),
         modalBody: document.getElementById("document-modal-body"),
         modalFooter: document.getElementById("document-modal-footer"),
+        addTextModal: document.getElementById("add-text-document-modal"),
+        addTextTitle: document.getElementById("stone-text-title"),
+        addTextSource: document.getElementById("stone-text-source"),
+        addTextNote: document.getElementById("stone-text-note"),
+        addTextContent: document.getElementById("stone-text-content"),
+        addTextSubmit: document.getElementById("add-text-document-submit"),
         feedback: document.getElementById("project-feedback"),
         statsTotal: document.getElementById("status-total"),
         statsReady: document.getElementById("status-ready"),
@@ -84,6 +90,7 @@ if (bootstrap.project?.id) {
         elements.processAll?.addEventListener("click", () => runProjectAction("process-all", elements.processAll, state.ui.process_success));
         elements.retryAll?.addEventListener("click", () => runProjectAction("retry-all", elements.retryAll, state.ui.retry_success));
         elements.stopProcessing?.addEventListener("click", () => runProjectAction("stop-processing", elements.stopProcessing, state.ui.stop_success));
+        elements.addTextSubmit?.addEventListener("click", () => createTextDocument());
         initTelegramTargetPickers();
         initPersonaCollapsibles();
 
@@ -283,6 +290,7 @@ if (bootstrap.project?.id) {
         const current = state.documents.find((item) => item.id === documentItem.id) || documentItem;
         elements.modalTitle.textContent = current.title || current.filename || state.ui.modal_document_title || "文档详情";
         const userNote = current.metadata_json?.user_note || "";
+        const stoneProfile = current.metadata_json?.stone_profile || null;
 
         elements.modalBody.innerHTML = `
             <label>
@@ -306,6 +314,7 @@ if (bootstrap.project?.id) {
                 <div class="metric-row"><span>${escapeHtml(state.ui.document_language || "语言")}</span><strong>${escapeHtml(current.language || "--")}</strong></div>
                 <div class="metric-row"><span>${escapeHtml(state.ui.common.updated_at || "更新时间")}</span><strong>${escapeHtml(formatDateTime(current.updated_at || current.created_at))}</strong></div>
             </div>
+            ${stoneProfile ? renderStoneProfile(stoneProfile) : ""}
             ${current.error_message ? `<div class="empty-panel"><strong>${escapeHtml(state.ui.document_error || "错误信息")}</strong><p>${escapeHtml(current.error_message)}</p></div>` : ""}
         `;
 
@@ -370,6 +379,52 @@ if (bootstrap.project?.id) {
 
         elements.modalFooter.append(processButton, deleteButton, saveButton);
         openModal(elements.modal);
+    }
+
+    async function createTextDocument() {
+        const title = elements.addTextTitle?.value?.trim() || "";
+        const content = elements.addTextContent?.value?.trim() || "";
+        const sourceType = elements.addTextSource?.value?.trim() || "";
+        const userNote = elements.addTextNote?.value?.trim() || "";
+        if (!title || !content) {
+            showFeedback("标题和正文不能为空。", "error");
+            return;
+        }
+        setButtonBusy(elements.addTextSubmit, true);
+        try {
+            const payload = await fetchJson(`/api/projects/${state.projectId}/documents/text`, {
+                method: "POST",
+                body: JSON.stringify({
+                    title,
+                    content,
+                    source_type: sourceType,
+                    user_note: userNote,
+                }),
+            });
+            mergeDocuments([payload]);
+            if (payload.task?.document_id) {
+                state.tasks.set(payload.task.document_id, payload.task);
+            }
+            await refreshDocuments();
+            if (elements.addTextTitle) {
+                elements.addTextTitle.value = "";
+            }
+            if (elements.addTextSource) {
+                elements.addTextSource.value = "";
+            }
+            if (elements.addTextNote) {
+                elements.addTextNote.value = "";
+            }
+            if (elements.addTextContent) {
+                elements.addTextContent.value = "";
+            }
+            closeModal(elements.addTextModal);
+            showFeedback("文章已加入处理队列。", "success");
+        } catch (error) {
+            showFeedback(error.message, "error");
+        } finally {
+            setButtonBusy(elements.addTextSubmit, false);
+        }
     }
 
     async function processDocument(documentId) {
@@ -468,6 +523,25 @@ if (bootstrap.project?.id) {
         state.stats.queued_count = totals.queued;
         state.stats.processing_count = totals.processing;
         state.stats.document_count = Math.max(state.stats.document_count || 0, state.documents.length);
+    }
+
+    function renderStoneProfile(profile) {
+        const lexical = Array.isArray(profile.lexical_markers) ? profile.lexical_markers : [];
+        const signals = Array.isArray(profile.nonclinical_signals) ? profile.nonclinical_signals : [];
+        const lines = Array.isArray(profile.representative_lines) ? profile.representative_lines : [];
+        return `
+            <div class="empty-panel">
+                <strong>逐篇预分析摘要</strong>
+                <p>主题：${escapeHtml(profile.article_theme || "--")}</p>
+                <p>叙事视角：${escapeHtml(profile.narrative_pov || "--")}</p>
+                <p>语气：${escapeHtml(profile.tone || "--")}</p>
+                <p>结构模板：${escapeHtml(profile.structure_template || "--")}</p>
+                <p>情绪推进：${escapeHtml(profile.emotional_progression || "--")}</p>
+                ${lexical.length ? `<p>词汇标记：${escapeHtml(lexical.join("、"))}</p>` : ""}
+                ${signals.length ? `<p>非临床心理线索：${escapeHtml(signals.join("；"))}</p>` : ""}
+                ${lines.length ? `<p>代表句：${escapeHtml(lines.join(" / "))}</p>` : ""}
+            </div>
+        `;
     }
 
     function initTelegramTargetPickers() {

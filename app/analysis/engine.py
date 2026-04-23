@@ -13,7 +13,8 @@ from app.db import Database
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.analysis.facets import FACETS, FacetDefinition, get_facet_prompt_profile
+from app.analysis.facets import ALL_FACETS, FACETS, FacetDefinition, get_facet_definition, get_facet_prompt_profile, get_facets_for_mode
+from app.analysis.stone import build_stone_profile
 from app.analysis.streaming import AnalysisStreamHub
 from app.analysis.telegram_agent import TelegramAnalysisAgent
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
@@ -90,6 +91,26 @@ def _normalize_concurrency(value: Any) -> int:
     return max(MIN_ANALYSIS_CONCURRENCY, candidate)
 
 
+def _facet_catalog_from_summary(summary: dict[str, Any] | None) -> tuple[FacetDefinition, ...]:
+    payload = dict(summary or {})
+    mode = payload.get("project_mode")
+    fallback_catalog = get_facets_for_mode(mode)
+    requested_keys = [str(item or "").strip() for item in (payload.get("facet_keys") or []) if str(item or "").strip()]
+    if not requested_keys:
+        return fallback_catalog
+    resolved: list[FacetDefinition] = []
+    fallback_lookup = {facet.key: facet for facet in fallback_catalog}
+    for key in requested_keys:
+        facet = fallback_lookup.get(key) or get_facet_definition(key)
+        if facet:
+            resolved.append(facet)
+    return tuple(resolved) or fallback_catalog
+
+
+def _facet_order_keys(summary: dict[str, Any] | None) -> list[str]:
+    return [facet.key for facet in _facet_catalog_from_summary(summary)]
+
+
 def _collapse_whitespace(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
@@ -111,7 +132,7 @@ def _facet_keyword_score(text: str, facet_key: str) -> int:
 def _best_foreign_facet_match(text: str, facet_key: str) -> tuple[str | None, int]:
     best_key: str | None = None
     best_score = 0
-    for other in FACETS:
+    for other in ALL_FACETS:
         if other.key == facet_key:
             continue
         score = _facet_keyword_score(text, other.key)
@@ -303,6 +324,7 @@ class AnalysisEngine:
         project = repository.get_project(session, project_id)
         if not project:
             raise ValueError("Project not found.")
+        facet_catalog = get_facets_for_mode(project.mode)
         summary = self._build_initial_summary(
             session,
             project_id,
@@ -311,6 +333,8 @@ class AnalysisEngine:
             participant_id=participant_id,
             analysis_context=analysis_context,
         )
+        summary["facet_keys"] = [facet.key for facet in facet_catalog]
+        summary["facet_labels"] = {facet.key: facet.label for facet in facet_catalog}
         summary["concurrency"] = _normalize_concurrency(concurrency)
         summary["requested_concurrency"] = summary["concurrency"]
         run = repository.create_analysis_run(
@@ -319,7 +343,7 @@ class AnalysisEngine:
             status="queued",
             summary_json=summary,
         )
-        for index, facet in enumerate(FACETS, start=1):
+        for index, facet in enumerate(facet_catalog, start=1):
             repository.upsert_facet(
                 session,
                 run.id,
@@ -398,6 +422,7 @@ class AnalysisEngine:
         project = repository.get_project(session, run.project_id)
         if not project:
             raise ValueError("Project not found.")
+        facet_catalog = get_facets_for_mode(project.mode)
         self._ensure_run_active(run.id, run.project_id)
 
         chat_config = repository.get_service_config(session, "chat_service")
@@ -431,6 +456,27 @@ class AnalysisEngine:
 
         if project.mode == "telegram":
             self._execute_telegram_run(session, run, project, chat_config)
+        elif project.mode == "stone":
+            self._prepare_stone_document_profiles(session, run, project)
+            self._ensure_run_active(run.id, run.project_id)
+            if self.use_processes:
+                self._run_parallel_processes(
+                    session,
+                    run,
+                    project.name,
+                    llm_payload=llm_payload,
+                    embedding_config=embedding_config,
+                    facet_catalog=facet_catalog,
+                )
+            else:
+                self._run_parallel_threads(
+                    session,
+                    run,
+                    project.name,
+                    llm_payload=llm_payload,
+                    embedding_config=embedding_config,
+                    facet_catalog=facet_catalog,
+                )
         elif self.use_processes:
             self._run_parallel_processes(
                 session,
@@ -438,6 +484,7 @@ class AnalysisEngine:
                 project.name,
                 llm_payload=llm_payload,
                 embedding_config=embedding_config,
+                facet_catalog=facet_catalog,
             )
         else:
             self._run_parallel_threads(
@@ -446,6 +493,7 @@ class AnalysisEngine:
                 project.name,
                 llm_payload=llm_payload,
                 embedding_config=embedding_config,
+                facet_catalog=facet_catalog,
             )
 
         self._ensure_run_active(run.id, run.project_id)
@@ -480,7 +528,7 @@ class AnalysisEngine:
         if not run or not project:
             raise ValueError("Analysis run not found.")
         self._ensure_run_active(run.id, run.project_id)
-        facet_def = next((item for item in FACETS if item.key == facet_key), None)
+        facet_def = get_facet_definition(facet_key, mode=project.mode)
         if not facet_def:
             raise ValueError("Unknown facet.")
 
@@ -566,6 +614,50 @@ class AnalysisEngine:
         )
         self._persist_progress(session, run.id)
         return repository.get_analysis_run(session, run.id) or run
+
+    def _prepare_stone_document_profiles(self, session: Session, run: AnalysisRun, project: Project) -> None:
+        documents = [
+            document
+            for document in repository.list_project_documents(session, project.id)
+            if document.ingest_status == "ready"
+        ]
+        summary = dict(run.summary_json or {})
+        summary["stone_profile_total"] = len(documents)
+        summary["stone_profile_completed"] = 0
+        summary["current_stage"] = "Building article profiles"
+        summary["current_phase"] = "document_profiling"
+        run.summary_json = summary
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="lifecycle",
+            message="Stone mode starts with per-document profiling.",
+            payload_json={"document_count": len(documents)},
+        )
+        self._persist_progress(session, run.id)
+        for index, document in enumerate(documents, start=1):
+            self._ensure_run_active(run.id, run.project_id)
+            metadata = dict(document.metadata_json or {})
+            metadata["stone_profile"] = build_stone_profile(document)
+            document.metadata_json = metadata
+            summary = dict(run.summary_json or {})
+            summary["stone_profile_completed"] = index
+            summary["current_stage"] = f"Profiling article {index}/{len(documents)}"
+            summary["current_phase"] = "document_profiling"
+            run.summary_json = summary
+            repository.add_analysis_event(
+                session,
+                run.id,
+                event_type="document_profile",
+                message=f"Profiled article: {document.title or document.filename}",
+                payload_json={"document_id": document.id, "document_title": document.title or document.filename},
+            )
+            self._persist_progress(session, run.id)
+        summary = dict(run.summary_json or {})
+        summary["current_stage"] = "Running author-level facets"
+        summary["current_phase"] = "retrieving"
+        run.summary_json = summary
+        self._persist_progress(session, run.id)
 
     def _build_telegram_agent(
         self,
@@ -688,12 +780,13 @@ class AnalysisEngine:
             target_user=target_user,
         )
         run_concurrency = self._resolve_run_concurrency(run)
+        facet_catalog = get_facets_for_mode(project.mode)
         executor = ThreadPoolExecutor(
-            max_workers=min(len(FACETS), run_concurrency),
+            max_workers=min(len(facet_catalog), run_concurrency),
             thread_name_prefix="telegram-facet",
         )
         future_map: dict[Future[dict[str, Any]], FacetDefinition] = {}
-        pending_facets = list(FACETS)
+        pending_facets = list(facet_catalog)
         try:
             while pending_facets or future_map:
                 self._ensure_run_active(run.id, run.project_id)
@@ -915,7 +1008,7 @@ class AnalysisEngine:
     ) -> dict[str, Any]:
         if not self.db:
             raise RuntimeError("Telegram facet concurrency requires a configured database session factory.")
-        facet_def = next((item for item in FACETS if item.key == facet_key), None)
+        facet_def = get_facet_definition(facet_key, mode="telegram")
         if not facet_def:
             raise ValueError(f"Unknown facet: {facet_key}")
         with self.db.session() as session:
@@ -948,9 +1041,10 @@ class AnalysisEngine:
         *,
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
+        facet_catalog: tuple[FacetDefinition, ...],
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         run_concurrency = self._resolve_run_concurrency(run)
-        executor = ProcessPoolExecutor(max_workers=min(len(FACETS), run_concurrency))
+        executor = ProcessPoolExecutor(max_workers=min(len(facet_catalog), run_concurrency))
         try:
             return self._execute_facets_with_executor(
                 session,
@@ -959,6 +1053,7 @@ class AnalysisEngine:
                 llm_payload=llm_payload,
                 embedding_config=embedding_config,
                 executor=executor,
+                facet_catalog=facet_catalog,
             )
         except AnalysisCancelledError:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -974,10 +1069,11 @@ class AnalysisEngine:
         *,
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
+        facet_catalog: tuple[FacetDefinition, ...],
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         run_concurrency = self._resolve_run_concurrency(run)
         executor = ThreadPoolExecutor(
-            max_workers=min(len(FACETS), run_concurrency),
+            max_workers=min(len(facet_catalog), run_concurrency),
             thread_name_prefix="facet-thread",
         )
         try:
@@ -988,6 +1084,7 @@ class AnalysisEngine:
                 llm_payload=llm_payload,
                 embedding_config=embedding_config,
                 executor=executor,
+                facet_catalog=facet_catalog,
             )
         except AnalysisCancelledError:
             executor.shutdown(wait=False, cancel_futures=True)
@@ -1004,9 +1101,10 @@ class AnalysisEngine:
         llm_payload: dict[str, Any] | None,
         embedding_config: ServiceConfig | None,
         executor: Any,
+        facet_catalog: tuple[FacetDefinition, ...],
     ) -> list[tuple[FacetDefinition, str, int, FacetResult]]:
         future_map: dict[Future[dict[str, Any]], tuple[FacetDefinition, str, dict[str, Any], int]] = {}
-        pending_facets = list(FACETS)
+        pending_facets = list(facet_catalog)
         run_concurrency = self._resolve_run_concurrency(run)
         results: list[tuple[FacetDefinition, str, int, FacetResult]] = []
 
@@ -1642,12 +1740,13 @@ class AnalysisEngine:
         self._persist_progress(session, run.id)
 
     def _recalculate_run_summary(self, session: Session, run: AnalysisRun) -> None:
-        order = {facet.key: index for index, facet in enumerate(FACETS)}
+        summary = dict(run.summary_json or {})
+        order = {key: index for index, key in enumerate(_facet_order_keys(summary))}
         facets = sorted(
             list(session.scalars(select(AnalysisFacet).where(AnalysisFacet.run_id == run.id))),
             key=lambda item: order.get(item.facet_key, 999),
         )
-        summary = dict(run.summary_json or {})
+        total_facets = max(1, len(order) or len(facets) or 1)
         completed = 0
         failed = 0
         active = 0
@@ -1726,7 +1825,7 @@ class AnalysisEngine:
         summary["queued_facets"] = queued
         summary["concurrency"] = _normalize_concurrency(summary.get("concurrency") or self.facet_max_workers)
         summary["requested_concurrency"] = summary["concurrency"]
-        summary["effective_concurrency"] = min(int(summary["concurrency"] or 0), len(FACETS))
+        summary["effective_concurrency"] = min(int(summary["concurrency"] or 0), total_facets)
         summary["llm_calls"] = llm_calls
         summary["llm_successes"] = llm_successes
         summary["llm_failures"] = llm_failures
@@ -1734,7 +1833,8 @@ class AnalysisEngine:
         summary["completion_tokens"] = completion_tokens
         summary["total_tokens"] = total_tokens
         progress_done = completed + failed
-        summary["progress_percent"] = int((progress_done / len(FACETS)) * 100)
+        summary["total_facets"] = total_facets
+        summary["progress_percent"] = int((progress_done / total_facets) * 100)
         summary["agent_tracks"] = [
             {
                 "facet_key": facet.facet_key,
@@ -1908,6 +2008,7 @@ class AnalysisEngine:
         analysis_context: str | None,
     ) -> dict[str, Any]:
         project = repository.get_project(session, project_id)
+        facet_catalog = get_facets_for_mode(project.mode if project else None)
         is_telegram = bool(project and project.mode == "telegram")
         target_project_id = repository.get_target_project_id(session, project_id)
         document_count = (
@@ -1990,7 +2091,9 @@ class AnalysisEngine:
             "participant_id": (participant_id or "").strip() or None,
             "target_user": None,
             "analysis_context": (analysis_context or "").strip() or None,
-            "total_facets": len(FACETS),
+            "facet_keys": [facet.key for facet in facet_catalog],
+            "facet_labels": {facet.key: facet.label for facet in facet_catalog},
+            "total_facets": len(facet_catalog),
             "completed_facets": 0,
             "failed_facets": 0,
             "progress_percent": 0,
@@ -1999,7 +2102,7 @@ class AnalysisEngine:
             "current_facet": None,
             "concurrency": DEFAULT_ANALYSIS_CONCURRENCY,
             "active_facets": 0,
-            "queued_facets": len(FACETS),
+            "queued_facets": len(facet_catalog),
             "llm_calls": 0,
             "llm_successes": 0,
             "llm_failures": 0,

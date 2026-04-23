@@ -41,6 +41,35 @@ class DocumentIngestService:
         session.flush()
         return created
 
+    def create_text_document(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        title: str,
+        content: str,
+        source_type: str | None = None,
+        user_note: str | None = None,
+    ) -> DocumentRecord:
+        normalized_title = (title or "").strip() or f"text-{uuid4().hex[:8]}"
+        filename_stem = "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in normalized_title).strip("._")
+        filename = f"{filename_stem or 'stone-text'}.txt"
+        document = self.ingest_bytes(
+            session,
+            project_id=project_id,
+            filename=filename,
+            content=str(content or "").encode("utf-8"),
+            mime_type="text/plain",
+            source_type=source_type or "text",
+        )
+        metadata = dict(document.metadata_json or {})
+        metadata["user_note"] = (user_note or "").strip()
+        metadata["stone_text_entry"] = True
+        document.metadata_json = metadata
+        document.title = normalized_title
+        session.flush()
+        return document
+
     def _store_upload(self, project_id: str, document_id: str, filename: str, content: bytes) -> Path:
         upload_dir = self._config.upload_dir / project_id
         upload_dir.mkdir(parents=True, exist_ok=True)

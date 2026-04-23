@@ -27,9 +27,13 @@
                 {% if telegram_is_parent_workspace %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/relationships">{{ ui.telegram_relationship_title or '群组关系分析' }}</a>
                 {% endif %}
-                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind=cc_skill">{{ ui.open_assets }}</a>
-                <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
-                <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/assets?kind={{ primary_asset_kind }}">{{ ui.open_assets }}</a>
+                {% if project.mode == 'stone' %}
+                    <a class="primary-button" href="/projects/{{ project.id }}/writing">写作台</a>
+                {% else %}
+                    <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
+                    <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+                {% endif %}
                 <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
             </div>
         </div>
@@ -40,7 +44,7 @@
             <div class="panel-header">
                 <div>
                     <p class="eyebrow">{{ ui.section_upload_eyebrow }}</p>
-                    <h2>{{ ui.upload_title }}</h2>
+                    <h2>{% if project.mode == 'stone' %}文章语料{% else %}{{ ui.upload_title }}{% endif %}</h2>
                 </div>
                 <span class="status-chip tone-processing">
                     {{ ui.workspace_mode }} ·
@@ -48,13 +52,21 @@
                         {{ ui.group_mode }}
                     {% elif project.mode == 'telegram' %}
                         {{ ui.telegram_mode }}
+                    {% elif project.mode == 'stone' %}
+                        {{ stone_mode_label }}
                     {% else %}
                         {{ ui.single_mode }}
                     {% endif %}
                 </span>
             </div>
             <div class="panel-body">
-                <p class="section-note">{{ ui.upload_hint }}</p>
+                <p class="section-note">
+                    {% if project.mode == 'stone' %}
+                        使用按钮逐篇录入纯文本文章。每次保存后会自动入库、解析并进入作者级分析链路。
+                    {% else %}
+                        {{ ui.upload_hint }}
+                    {% endif %}
+                </p>
                 {% if project.parent_id %}
                     <div class="empty-panel" data-empty-state>
                         <strong>{{ ui.child_project_hint }}</strong>
@@ -62,6 +74,20 @@
                             <p>{{ ui.child_project_dataset_note }}</p>
                         {% endif %}
                     </div>
+                {% elif project.mode == 'stone' %}
+                    <div class="button-row">
+                        <button type="button" class="primary-button" data-modal-open="add-text-document-modal">添加文章</button>
+                        <button type="button" class="ghost-button" id="refresh-docs-btn">{{ ui.refresh_documents }}</button>
+                    </div>
+                    <p class="helper-text">
+                        {% if writing_guide_status and writing_guide_status.status == 'published' %}
+                            当前已有已发布的 writing_guide，可直接进入写作台。
+                        {% elif writing_guide_status and writing_guide_status.status == 'draft' %}
+                            当前只有未发布的 writing_guide，写作台会回退使用最新 draft。
+                        {% else %}
+                            当前还没有 writing_guide。完成分析后先生成指南，再进入写作台。
+                        {% endif %}
+                    </p>
                 {% else %}
                     <div class="dropzone" id="upload-dropzone">
                         <input
@@ -620,6 +646,39 @@
     </div>
 </div>
 
+<div class="modal-overlay" id="add-text-document-modal" hidden>
+    <div class="modal-dialog modal-dialog--wide">
+        <div class="modal-head">
+            <div>
+                <p class="eyebrow">Stone</p>
+                <h3>添加文章</h3>
+            </div>
+            <button type="button" class="icon-button" data-modal-close>{{ ui.common.close }}</button>
+        </div>
+        <div class="form-stack">
+            <label>
+                <span>标题</span>
+                <input type="text" id="stone-text-title" placeholder="例如：关于夜车的一篇短文">
+            </label>
+            <label>
+                <span>来源类型</span>
+                <input type="text" id="stone-text-source" placeholder="text / diary / essay">
+            </label>
+            <label>
+                <span>备注</span>
+                <textarea id="stone-text-note" rows="3" placeholder="可选，记录来源、时间或使用说明"></textarea>
+            </label>
+            <label>
+                <span>正文</span>
+                <textarea id="stone-text-content" rows="14" placeholder="粘贴一篇完整文章"></textarea>
+            </label>
+        </div>
+        <div class="button-row button-row--end">
+            <button type="button" class="primary-button" id="add-text-document-submit">保存并处理</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal-overlay" id="edit-project-modal" hidden>
     <div class="modal-dialog">
         <div class="modal-head">
@@ -644,6 +703,7 @@
                     <option value="group" {% if project.mode == 'group' %}selected{% endif %}>{{ ui.group_mode }}</option>
                     <option value="single" {% if project.mode == 'single' %}selected{% endif %}>{{ ui.single_mode }}</option>
                     <option value="telegram" {% if project.mode == 'telegram' %}selected{% endif %}>{{ ui.telegram_mode }}</option>
+                    <option value="stone" {% if project.mode == 'stone' %}selected{% endif %}>{{ stone_mode_label }}</option>
                 </select>
             </label>
             <div class="button-row button-row--end">
