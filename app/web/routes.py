@@ -1010,6 +1010,7 @@ def start_preprocess_form(
     project_id: str,
     session: SessionDep,
     weekly_summary_concurrency: Annotated[int | None, Form(ge=1)] = None,
+    concurrency: Annotated[int | None, Form(ge=1)] = None,
 ):
     project = _ensure_project(session, project_id)
     if project.mode == "telegram":
@@ -1024,6 +1025,7 @@ def start_preprocess_form(
             request,
             session,
             project_id,
+            concurrency=concurrency or 1,
         )
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use this preprocess flow.")
@@ -2628,14 +2630,16 @@ def _create_stone_preprocess_run(
     request: Request,
     session: Session,
     project_id: str,
+    concurrency: int = 1,
 ) -> "StonePreprocessRun":
     project = _ensure_project(session, project_id)
-    chat_config = repository.get_chat_config(session, project_id)
+    chat_config = repository.get_service_config(session, "chat_service")
 
     run = repository.create_stone_preprocess_run(
         session,
         project_id=project_id,
         llm_model=chat_config.model if chat_config else None,
+        summary_json={"concurrency": concurrency},
     )
     task = request.app.state.stone_preprocess_worker.process(run.id, project_id)
     asyncio.create_task(task)
@@ -3610,6 +3614,7 @@ def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]
         "error_message": run.error_message,
         "stone_profile_completed": summary.get("stone_profile_completed", 0),
         "stone_profile_total": summary.get("stone_profile_total", 0),
+        "concurrency": summary.get("concurrency", 1),
         "created_at": run.created_at.isoformat() + "Z",
     }
 
