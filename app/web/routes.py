@@ -2641,8 +2641,7 @@ def _create_stone_preprocess_run(
         llm_model=chat_config.model if chat_config else None,
         summary_json={"concurrency": concurrency},
     )
-    task = request.app.state.stone_preprocess_worker.process(run.id, project_id)
-    asyncio.create_task(task)
+    request.app.state.stone_preprocess_worker.process(run.id, project_id)
     return run
 
 
