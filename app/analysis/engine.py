@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import traceback
@@ -546,6 +546,15 @@ class AnalysisEngine:
                 chat_config,
                 llm_payload=llm_payload,
             )
+        if project.mode == "stone":
+            return self._rerun_stone_facet(
+                session,
+                run,
+                project,
+                facet_def,
+                chat_config,
+                llm_payload=llm_payload,
+            )
         self._mark_facet_preparing(session, run, facet_def)
         prepared = self._prepare_facet_execution(
             session,
@@ -602,6 +611,92 @@ class AnalysisEngine:
             event_type="facet",
             message=f"{facet_def.label} 已重新完成。",
             level="success" if result.status == "completed" else "error",
+            payload_json={"facet_key": facet_def.key},
+        )
+        self._persist_progress(session, run.id)
+        return repository.get_analysis_run(session, run.id) or run
+
+    def _rerun_stone_facet(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        facet_def: FacetDefinition,
+        chat_config: ServiceConfig | None,
+        *,
+        llm_payload: dict[str, Any] | None,
+    ) -> AnalysisRun:
+        self._mark_facet_preparing(session, run, facet_def)
+        prepared = self._prepare_stone_facet_execution(session, run, facet_def)
+        retrieval_mode, retrieval_trace, hit_count = prepared
+        self._mark_facet_running(
+            session,
+            run,
+            facet_def,
+            retrieval_mode,
+            retrieval_trace,
+            hit_count,
+            llm_payload=llm_payload,
+        )
+        try:
+            worker_payload = self._execute_stone_facet_agent(
+                session,
+                run,
+                project,
+                facet_def,
+                chat_config,
+                prepared=prepared,
+            )
+            self._ensure_run_active(run.id, run.project_id)
+            retrieval_mode = str(worker_payload.get("retrieval_mode") or retrieval_mode)
+            retrieval_trace = dict(worker_payload.get("retrieval_trace") or retrieval_trace)
+            hit_count = int(worker_payload.get("hit_count") or hit_count)
+            result = self._facet_result_from_payload(facet_def, worker_payload.get("analysis_payload") or {})
+            self._apply_facet_result(
+                session,
+                run,
+                facet_def,
+                retrieval_mode,
+                retrieval_trace,
+                hit_count,
+                result,
+            )
+        except Exception as exc:
+            retrieval_mode = "stone_agent_failed"
+            retrieval_trace = {
+                **dict(retrieval_trace or {}),
+                "mode": retrieval_mode,
+                "error": self._format_exception(exc),
+                "traceback": traceback.format_exc(),
+            }
+            result = self._build_failed_facet_result(
+                facet_def,
+                exc,
+                llm_called=bool(chat_config),
+            )
+            self._apply_facet_result(
+                session,
+                run,
+                facet_def,
+                retrieval_mode,
+                retrieval_trace,
+                0,
+                result,
+            )
+
+        run.finished_at = utcnow()
+        summary = dict(run.summary_json or {})
+        run.status = "completed" if int(summary.get("failed_facets", 0)) == 0 else "partial_failed"
+        summary["finished_at"] = run.finished_at.isoformat()
+        run.summary_json = summary
+        self._recalculate_run_summary(session, run)
+        refreshed_facet = repository.get_facet(session, run.id, facet_def.key)
+        repository.add_analysis_event(
+            session,
+            run.id,
+            event_type="facet",
+            message=f"{facet_def.label} rerun completed.",
+            level="success" if refreshed_facet and refreshed_facet.status == "completed" else "error",
             payload_json={"facet_key": facet_def.key},
         )
         self._persist_progress(session, run.id)
@@ -1087,6 +1182,40 @@ class AnalysisEngine:
         }
         return "stone_agent", retrieval_trace, len(profiled_document_ids)
 
+    def _execute_stone_facet_agent(
+        self,
+        session: Session,
+        run: AnalysisRun,
+        project: Project,
+        facet_def: FacetDefinition,
+        chat_config: ServiceConfig | None,
+        *,
+        prepared: tuple[str, dict[str, Any], int] | None = None,
+    ) -> dict[str, Any]:
+        fallback_mode, fallback_trace, fallback_hit_count = prepared or self._prepare_stone_facet_execution(
+            session,
+            run,
+            facet_def,
+        )
+        agent = StoneAnalysisAgent(
+            session,
+            project,
+            llm_config=chat_config,
+            log_path=self.llm_log_path,
+            trace_callback=lambda event: self._publish_trace(run.id, event),
+        )
+        analysis = agent.analyze_facet(
+            facet_def,
+            target_role=(run.summary_json or {}).get("target_role"),
+            analysis_context=(run.summary_json or {}).get("analysis_context"),
+        )
+        return {
+            "analysis_payload": dict(analysis.payload or {}),
+            "retrieval_mode": str((analysis.retrieval_trace or {}).get("mode") or fallback_mode),
+            "retrieval_trace": dict(analysis.retrieval_trace or fallback_trace),
+            "hit_count": int(analysis.hit_count or fallback_hit_count),
+        }
+
     def _run_stone_facet_worker(
         self,
         run_id: str,
@@ -1106,24 +1235,13 @@ class AnalysisEngine:
                 raise ValueError("Stone analysis run context is unavailable.")
             self._ensure_run_active(run.id, run.project_id)
             chat_config = ServiceConfig(**llm_payload) if llm_payload else None
-            agent = StoneAnalysisAgent(
+            return self._execute_stone_facet_agent(
                 session,
+                run,
                 project,
-                llm_config=chat_config,
-                log_path=self.llm_log_path,
-                trace_callback=lambda event: self._publish_trace(run.id, event),
-            )
-            analysis = agent.analyze_facet(
                 facet_def,
-                target_role=(run.summary_json or {}).get("target_role"),
-                analysis_context=(run.summary_json or {}).get("analysis_context"),
+                chat_config,
             )
-            return {
-                "analysis_payload": dict(analysis.payload or {}),
-                "retrieval_mode": str((analysis.retrieval_trace or {}).get("mode") or "stone_agent"),
-                "retrieval_trace": dict(analysis.retrieval_trace or {}),
-                "hit_count": int(analysis.hit_count or 0),
-            }
 
     def _run_parallel_processes(
         self,
@@ -1293,6 +1411,9 @@ class AnalysisEngine:
         embedding_config: ServiceConfig | None,
         llm_payload: dict[str, Any] | None,
     ) -> tuple[list[RetrievedChunk], str, dict[str, Any]] | None:
+        project = repository.get_project(session, run.project_id)
+        if project and project.mode == "stone":
+            raise ValueError("Stone facets must use StoneAnalysisAgent direct article mode.")
         try:
             hits, retrieval_mode, retrieval_trace = self._retrieve_hits(
                 session,

@@ -75,6 +75,105 @@ def _ensure_service_config(app, service_name: str, *, model: str) -> None:
         )
 
 
+def _install_stone_agent_mocks(monkeypatch) -> None:
+    def fake_chat_completion_result(self, messages, **kwargs):
+        del self, messages, kwargs
+        payload = {
+            "content_summary": "stone profile summary",
+            "content_type": "essay",
+            "length_label": "short",
+            "emotion_label": "restrained",
+            "selected_passages": [],
+        }
+        return ChatCompletionResult(
+            content=json.dumps(payload, ensure_ascii=False),
+            model="demo-model",
+            usage={"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            request_url="https://example.com/v1/responses",
+            request_payload={"messages": []},
+        )
+
+    def fake_tool_round(self, messages, tools, **kwargs):
+        del self, tools, kwargs
+        has_tool_result = any(message.get("role") == "tool" for message in messages)
+        if not has_tool_result:
+            return ToolRoundResult(
+                content="",
+                model="demo-model",
+                usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+                tool_calls=[
+                    LLMToolCall(
+                        id="call-page-1",
+                        name="list_article_profiles_page",
+                        arguments_json=json.dumps({"offset": 0, "limit": 4}, ensure_ascii=False),
+                        arguments={"offset": 0, "limit": 4},
+                    )
+                ],
+                provider_response_id="resp-page-1",
+            )
+
+        tool_message = next(message for message in reversed(messages) if message.get("role") == "tool")
+        page_payload = json.loads(tool_message["content"])
+        first_profile = page_payload["profiles"][0]
+        return ToolRoundResult(
+            content=json.dumps(
+                {
+                    "summary": "stone facet summary",
+                    "bullets": [
+                        "profile paging returned enough direct article evidence",
+                        "the facet stayed inside stone direct-article mode",
+                    ],
+                    "confidence": 0.81,
+                    "fewshots": [
+                        {
+                            "document_id": first_profile["document_id"],
+                            "document_title": first_profile["title"],
+                            "situation": "profile paging",
+                            "expression": "direct article evidence",
+                            "quote": first_profile["content_summary"],
+                            "reason": "supports the current stone facet",
+                        }
+                    ],
+                    "conflicts": [],
+                    "notes": "started from corpus overview and paged article profiles before summarizing",
+                },
+                ensure_ascii=False,
+            ),
+            model="demo-model",
+            usage={"prompt_tokens": 18, "completion_tokens": 8, "total_tokens": 26},
+            tool_calls=[],
+            provider_response_id="resp-page-2",
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+
+def _create_preprocessed_stone_project(client, app, monkeypatch, *, name: str) -> str:
+    create_response = client.post("/api/projects", json={"name": name, "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    create_doc = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "Stone mode should analyze direct article evidence without touching chunk retrieval or embeddings.",
+            "source_type": "essay",
+        },
+    )
+    assert create_doc.status_code == 200
+    document_id = create_doc.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_stone_agent_mocks(monkeypatch)
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_response.json()["id"])
+    assert preprocess_payload["status"] == "completed"
+    return project_id
+
+
 def _count_document_chunks(app, document_id: str) -> int:
     with app.state.db.session() as session:
         return int(
@@ -492,6 +591,92 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
     assert stone_profile["content_type"] == "自嘲式抱怨"
     assert stone_profile["emotion_label"] == "闷着难受"
     assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"]
+
+
+def test_stone_analysis_skips_embeddings_when_embedding_service_is_configured(client, app, monkeypatch):
+    project_id = _create_preprocessed_stone_project(client, app, monkeypatch, name="Stone No Embedding")
+    _ensure_service_config(app, "embedding_service", model="demo-embedding")
+
+    def fail_embeddings(self, inputs, *, model=None, timeout=None):
+        del self, inputs, model, timeout
+        raise AssertionError("Stone analysis should not call embeddings.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "embeddings", fail_embeddings)
+
+    run_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"analysis_context": "stone direct article mode", "target_role": "Author"},
+    )
+    assert run_response.status_code == 200
+    analysis_payload = _wait_for_analysis(client, project_id, run_response.json()["id"])
+
+    assert analysis_payload["status"] == "completed"
+    assert all(facet["findings"]["retrieval_trace"]["mode"] == "stone_agent" for facet in analysis_payload["facets"])
+    assert all(facet["findings"]["retrieval_trace"]["embedding_attempted"] is False for facet in analysis_payload["facets"])
+    assert all(facet["findings"]["retrieval_trace"]["embedding_api_called"] is False for facet in analysis_payload["facets"])
+    assert all(
+        facet["findings"]["retrieval_trace"]["embedding_skip_reason"] == "stone_direct_article_mode"
+        for facet in analysis_payload["facets"]
+    )
+
+
+def test_stone_facet_rerun_uses_stone_agent_even_when_embeddings_fail(client, app, monkeypatch):
+    project_id = _create_preprocessed_stone_project(client, app, monkeypatch, name="Stone Rerun No Embedding")
+    _ensure_service_config(app, "embedding_service", model="demo-embedding")
+
+    def fail_embeddings(self, inputs, *, model=None, timeout=None):
+        del self, inputs, model, timeout
+        raise AssertionError("Stone rerun should not call embeddings.")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "embeddings", fail_embeddings)
+
+    run_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"analysis_context": "stone rerun baseline", "target_role": "Author"},
+    )
+    assert run_response.status_code == 200
+    baseline_payload = _wait_for_analysis(client, project_id, run_response.json()["id"])
+    assert baseline_payload["status"] == "completed"
+
+    facet_key = get_facets_for_mode("stone")[0].key
+    rerun_response = client.post(f"/api/projects/{project_id}/analysis/{facet_key}/rerun")
+    assert rerun_response.status_code == 200
+    analysis_payload = _wait_for_analysis(client, project_id, rerun_response.json()["id"])
+
+    facet_payload = next(item for item in analysis_payload["facets"] if item["facet_key"] == facet_key)
+    retrieval_trace = facet_payload["findings"]["retrieval_trace"]
+    assert analysis_payload["status"] == "completed"
+    assert facet_payload["status"] == "completed"
+    assert retrieval_trace["mode"] == "stone_agent"
+    assert retrieval_trace["embedding_attempted"] is False
+    assert retrieval_trace["embedding_api_called"] is False
+    assert retrieval_trace["tool_calls"]
+    assert any(item["tool"] == "list_article_profiles_page" for item in retrieval_trace["tool_calls"])
+
+
+def test_stone_facet_rerun_does_not_use_generic_retrieval_service(client, app, monkeypatch):
+    create_response = client.post("/api/projects", json={"name": "Stone Rerun Direct Agent", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_stone_agent_mocks(monkeypatch)
+
+    def fail_search(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("Stone rerun should not use RetrievalService.search.")
+
+    monkeypatch.setattr("app.retrieval.service.RetrievalService.search", fail_search)
+
+    facet_key = get_facets_for_mode("stone")[0].key
+    rerun_response = client.post(f"/api/projects/{project_id}/analysis/{facet_key}/rerun")
+    assert rerun_response.status_code == 200
+    analysis_payload = _wait_for_analysis(client, project_id, rerun_response.json()["id"])
+
+    facet_payload = next(item for item in analysis_payload["facets"] if item["facet_key"] == facet_key)
+    assert analysis_payload["status"] == "completed"
+    assert facet_payload["status"] == "completed"
+    assert facet_payload["findings"]["retrieval_trace"]["mode"] == "stone_agent"
 
 
 def test_normalize_stone_profile_supports_raw_summary_sentinel_and_short_text_full_passage():
