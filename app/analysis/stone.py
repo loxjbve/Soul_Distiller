@@ -23,8 +23,6 @@ STONE_REVIEW_DIMENSIONS = (
     "originality_and_overlap",
 )
 
-STONE_CONTENT_TYPES = ("诉苦", "抽象", "玩笑", "分享", "其他")
-STONE_EMOTION_LABELS = ("消极", "积极", "不确定", "无情绪表达")
 STONE_LENGTH_LABELS = ("长文", "短文")
 
 _STOPWORDS = {
@@ -60,16 +58,22 @@ _STOPWORDS = {
     "with",
 }
 
-_POSITIVE_MARKERS = ("开心", "高兴", "喜欢", "温柔", "轻松", "希望", "庆幸", "幸福", "舒服", "满意")
-_NEGATIVE_MARKERS = ("难受", "痛苦", "失望", "崩溃", "烦", "累", "压抑", "糟糕", "委屈", "无语", "绝望")
-_JOKE_MARKERS = ("哈哈", "笑死", "玩笑", "调侃", "梗", "离谱", "乐子", "搞笑", "抽象到好笑")
-_SHARE_MARKERS = ("分享", "推荐", "记录", "今天", "刚刚", "看到", "经历", "遇到", "想说", "转给")
-_ABSTRACT_MARKERS = ("抽象", "意义", "世界", "时间", "关系", "人性", "逻辑", "命运", "现实", "存在")
-_COMPLAINT_MARKERS = ("为什么", "受不了", "真的烦", "太累", "委屈", "气死", "糟心", "崩溃", "无奈", "压抑")
-
-
-def normalize_stone_profile(payload: dict[str, Any] | None) -> dict[str, Any]:
+def normalize_stone_profile(
+    payload: dict[str, Any] | None,
+    *,
+    article_text: str | None = None,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     raw = dict(payload or {})
+    source_text = normalize_whitespace(
+        str(
+            article_text
+            or raw.get("article_text")
+            or raw.get("source_text")
+            or raw.get("raw_text")
+            or ""
+        )
+    )
     content_summary = normalize_whitespace(
         str(
             raw.get("content_summary")
@@ -79,17 +83,14 @@ def normalize_stone_profile(payload: dict[str, Any] | None) -> dict[str, Any]:
             or ""
         )
     )
-    content_type = str(raw.get("content_type") or raw.get("nature") or "").strip()
-    if content_type not in STONE_CONTENT_TYPES:
-        content_type = "其他"
+    length_label = _resolve_length_label(raw.get("length_label") or raw.get("length"), source_text)
+    if length_label == "短文":
+        content_summary = source_text or content_summary or str(fallback_title or "").strip()
+    elif not content_summary:
+        content_summary = _build_content_summary(source_text, fallback_title)
 
-    length_label = str(raw.get("length_label") or raw.get("length") or "").strip()
-    if length_label not in STONE_LENGTH_LABELS:
-        length_label = "短文"
-
-    emotion_label = str(raw.get("emotion_label") or raw.get("emotion") or raw.get("tone") or "").strip()
-    if emotion_label not in STONE_EMOTION_LABELS:
-        emotion_label = "不确定"
+    content_type = normalize_whitespace(str(raw.get("content_type") or raw.get("nature") or ""))
+    emotion_label = normalize_whitespace(str(raw.get("emotion_label") or raw.get("emotion") or raw.get("tone") or ""))
 
     selected_passages_source = (
         raw.get("selected_passages")
@@ -105,6 +106,8 @@ def normalize_stone_profile(payload: dict[str, Any] | None) -> dict[str, Any]:
             for item in selected_passages_source
             if normalize_whitespace(str(item or ""))
         ][:3]
+    if not selected_passages and source_text:
+        selected_passages = _pick_selected_passages(source_text, length_label=length_label)
 
     return {
         "content_summary": content_summary,
@@ -167,12 +170,10 @@ def build_stone_profile(document: DocumentRecord) -> dict[str, Any]:
     text = normalize_whitespace(document.clean_text or document.raw_text or "")
     return normalize_stone_profile(
         {
-            "content_summary": _build_content_summary(text, document.title or document.filename),
-            "content_type": _detect_content_type(text),
-            "length_label": "长文" if estimate_word_count(text) > 300 else "短文",
-            "emotion_label": _detect_emotion_label(text),
             "selected_passages": _pick_selected_passages(text),
-        }
+        },
+        article_text=text,
+        fallback_title=document.title or document.filename,
     )
 
 
@@ -230,23 +231,26 @@ def build_stone_profile_messages(
         {
             "role": "system",
             "content": (
-                "You are analyzing one article for a compact per-article Stone preprocess profile.\n"
-                "Treat the article as one whole piece and return only JSON.\n"
-                "Use exactly these keys: content_summary, content_type, length_label, emotion_label, selected_passages.\n"
-                "content_summary: one concise summary, ideally 1-2 sentences.\n"
-                "content_type: choose the single best label from 诉苦, 抽象, 玩笑, 分享, 其他.\n"
-                "length_label: 长文 when the article exceeds about 300 Chinese characters/words, otherwise 短文.\n"
-                "emotion_label: choose one of 消极, 积极, 不确定, 无情绪表达.\n"
-                "selected_passages: 2-3 original sentences or natural paragraphs copied from the article that best express the main point."
+                "你正在为 Stone 模式生成单篇文章的极简预分析画像。\n"
+                "把整篇文章当成一个整体处理，只返回 JSON，不要输出任何额外解释。\n"
+                "必须且只能使用这 5 个 key：content_summary, content_type, length_label, emotion_label, selected_passages。\n"
+                "规则如下：\n"
+                "1. content_summary：如果文章是短文（300 字/词及以内），不要总结，直接保留原文；如果是长文，再写一句非常简明的内容总结。\n"
+                "2. content_type：用很短的自然语言概括文章性质，例如“诉苦”“抽象”“玩笑”“分享”等，但这只是示例，你可以使用更准确的词语。\n"
+                "3. length_label：超过 300 字/词必须写“长文”，否则写“短文”。\n"
+                "4. emotion_label：用很短的自然语言概括情绪状态，例如“消极”“积极”“不确定”“无情绪表达”等，但这只是示例，你可以使用更准确的词语。\n"
+                "5. selected_passages：长文返回最能表达主旨的 2-3 句原文或自然段；短文可以直接返回原文作为 1 条段落。\n"
+                "所有 selected_passages 都必须直接摘自原文，不能改写。"
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Project: {project_name}\n"
-                f"Article title: {document_title or '(untitled)'}\n\n"
-                "Please create a very compact Stone article profile using only the five required fields.\n\n"
-                f"Article:\n{article_text}"
+                f"项目名：{project_name}\n"
+                f"文章标题：{document_title or '(untitled)'}\n\n"
+                "请基于下面这篇文章，生成极简 Stone 文章画像。\n"
+                "再次强调：如果是短文，content_summary 必须直接保留原文，不要总结。\n\n"
+                f"文章原文：\n{article_text}"
             ),
         },
     ]
@@ -266,27 +270,27 @@ def build_stone_facet_messages(
         {
             "role": "system",
             "content": (
-                "You are an author-style analysis agent working on one facet only.\n"
-                "Your default evidence source is the per-article Stone profile list already provided.\n"
-                "Each profile is intentionally compact and includes only summary, nature, length, emotion, and selected passages.\n"
-                "You may call tools when you need to inspect original article text or verify a pattern.\n"
-                "Keep the analysis scoped strictly to the requested facet.\n"
-                "Return only JSON with keys: summary, bullets, confidence, fewshots, conflicts, notes.\n"
-                "fewshots must be an array of objects containing document_id, document_title, situation, expression, quote, reason.\n"
-                "conflicts must be an array of objects containing title and detail."
+                "你是一个作者风格分析 agent，这一轮只分析一个 facet。\n"
+                "你的默认证据来源，是已经提供的逐篇 Stone 文章画像列表。\n"
+                "每篇画像都很短，只包含内容、性质、长短、情绪和精选段落。\n"
+                "只有在画像信息不足、彼此冲突，或你需要核对风格判断时，才去读取原文。\n"
+                "分析范围必须严格限制在当前 facet 内。\n"
+                "只返回 JSON，使用这些 key：summary, bullets, confidence, fewshots, conflicts, notes。\n"
+                "fewshots 必须是对象数组，每项都包含：document_id, document_title, situation, expression, quote, reason。\n"
+                "conflicts 必须是对象数组，每项都包含：title, detail。"
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Project: {project_name}\n"
-                f"Facet: {facet_label} ({facet_key})\n"
-                f"Facet purpose: {facet_purpose}\n"
-                f"Target role: {target_role or project_name}\n"
-                f"Analysis context: {analysis_context or ''}\n\n"
-                "Start from the article profiles below.\n"
-                "Only read original article text when the profile is insufficient, conflicting, or you need to verify a style claim.\n\n"
-                f"Article profiles:\n{profile_dump}"
+                f"项目名：{project_name}\n"
+                f"当前 facet：{facet_label} ({facet_key})\n"
+                f"facet 目标：{facet_purpose}\n"
+                f"目标角色：{target_role or project_name}\n"
+                f"分析上下文：{analysis_context or ''}\n\n"
+                "请先从下面这些文章画像出发。\n"
+                "只有当画像不够用、彼此冲突，或者你需要核对某个风格判断时，才去读取原文。\n\n"
+                f"文章画像列表：\n{profile_dump}"
             ),
         },
     ]
@@ -320,35 +324,22 @@ def _build_content_summary(text: str, fallback_title: str | None) -> str:
     return _truncate_text("；".join(sentences[:2]), 96)
 
 
-def _detect_content_type(text: str) -> str:
-    lowered = str(text or "").lower()
-    scores = {
-        "诉苦": sum(lowered.count(token) for token in _COMPLAINT_MARKERS + _NEGATIVE_MARKERS),
-        "抽象": sum(lowered.count(token) for token in _ABSTRACT_MARKERS),
-        "玩笑": sum(lowered.count(token) for token in _JOKE_MARKERS),
-        "分享": sum(lowered.count(token) for token in _SHARE_MARKERS),
-    }
-    winner = max(scores.items(), key=lambda item: item[1])
-    if winner[1] <= 0:
-        return "其他"
-    return winner[0]
+def _resolve_length_label(value: Any, article_text: str | None) -> str:
+    if article_text:
+        return "长文" if estimate_word_count(article_text) > 300 else "短文"
+    normalized = normalize_whitespace(str(value or ""))
+    if normalized in STONE_LENGTH_LABELS:
+        return normalized
+    return "短文"
 
 
-def _detect_emotion_label(text: str) -> str:
-    lowered = str(text or "").lower()
-    positive = sum(lowered.count(token) for token in _POSITIVE_MARKERS)
-    negative = sum(lowered.count(token) for token in _NEGATIVE_MARKERS)
-    if positive == 0 and negative == 0:
-        return "无情绪表达"
-    if abs(positive - negative) <= 1 and positive + negative >= 2:
-        return "不确定"
-    return "积极" if positive > negative else "消极"
-
-
-def _pick_selected_passages(text: str) -> list[str]:
+def _pick_selected_passages(text: str, *, length_label: str | None = None) -> list[str]:
     normalized = normalize_whitespace(text)
     if not normalized:
         return []
+    resolved_length = length_label or _resolve_length_label(None, normalized)
+    if resolved_length == "短文":
+        return [normalized]
 
     paragraphs = [
         normalize_whitespace(item)

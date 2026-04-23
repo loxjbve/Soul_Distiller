@@ -230,11 +230,13 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
         "emotion_label",
         "selected_passages",
     }
-    assert stone_profile["content_summary"]
-    assert stone_profile["content_type"] in {"诉苦", "抽象", "玩笑", "分享", "其他"}
-    assert stone_profile["length_label"] in {"长文", "短文"}
-    assert stone_profile["emotion_label"] in {"消极", "积极", "不确定", "无情绪表达"}
-    assert 1 <= len(stone_profile["selected_passages"]) <= 3
+    assert stone_profile["content_summary"] == "夜里写字的人，总会把白天没说完的话重新从沉默里拽出来，再慢慢摆回桌面。"
+    assert stone_profile["content_type"] == ""
+    assert stone_profile["length_label"] == "短文"
+    assert stone_profile["emotion_label"] == ""
+    assert stone_profile["selected_passages"] == [
+        "夜里写字的人，总会把白天没说完的话重新从沉默里拽出来，再慢慢摆回桌面。"
+    ]
 
 
 def test_stone_preprocess_form_route_redirects_and_completes(client):
@@ -382,10 +384,10 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
 
     def fake_chat_completion_result(self, messages, **kwargs):
         payload = {
-            "content_summary": "作者习惯先压低声调，再把情绪往句子深处回收。",
-            "content_type": "抽象",
+            "content_summary": "这是一句被 LLM 错误总结后的内容，最终不应该保留下来。",
+            "content_type": "自嘲式抱怨",
             "length_label": "短文",
-            "emotion_label": "消极",
+            "emotion_label": "闷着难受",
             "selected_passages": ["作者总是先压低声调，再把情绪推回句子深处。"],
         }
         return ChatCompletionResult(
@@ -453,7 +455,12 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
     assert preprocess_payload["prompt_tokens"] == 12
     assert preprocess_payload["completion_tokens"] == 8
     assert preprocess_payload["total_tokens"] == 20
-    assert preprocess_payload["documents"][0]["stone_profile"]["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
+    assert (
+        preprocess_payload["documents"][0]["stone_profile"]["content_summary"]
+        == "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
+    )
+    assert preprocess_payload["documents"][0]["stone_profile"]["content_type"] == "自嘲式抱怨"
+    assert preprocess_payload["documents"][0]["stone_profile"]["emotion_label"] == "闷着难受"
 
     run_response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -479,7 +486,9 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
         "emotion_label",
         "selected_passages",
     }
-    assert stone_profile["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
+    assert stone_profile["content_summary"] == "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
+    assert stone_profile["content_type"] == "自嘲式抱怨"
+    assert stone_profile["emotion_label"] == "闷着难受"
     assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处。"]
 
 

@@ -314,7 +314,11 @@ class StonePreprocessWorker:
             )
             parsed = parse_json_response(response.content, fallback=True)
             return StoneProfileResult(
-                profile=normalize_stone_profile(parsed),
+                profile=normalize_stone_profile(
+                    parsed,
+                    article_text=text,
+                    fallback_title=document.title or document.filename,
+                ),
                 usage=dict(response.usage or {}),
             )
         except Exception as e:
