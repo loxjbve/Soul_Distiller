@@ -22,7 +22,11 @@ class StonePreprocessWorker:
         self.stream_hub = stream_hub
         self.llm_log_path = llm_log_path
 
-    async def process(self, run_id: str, project_id: str) -> None:
+    def process(self, run_id: str, project_id: str) -> None:
+        loop = asyncio.get_running_loop()
+        loop.create_task(self._process(run_id, project_id))
+
+    async def _process(self, run_id: str, project_id: str) -> None:
         try:
             await self._run(run_id, project_id)
         except asyncio.CancelledError:
