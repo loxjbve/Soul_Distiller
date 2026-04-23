@@ -1,66 +1,181 @@
-# Persona Distiller (人物画像蒸馏器)
+<div align="center">
+  <img src="docs/logo.png" alt="Persona Distiller Logo" width="200"/>
 
-本地单用户 Web 应用，用于把与某个人有关的文档集合蒸馏成可审核、可发布、可试聊验证的模仿 Skill 资产。
+# Persona Distiller
 
-## 🌟 核心特性 (Features)
+[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![ChromaDB](https://img.shields.io/badge/ChromaDB-1.5.7+-orange.svg)](https://docs.trychroma.com/)
+[![FAISS](https://img.shields.io/badge/FAISS-CPU-lightgrey.svg)](https://github.com/facebookresearch/faiss)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-- **双模式工作区 (Dual-Mode Workspace)**
-  - 支持**单人模式**和**群组模式 (Parent-Child Architecture)**。
-  - 群组模式下，可基于共享的已索引数据集（无需重复克隆数据），快速创建多个独立用户的分析画像与 Skill 资产。
-- **高精度 Skill 资产生成**
-  - 针对性强化 Prompt 工程：在生成人物 Skill 时，**极度强调**对「角色语气语调」、「常用词汇与口癖」以及「长期/短期记忆和经历」的深度挖掘和还原。
-  - 生成结果支持草稿预览、审核编辑与最终版本发布。
-- **全方位多维分析 (10-Facet AI Analysis)**
-  - 自动并发执行 10 个维度的深度剖析（包含人物背景、性格特征等）。
-  - **支持一键导出 ZIP**，解压后可直接获取各个维度的独立 JSON 数据文件。
-- **多格式文档解析与追踪**
-  - 支持上传并解析 `html / json / docx / pdf / txt / md / log` 等格式的文档。
-  - 纯文本清洗、分段分块（Chunking），并支持完全可追溯的 Chunk 映射机制。
-- **强大的混合检索架构**
-  - 兼容 Embeddings 向量检索与 BM25 风格的降级词法检索（Lexical Retrieval）。
-  - 分析与生成过程中，提供详细的真实依据（证据引用）与内容冲突汇总。
-- **LLM 生态友好**
-  - 采用 OpenAI 兼容的 LLM 配置接口，支持底层大模型的自动发现与无缝切换。
-- **试聊验证闭环**
-  - 提供即时试聊页面（Chat UI），精准追踪回答命中的原始文档块（Chunks）。
+*A local web app for distilling document collections into persona imitation skills.* <br>
+*一个将文档集合提炼为人物角色模仿技能的本地 Web 应用。*
 
-## 🚀 快速运行 (Getting Started)
+[English](#english) | [中文](#中文)
 
-### 1. 环境准备
+</div>
 
-建议使用 Python 3.10+ 环境，并创建独立的虚拟环境：
+---
 
-```bash
-# 创建虚拟环境
-python -m venv .venv
+<h2 id="english">🇬🇧 English</h2>
 
-# 激活环境 (Windows)
-.venv\Scripts\activate
+## Table of Contents
+- [Overview](#overview)
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Usage](#usage)
 
-# 激活环境 (macOS/Linux)
-source .venv/bin/activate
-```
+## Overview
+**Persona Distiller** is a robust, locally-hosted web application designed to ingest and analyze diverse document collections, distilling them into highly accurate persona imitation skills. It leverages advanced vector databases and machine learning techniques to capture the nuanced tone, knowledge, and style of any provided text source.
 
-### 2. 安装依赖
+## Features
+- **Document Processing**: Supports multiple formats including PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`).
+- **High-Performance Vector Search**: Utilizes `ChromaDB` and `FAISS` for lightning-fast, highly accurate similarity search and embedding storage.
+- **Modern Web Interface**: Built with a fast, async backend using `FastAPI` and server-side rendered templates via `Jinja2`.
+- **Local & Secure**: Runs entirely locally on your machine, ensuring data privacy and security.
+- **Scalable Storage**: Employs `SQLAlchemy` for relational data management.
 
-```bash
-python -m pip install -e .[dev]
-```
+## Tech Stack
+- **Language**: Python 3.12+
+- **Backend Framework**: FastAPI, Uvicorn
+- **Vector Databases**: ChromaDB, FAISS (CPU)
+- **Database ORM**: SQLAlchemy
+- **Document Parsers**: BeautifulSoup4, PyPDF, python-docx
+- **Templating**: Jinja2
 
-This install now includes the vector-store runtime dependencies (`faiss-cpu` and `chromadb`) automatically.
+## Architecture
+The system is built on a modular architecture:
+1. **Ingestion Layer**: Parses uploaded documents (PDF, DOCX, HTML) and extracts text.
+2. **Processing Layer**: Chunks text and generates vector embeddings.
+3. **Storage Layer**: 
+   - *Relational DB (SQLAlchemy)*: Manages metadata, sessions, and persona configurations.
+   - *Vector DBs (ChromaDB / FAISS)*: Stores embeddings for semantic retrieval.
+4. **API & Web Layer (FastAPI & Jinja2)**: Provides RESTful endpoints and a user-friendly web interface for interaction.
 
-### 3. 启动服务
+## Installation
 
-```bash
-uvicorn app.main:app --reload
-```
+### Prerequisites
+- Python >= 3.12
+- pip (Python package manager)
 
-服务启动后，打开浏览器访问默认地址：[http://127.0.0.1:8000](http://127.0.0.1:8000)
+### Steps
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/yourusername/persona-distiller.git
+   cd persona-distiller
+   ```
 
-## 📁 核心架构 (Architecture Overview)
+2. **Create a virtual environment (optional but recommended):**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+   ```
 
-- **`app/models.py` & `app/db.py`**: SQLite 关系型数据库模型定义，包含 Project 的父子层级映射机制。
-- **`app/web/routes.py` & `app/templates/`**: FastAPI 路由控制器与 HTML/Jinja2 视图模板，提供完整的 Web UI。
-- **`app/analysis/`**: 包含指导 LLM 生成高精度资产的 Prompts 工程核心、10 维度分析引擎及 ZIP 流式导出功能。
-- **`app/retrieval/`**: 检索引擎模块，包含基于 BM25 的词法检索器和向量 Embeddings 检索器。
-- **`app/storage/`**: 资源存储库，负责数据库的增删改查，并实现了父子级项目的 Chunk 查询路由隔离。
+3. **Install dependencies:**
+   ```bash
+   pip install -e .
+   ```
+
+4. **Install development dependencies (if testing/developing):**
+   ```bash
+   pip install -e ".[dev]"
+   playwright install
+   ```
+
+## Usage
+1. **Start the server:**
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+   *(Note: Ensure you point uvicorn to your actual FastAPI app instance path)*
+
+2. **Access the Web UI:**
+   Open your browser and navigate to `http://localhost:8000`
+
+3. **API Documentation:**
+   Swagger UI is available at `http://localhost:8000/docs`
+
+---
+
+<h2 id="中文">🇨🇳 中文</h2>
+
+## 目录
+- [项目概览](#项目概览)
+- [核心特性](#核心特性)
+- [技术栈](#技术栈)
+- [系统架构](#系统架构)
+- [安装指南](#安装指南)
+- [使用说明](#使用说明)
+
+## 项目概览
+**Persona Distiller** 是一个强大的本地 Web 应用程序，旨在摄取和分析多样化的文档集合，并将其提炼为高精度的人物角色模仿技能。它利用先进的向量数据库和机器学习技术，精准捕捉任何文本源的语调、知识和风格细节。
+
+## 核心特性
+- **多格式文档处理**：支持解析 PDF (`pypdf`)、DOCX (`python-docx`) 和 HTML (`beautifulsoup4`)。
+- **高性能向量检索**：采用 `ChromaDB` 和 `FAISS` 实现极速、高准确度的相似性搜索和嵌入（Embedding）存储。
+- **现代化 Web 接口**：基于 `FastAPI` 构建快速的异步后端，并使用 `Jinja2` 进行服务端模板渲染。
+- **本地化与安全**：完全在本地机器上运行，确保数据的绝对隐私与安全。
+- **可扩展存储**：使用 `SQLAlchemy` 进行关系型数据管理。
+
+## 技术栈
+- **编程语言**：Python 3.12+
+- **后端框架**：FastAPI, Uvicorn
+- **向量数据库**：ChromaDB, FAISS (CPU)
+- **数据库 ORM**：SQLAlchemy
+- **文档解析器**：BeautifulSoup4, PyPDF, python-docx
+- **模板引擎**：Jinja2
+
+## 系统架构
+系统采用模块化架构设计：
+1. **摄取层 (Ingestion)**：解析上传的文档（PDF、DOCX、HTML）并提取纯文本。
+2. **处理层 (Processing)**：对文本进行分块处理，并生成向量嵌入。
+3. **存储层 (Storage)**：
+   - *关系型数据库 (SQLAlchemy)*：管理元数据、会话和角色配置信息。
+   - *向量数据库 (ChromaDB / FAISS)*：存储嵌入向量以供语义检索。
+4. **API & Web 层 (FastAPI & Jinja2)**：提供 RESTful 接口和用户友好的 Web 交互界面。
+
+## 安装指南
+
+### 环境要求
+- Python >= 3.12
+- pip (Python 包管理器)
+
+### 安装步骤
+1. **克隆仓库：**
+   ```bash
+   git clone https://github.com/yourusername/persona-distiller.git
+   cd persona-distiller
+   ```
+
+2. **创建虚拟环境（可选但推荐）：**
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # Windows 用户请使用 `venv\Scripts\activate`
+   ```
+
+3. **安装项目依赖：**
+   ```bash
+   pip install -e .
+   ```
+
+4. **安装开发依赖（用于测试/开发）：**
+   ```bash
+   pip install -e ".[dev]"
+   playwright install
+   ```
+
+## 使用说明
+1. **启动服务：**
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+   *（注意：请确保 uvicorn 指向实际的 FastAPI app 实例路径）*
+
+2. **访问 Web 界面：**
+   打开浏览器并访问 `http://localhost:8000`
+
+3. **API 文档：**
+   可以在 `http://localhost:8000/docs` 查看自动生成的 Swagger UI 接口文档。
