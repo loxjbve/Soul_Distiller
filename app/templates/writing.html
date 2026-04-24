@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block body_class %}theme-ambient--preprocess{% endblock %}
+{% block body_class %}theme-ambient--writing{% endblock %}
 {% block page_class %}page-writing{% endblock %}
 {% block title %}{{ channel_title }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260423f">
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424a">
 {% endblock %}
 
 {% block content %}
@@ -31,7 +31,7 @@
                 <p class="eyebrow">{{ writing_ui.channel_live }}</p>
                 <h1 data-channel-title>{{ channel_title }}</h1>
                 <div class="writing-channel-header__chips">
-                    <span class="writing-pill writing-pill--baseline" data-baseline-pill>{{ writing_ui.baseline_missing_analysis }}</span>
+                    <span class="writing-pill writing-pill--baseline" data-baseline-pill>{{ writing_ui.baseline_missing_preprocess }}</span>
                     <span class="writing-pill" data-session-title>{{ writing_ui.untitled_session }}</span>
                 </div>
             </div>

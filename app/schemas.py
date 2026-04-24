@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-ASSET_KINDS: tuple[str, ...] = ("skill", "cc_skill", "profile_report", "writing_guide")
+ASSET_KINDS: tuple[str, ...] = (
+    "skill",
+    "cc_skill",
+    "profile_report",
+    "writing_guide",
+    "stone_author_model_v2",
+    "stone_prototype_index_v2",
+)
 DEFAULT_ANALYSIS_CONCURRENCY = 4
 MIN_ANALYSIS_CONCURRENCY = 1
 MAX_ANALYSIS_CONCURRENCY = 20

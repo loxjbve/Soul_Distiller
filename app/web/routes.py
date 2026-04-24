@@ -19,7 +19,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.stone import normalize_stone_profile
+from app.analysis.stone_v2 import (
+    build_short_text_clusters,
+    build_stone_author_model_v2,
+    build_stone_prototype_index_v2,
+    normalize_stone_profile_v2,
+    render_stone_author_model_markdown,
+    render_stone_prototype_index_markdown,
+)
 from app.analysis.facets import FACETS, get_facets_for_mode
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import (
@@ -75,6 +82,8 @@ ASSET_KIND_OPTIONS = (
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
+    {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
+    {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
 )
 
 
@@ -89,6 +98,8 @@ ASSET_KIND_OPTIONS = (
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
+    {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
+    {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
 )
 
 ANALYSIS_EVENT_LIMIT = 48
@@ -248,10 +259,10 @@ def _writing_workspace_ui_legacy_unused(locale: str) -> dict[str, Any]:
         "extra_requirements_label": "Extra Requirements" if locale == "en-US" else "附加要求",
         "send": "Start Writing" if locale == "en-US" else "开始写作",
         "sending": "Writing..." if locale == "en-US" else "写作中...",
-        "guide_label": "Guide" if locale == "en-US" else "当前指南",
-        "guide_missing": "No writing guide yet." if locale == "en-US" else "还没有 writing_guide。",
-        "guide_unpublished": "Using latest draft guide." if locale == "en-US" else "当前使用未发布指南。",
-        "guide_published": "Using latest published guide." if locale == "en-US" else "当前使用已发布指南。",
+        "guide_label": "Baseline" if locale == "en-US" else "当前基线",
+        "guide_missing": "No Stone v2 baseline yet." if locale == "en-US" else "还没有 Stone v2 基线。",
+        "guide_unpublished": "Using latest Stone v2 draft baseline." if locale == "en-US" else "当前使用未发布 Stone v2 基线。",
+        "guide_published": "Using latest Stone v2 published baseline." if locale == "en-US" else "当前使用已发布 Stone v2 基线。",
         "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作任务。",
         "working": "Working..." if locale == "en-US" else "执行中...",
         "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
@@ -265,13 +276,14 @@ def _writing_workspace_ui_legacy_unused(locale: str) -> dict[str, Any]:
 
 
 def _primary_asset_kind_for_mode(mode: str | None) -> str:
-    return "writing_guide" if str(mode or "").strip().lower() == "stone" else "cc_skill"
+    return "stone_author_model_v2" if str(mode or "").strip().lower() == "stone" else "cc_skill"
 
 
 def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
     if str(project.mode or "").strip().lower() == "stone":
         return (
-            {"value": "writing_guide", "label": "Writing Guide"},
+            {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
+            {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
         )
     return (
         {"value": "cc_skill", "label": "Claude Code Skill"},
@@ -282,8 +294,8 @@ def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
 def _resolve_asset_kind_for_project(project, requested_kind: str | None) -> str:
     default_kind = _primary_asset_kind_for_mode(project.mode)
     asset_kind = _normalize_asset_kind(requested_kind or default_kind)
-    if str(project.mode or "").strip().lower() == "stone" and asset_kind != "writing_guide":
-        return "writing_guide"
+    if str(project.mode or "").strip().lower() == "stone" and asset_kind not in {"stone_author_model_v2", "stone_prototype_index_v2"}:
+        return "stone_author_model_v2"
     return asset_kind
 
 
@@ -324,9 +336,9 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
         "title": "Writing Workspace" if locale == "en-US" else "写作台",
         "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
         "hero_note": (
-            "Draft directly from the latest multi-facet analysis, let eight reviewers critique round one, then revise once into the final piece."
+            "Draft from Stone v2 profiles, prototype retrieval, and holistic critics instead of the old multi-facet writing bridge."
             if locale == "en-US"
-            else "直接读取最新多维分析结论，先出首稿，再让 8 个维度逐条点评，最后修订成终稿。"
+            else "直接读取 Stone v2 画像、原型检索和整体 critic，不再走旧的多维分析写作桥接。"
         ),
         "new_session": "New Session" if locale == "en-US" else "新建会话",
         "rename_session": "Rename" if locale == "en-US" else "重命名",
@@ -353,11 +365,11 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
         "send": "Send" if locale == "en-US" else "发送",
         "sending": "Writing..." if locale == "en-US" else "写作中...",
         "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
-        "baseline_ready": "Using latest Stone analysis baseline." if locale == "en-US" else "当前使用最新 Stone 分析基线。",
+        "baseline_ready": "Using latest Stone v2 baseline." if locale == "en-US" else "当前使用最新 Stone v2 基线。",
         "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "请先完成 Stone 预分析。",
-        "baseline_missing_analysis": "Run Stone analysis first." if locale == "en-US" else "请先完成 Stone 多维分析。",
-        "baseline_running_analysis": "Stone analysis is still running." if locale == "en-US" else "Stone 分析仍在运行中。",
-        "baseline_incomplete_analysis": "Latest Stone analysis is incomplete." if locale == "en-US" else "最新 Stone 分析还不完整。",
+        "baseline_running_preprocess": "Stone preprocess is still running." if locale == "en-US" else "Stone 预分析仍在运行中。",
+        "baseline_missing_profiles": "No Stone v2 article profiles yet." if locale == "en-US" else "当前还没有 Stone v2 逐篇画像。",
+        "baseline_incomplete_baseline": "Stone v2 baseline assets are incomplete." if locale == "en-US" else "Stone v2 基线资产还不完整。",
         "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
         "working": "Working..." if locale == "en-US" else "处理中...",
         "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
@@ -372,34 +384,46 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
 
 
 def _resolve_stone_writing_status(session: Session, project_id: str) -> dict[str, Any]:
+    author_model_available = bool(
+        repository.get_latest_asset_version(session, project_id, asset_kind="stone_author_model_v2")
+        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v2")
+    )
+    prototype_index_available = bool(
+        repository.get_latest_asset_version(session, project_id, asset_kind="stone_prototype_index_v2")
+        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_prototype_index_v2")
+    )
+    profile_count = sum(
+        1
+        for document in repository.list_project_documents(session, project_id)
+        if isinstance(dict(document.metadata_json or {}).get("stone_profile_v2"), dict)
+    )
+    active_preprocess = repository.get_active_stone_preprocess_run(session, project_id)
     preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
     if not preprocess_run:
-        return {"status": "missing_preprocess", "run_id": None, "label": None, "missing_facets": []}
-
-    run = repository.get_latest_analysis_run(session, project_id, load_facets=True, load_events=False)
-    if not run:
-        return {"status": "missing_analysis", "run_id": None, "label": None, "missing_facets": []}
-    if run.status in {"queued", "running"}:
-        return {"status": "running_analysis", "run_id": run.id, "label": "running", "missing_facets": []}
-
-    ready_facets = {
-        facet.facet_key
-        for facet in (run.facets or [])
-        if facet.status == "completed" and isinstance(facet.findings_json, dict)
-    }
-    missing_facets = [facet.label for facet in get_facets_for_mode("stone") if facet.key not in ready_facets]
-    if missing_facets:
         return {
-            "status": "incomplete_analysis",
-            "run_id": run.id,
-            "label": f"run {run.id[:8]}",
-            "missing_facets": missing_facets,
+            "status": "running_preprocess" if active_preprocess else "missing_preprocess",
+            "run_id": active_preprocess.id if active_preprocess else None,
+            "label": None,
+            "profile_count": profile_count,
+            "corpus_ready": profile_count > 0,
+            "author_model_ready": author_model_available,
+            "prototype_index_ready": prototype_index_available,
         }
+
+    if profile_count <= 0:
+        status = "missing_profiles"
+    elif not author_model_available or not prototype_index_available:
+        status = "incomplete_baseline"
+    else:
+        status = "ready"
     return {
-        "status": "ready",
-        "run_id": run.id,
-        "label": f"run {run.id[:8]}",
-        "missing_facets": [],
+        "status": status,
+        "run_id": preprocess_run.id,
+        "label": f"preprocess {preprocess_run.id[:8]}",
+        "profile_count": profile_count,
+        "corpus_ready": profile_count > 0,
+        "author_model_ready": author_model_available,
+        "prototype_index_ready": prototype_index_available,
     }
 
 
@@ -3818,6 +3842,53 @@ def _serialize_writing_generic_turn(turn) -> dict[str, Any]:
 
 def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
+    topic_translation = trace.get("topic_translation") if isinstance(trace.get("topic_translation"), dict) else None
+    if topic_translation:
+        lines: list[str] = []
+        for title, key in (
+            ("Scene", "scene"),
+            ("Imagery", "imagery"),
+            ("Felt Cost", "felt_cost"),
+            ("Relationship Pressure", "relationship_pressure"),
+            ("Stance", "stance"),
+            ("Emotional Arc", "emotional_arc"),
+            ("Not To Write", "not_to_write"),
+        ):
+            values = [str(item).strip() for item in topic_translation.get(key) or [] if str(item).strip()]
+            if not values:
+                continue
+            lines.append(f"{title}:")
+            lines.extend(f"- {item}" for item in values[:6])
+        timeline.append(
+            {
+                "actor_id": "writer-topic_translation",
+                "actor_name": "写作 Agent",
+                "actor_role": "writer",
+                "message_kind": "topic_translation",
+                "body": "\n".join(lines).strip(),
+                "detail": topic_translation,
+            }
+        )
+    outline = trace.get("outline") if isinstance(trace.get("outline"), dict) else None
+    if outline:
+        outline_lines = [
+            f"目标字数：{outline.get('target_word_count')}",
+            f"段落数：{outline.get('paragraph_count')}",
+        ]
+        for item in outline.get("paragraphs") or []:
+            outline_lines.append(
+                f"P{item.get('index')}: {item.get('function')} | {item.get('emotional_position')} | {', '.join(item.get('anchor_ids') or [])}"
+            )
+        timeline.append(
+            {
+                "actor_id": "writer-outline",
+                "actor_name": "写作 Agent",
+                "actor_role": "writer",
+                "message_kind": "outline",
+                "body": "\n".join(outline_lines).strip(),
+                "detail": outline,
+            }
+        )
     draft = str(trace.get("draft") or "").strip()
     if draft:
         timeline.append(
@@ -3841,6 +3912,18 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
                 "message_kind": "review",
                 "body": _render_writing_review_message(review),
                 "detail": review,
+            }
+        )
+    review_plan = trace.get("review_plan") if isinstance(trace.get("review_plan"), dict) else None
+    if review_plan:
+        timeline.append(
+            {
+                "actor_id": "writer-review_synthesis",
+                "actor_name": "写作 Agent",
+                "actor_role": "writer",
+                "message_kind": "review_synthesis",
+                "body": str(review_plan.get("summary") or "").strip(),
+                "detail": review_plan,
             }
         )
     final_text = str(trace.get("final_text") or "").strip()
@@ -3895,9 +3978,14 @@ def _render_writing_review_message(review: dict[str, Any]) -> str:
         f"结论：{'通过' if review.get('pass') else '需要修改'}",
         f"分数：{int(round(float(review.get('score') or 0.0) * 100))}/100",
     ]
-    strengths = [str(item).strip() for item in review.get("strengths") or [] if str(item).strip()]
-    issues = [str(item).strip() for item in review.get("issues") or [] if str(item).strip()]
-    instructions = [str(item).strip() for item in review.get("revision_instructions") or [] if str(item).strip()]
+    anchor_ids = [str(item).strip() for item in review.get("anchor_ids") or [] if str(item).strip()]
+    strengths = [str(item).strip() for item in review.get("must_keep_spans") or review.get("strengths") or [] if str(item).strip()]
+    issues = [item for item in review.get("violations") or [] if isinstance(item, dict)]
+    instructions = [item for item in review.get("revision_instructions") or [] if isinstance(item, dict)]
+    if anchor_ids:
+        parts.append("")
+        parts.append("Anchor：")
+        parts.extend(f"- {item}" for item in anchor_ids[:4])
     if strengths:
         parts.append("")
         parts.append("保留：")
@@ -3905,11 +3993,17 @@ def _render_writing_review_message(review: dict[str, Any]) -> str:
     if issues:
         parts.append("")
         parts.append("问题：")
-        parts.extend(f"- {item}" for item in issues[:4])
+        parts.extend(
+            f"- [{str(item.get('anchor_id') or '').strip()}] {str(item.get('issue') or item.get('instruction') or item.get('span') or '').strip()}"
+            for item in issues[:4]
+        )
     if instructions:
         parts.append("")
         parts.append("修改建议：")
-        parts.extend(f"- {item}" for item in instructions[:5])
+        parts.extend(
+            f"- [{str(item.get('anchor_id') or '').strip()}] {str(item.get('instruction') or item.get('issue') or '').strip()}"
+            for item in instructions[:5]
+        )
     return "\n".join(parts).strip()
 
 
@@ -3935,18 +4029,30 @@ def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]
     }
 
 
-def _serialize_stone_profile(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+def _serialize_stone_profile_v2(profile: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(profile, dict):
         return None
-    normalized = normalize_stone_profile(profile)
-    if not normalized["content_summary"] and not normalized["selected_passages"]:
+    normalized = normalize_stone_profile_v2(profile)
+    if not normalized.get("content_kernel") and not (normalized.get("anchor_spans") or {}).get("signature"):
         return None
     return {
-        "content_summary": normalized["content_summary"],
-        "content_type": normalized["content_type"],
-        "length_label": normalized["length_label"],
-        "emotion_label": normalized["emotion_label"],
-        "selected_passages": list(normalized.get("selected_passages") or [])[:3],
+        "length_band": normalized["length_band"],
+        "content_kernel": normalized["content_kernel"],
+        "surface_form": normalized["surface_form"],
+        "voice_mask": dict(normalized.get("voice_mask") or {}),
+        "lexicon_markers": list(normalized.get("lexicon_markers") or [])[:8],
+        "syntax_signature": dict(normalized.get("syntax_signature") or {}),
+        "segment_map": list(normalized.get("segment_map") or [])[:4],
+        "opening_move": normalized["opening_move"],
+        "turning_move": normalized["turning_move"],
+        "closure_move": normalized["closure_move"],
+        "motif_tags": list(normalized.get("motif_tags") or [])[:4],
+        "stance_vector": dict(normalized.get("stance_vector") or {}),
+        "emotion_curve": list(normalized.get("emotion_curve") or [])[:3],
+        "rhetorical_devices": list(normalized.get("rhetorical_devices") or [])[:6],
+        "prototype_family": normalized["prototype_family"],
+        "anchor_spans": dict(normalized.get("anchor_spans") or {}),
+        "anti_patterns": list(normalized.get("anti_patterns") or [])[:6],
     }
 
 
@@ -3975,7 +4081,7 @@ def _serialize_stone_preprocess_documents(
     serialized: list[dict[str, Any]] = []
     for index, document in enumerate(documents, start=1):
         metadata = dict(document.metadata_json or {})
-        stone_profile = _serialize_stone_profile(metadata.get("stone_profile"))
+        stone_profile_v2 = _serialize_stone_profile_v2(metadata.get("stone_profile_v2"))
         serialized.append(
             {
                 "id": document.id,
@@ -3983,13 +4089,13 @@ def _serialize_stone_preprocess_documents(
                 "filename": document.filename,
                 "document_index": index,
                 "ingest_status": document.ingest_status,
-                "lamp_status": _stone_document_status(index, run, stone_profile is not None),
-                "has_profile": stone_profile is not None,
-                "stone_profile": stone_profile,
+                "lamp_status": _stone_document_status(index, run, stone_profile_v2 is not None),
+                "has_profile": stone_profile_v2 is not None,
+                "stone_profile_v2": stone_profile_v2,
                 "updated_at": document.updated_at.isoformat() if getattr(document, "updated_at", None) else None,
                 "profile_preview": (
-                    (stone_profile or {}).get("content_summary")
-                    or ((stone_profile or {}).get("selected_passages") or [None])[0]
+                    (stone_profile_v2 or {}).get("content_kernel")
+                    or (((stone_profile_v2 or {}).get("anchor_spans") or {}).get("opening"))
                     or ""
                 ),
             }
@@ -4454,6 +4560,10 @@ def _normalize_asset_kind(value: str | None) -> str:
 def _asset_label(asset_kind: str) -> str:
     if asset_kind == "writing_guide":
         return "Writing Guide"
+    if asset_kind == "stone_author_model_v2":
+        return "Stone Author Model V2"
+    if asset_kind == "stone_prototype_index_v2":
+        return "Stone Prototype Index V2"
     if asset_kind == "profile_report":
         return "用户画像报告"
     return "Claude Code Skill"
@@ -4533,6 +4643,72 @@ def _resolve_run(session: Session, project_id: str, run_id: str | None) -> Analy
 
 def _generate_asset_draft(request: Request, session: Session, project_id: str, *, asset_kind: str):
     project = _ensure_project(session, project_id)
+    if project.mode == "stone" and asset_kind in {"stone_author_model_v2", "stone_prototype_index_v2"}:
+        preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
+        if not preprocess_run:
+            raise HTTPException(status_code=400, detail="请先完成 Stone 预处理，再生成 v2 基线资产。")
+        documents = [
+            {
+                "document_id": document.id,
+                "title": document.title or document.filename,
+                "text": str(document.clean_text or document.raw_text or ""),
+                "clean_text": document.clean_text,
+                "raw_text": document.raw_text,
+            }
+            for document in repository.list_project_documents(session, project_id)
+            if document.ingest_status == "ready"
+        ]
+        profiles = []
+        for document in repository.list_project_documents(session, project_id):
+            metadata = dict(document.metadata_json or {})
+            profile = metadata.get("stone_profile_v2")
+            if not isinstance(profile, dict):
+                continue
+            normalized = normalize_stone_profile_v2(
+                profile,
+                article_text=str(document.clean_text or document.raw_text or ""),
+                fallback_title=document.title or document.filename,
+            )
+            normalized["document_id"] = document.id
+            normalized["title"] = document.title or document.filename
+            profiles.append(normalized)
+        if not profiles:
+            raise HTTPException(status_code=400, detail="当前没有可用的 stone_profile_v2。")
+        clusters = build_short_text_clusters(profiles)
+        if asset_kind == "stone_author_model_v2":
+            payload = build_stone_author_model_v2(
+                project_name=project.name,
+                profiles=profiles,
+                short_text_clusters=clusters,
+            )
+            markdown = render_stone_author_model_markdown(payload)
+        else:
+            payload = build_stone_prototype_index_v2(
+                project_name=project.name,
+                profiles=profiles,
+                documents=documents,
+            )
+            markdown = render_stone_prototype_index_markdown(payload)
+        draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind=asset_kind,
+            markdown_text=markdown,
+            json_payload=payload,
+            prompt_text=json.dumps(payload, ensure_ascii=False, indent=2),
+            notes="Stone v2 baseline draft regenerated from preprocess output.",
+        )
+        _persist_asset_files(
+            request,
+            project_id,
+            draft.asset_kind,
+            f"draft_{draft.id}",
+            draft.markdown_text,
+            draft.json_payload,
+            draft.system_prompt,
+        )
+        return draft
     run = repository.get_latest_analysis_run(session, project_id)
     if not run:
         raise HTTPException(status_code=400, detail="请先完成一次分析，再生成资产。")
@@ -4705,6 +4881,10 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
 def _asset_label(asset_kind: str) -> str:
     if asset_kind == "writing_guide":
         return "Writing Guide"
+    if asset_kind == "stone_author_model_v2":
+        return "Stone Author Model V2"
+    if asset_kind == "stone_prototype_index_v2":
+        return "Stone Prototype Index V2"
     if asset_kind == "profile_report":
         return "用户画像报告"
     return "Claude Code Skill"

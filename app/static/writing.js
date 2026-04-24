@@ -177,8 +177,15 @@ if (shell) {
 
         source.addEventListener("status", (event) => {
             const payload = safeParseJson(event.data, {});
-            if (payload.stage === "analysis_loaded") {
+            if (payload.stage === "generation_packet") {
                 state.baseline.status = "ready";
+                if (payload.baseline_components) {
+                    state.baseline.corpus_ready = Boolean(payload.baseline_components.corpus_ready);
+                    state.baseline.profile_count = Number(payload.baseline_components.profile_count || 0);
+                    state.baseline.author_model_ready = Boolean(payload.baseline_components.author_model_ready);
+                    state.baseline.prototype_index_ready = Boolean(payload.baseline_components.prototype_index_ready);
+                    state.baseline.source_anchor_count = Number(payload.baseline_components.source_anchor_count || 0);
+                }
                 renderBaseline();
             }
         });
@@ -248,10 +255,28 @@ if (shell) {
             elements.baselinePill.textContent = label;
         }
         if (elements.baselineNote) {
-            const missing = Array.isArray(state.baseline?.missing_facets) && state.baseline.missing_facets.length
-                ? ` ${state.baseline.missing_facets.join(" / ")}`
-                : "";
-            elements.baselineNote.textContent = `${ui.hero_note || ""}${missing}`.trim() || label;
+            const components = [];
+            const profileCount = Number(state.baseline?.profile_count || 0);
+            const sourceAnchorCount = Number(state.baseline?.source_anchor_count || 0);
+            if (state.baseline?.corpus_ready) {
+                components.push(`profiles ${profileCount || ""}`.trim());
+            }
+            if (state.baseline?.author_model_ready) {
+                components.push("author_model");
+            }
+            if (state.baseline?.prototype_index_ready) {
+                components.push("prototype_index");
+            }
+            const stats = [];
+            if (profileCount > 0) {
+                stats.push(`${profileCount} profiles`);
+            }
+            if (sourceAnchorCount > 0) {
+                stats.push(`${sourceAnchorCount} anchors`);
+            }
+            const componentLabel = components.length ? ` ${components.join(" + ")}` : "";
+            const statsLabel = stats.length ? ` (${stats.join(" / ")})` : "";
+            elements.baselineNote.textContent = `${ui.hero_note || ""}${componentLabel}${statsLabel}`.trim() || label;
         }
     }
 
@@ -436,18 +461,21 @@ if (shell) {
 
     function resolveBaselineLabel(baseline) {
         if (baseline.status === "ready") {
-            return ui.baseline_ready || "当前使用最新 Stone 分析基线。";
+            return ui.baseline_ready || "当前使用最新 Stone v2 基线。";
         }
         if (baseline.status === "missing_preprocess") {
             return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
         }
-        if (baseline.status === "running_analysis") {
-            return ui.baseline_running_analysis || "Stone 分析仍在运行中。";
+        if (baseline.status === "running_preprocess") {
+            return ui.baseline_running_preprocess || "Stone 预分析仍在运行中。";
         }
-        if (baseline.status === "incomplete_analysis") {
-            return ui.baseline_incomplete_analysis || "最新 Stone 分析还不完整。";
+        if (baseline.status === "missing_profiles") {
+            return ui.baseline_missing_profiles || "当前还没有 Stone v2 逐篇画像。";
         }
-        return ui.baseline_missing_analysis || "请先完成 Stone 多维分析。";
+        if (baseline.status === "incomplete_baseline") {
+            return ui.baseline_incomplete_baseline || "Stone v2 基线资产还不完整。";
+        }
+        return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
     }
 
     function resolveActorName(turn) {

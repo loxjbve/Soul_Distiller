@@ -15,6 +15,7 @@ if (bootstrap?.project_id) {
     const ui = bootstrap.ui_strings || {};
     const projectId = bootstrap.project_id;
     const assetKind = bootstrap.asset_kind || "cc_skill";
+    const isStoneAsset = assetKind === "stone_author_model_v2" || assetKind === "stone_prototype_index_v2";
     const splitDocumentKeys = assetKind === "cc_skill" ? ["skill", "personality", "memories", "analysis"] : [];
 
     const elements = {
@@ -41,6 +42,7 @@ if (bootstrap?.project_id) {
         saveButton: document.getElementById("asset-save-btn"),
         publishButton: document.getElementById("asset-publish-btn"),
         singleMarkdown: document.getElementById("asset-single-markdown"),
+        stonePreview: document.getElementById("stone-asset-preview"),
     };
 
     const editorTabs = Array.from(document.querySelectorAll("[data-editor-tab-trigger]"));
@@ -54,7 +56,7 @@ if (bootstrap?.project_id) {
         locked: false,
         chunkCount: 0,
         charCount: 0,
-        activePage: splitDocumentKeys[0] || (elements.singleMarkdown ? "markdown" : ""),
+        activePage: isStoneAsset ? "preview" : (splitDocumentKeys[0] || (elements.singleMarkdown ? "markdown" : "")),
         activeStreamDocument: "",
         documents: splitDocumentKeys.reduce((accumulator, key) => {
             accumulator[key] = { markdown: String(documentEditors[key]?.value || "") };
@@ -68,6 +70,7 @@ if (bootstrap?.project_id) {
     renderDocumentStatus();
     syncMarkdownArtifacts();
     refreshDraftState();
+    renderStoneAssetPreview();
 
     elements.form?.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -200,6 +203,7 @@ if (bootstrap?.project_id) {
         state.charCount += chunk.length;
         updateCounts();
         syncMarkdownArtifacts();
+        renderStoneAssetPreview();
         renderDocumentStatus();
     }
 
@@ -229,6 +233,7 @@ if (bootstrap?.project_id) {
         if (elements.draftPlaceholder) {
             elements.draftPlaceholder.hidden = true;
         }
+        renderStoneAssetPreview();
         renderDocumentStatus();
     }
 
@@ -274,6 +279,7 @@ if (bootstrap?.project_id) {
         } else {
             elements.singleMarkdown?.addEventListener("input", () => syncMarkdownArtifacts());
         }
+        elements.jsonPayload?.addEventListener("input", () => renderStoneAssetPreview());
     }
 
     function syncMarkdownArtifacts() {
@@ -340,6 +346,7 @@ if (bootstrap?.project_id) {
                 elements.jsonPayload.value = JSON.stringify(draft.json_payload || {}, null, 2);
             }
         }
+        renderStoneAssetPreview();
         if (splitDocumentKeys.length) {
             activateEditorPage(state.activeStreamDocument || state.activePage || splitDocumentKeys[0] || "skill");
         } else {

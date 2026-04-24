@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -10,11 +11,18 @@ from sqlalchemy import func, select
 
 from app.analysis.facets import get_facets_for_mode
 from app.analysis.stone import normalize_stone_profile
+from app.analysis.stone_v2 import (
+    build_short_text_clusters,
+    build_stone_author_model_v2,
+    build_stone_prototype_index_v2,
+    normalize_stone_profile_v2,
+)
 from app.analysis.stone_agent import StoneAnalysisAgent
 from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import ChatCompletionResult, LLMToolCall, ToolRoundResult
 from app.storage import repository
+from app.writing.service import _normalize_review_plan_payload, _review_plan_has_valid_anchors
 
 
 def _wait_for_ready(client, project_id: str, document_id: str, *, timeout_s: float = 12.0) -> dict:
@@ -77,13 +85,45 @@ def _ensure_service_config(app, service_name: str, *, model: str) -> None:
 
 def _install_stone_agent_mocks(monkeypatch) -> None:
     def fake_chat_completion_result(self, messages, **kwargs):
-        del self, messages, kwargs
+        del self, kwargs
+        article_text = str(messages[-1].get("content") or "")
+        article_text = article_text.split("文章原文：\n", 1)[-1].strip()
         payload = {
-            "content_summary": "stone profile summary",
-            "content_type": "essay",
-            "length_label": "short",
-            "emotion_label": "restrained",
-            "selected_passages": [],
+            "length_band": "short",
+            "content_kernel": "stone profile summary",
+            "surface_form": "scene_vignette",
+            "voice_mask": {
+                "person": "first",
+                "address_target": "self",
+                "distance": "回收",
+                "self_position": "none",
+            },
+            "lexicon_markers": ["代价", "沉默"],
+            "syntax_signature": {
+                "cadence": "顿挫",
+                "sentence_shape": "混合",
+                "punctuation_habits": ["，", "。"],
+            },
+            "segment_map": ["opening", "residue"],
+            "opening_move": "从场景或物件切入",
+            "turning_move": "none",
+            "closure_move": "把情绪收进意象残响",
+            "motif_tags": ["夜", "桌面"],
+            "stance_vector": {
+                "target": "关系处境",
+                "judgment": "悬置",
+                "value_lens": "代价",
+            },
+            "emotion_curve": ["压低", "压着不说", "回落"],
+            "rhetorical_devices": ["留白"],
+            "prototype_family": "scene_vignette|从场景或物件切入|把情绪收进意象残响|回收|悬置|夜|桌面",
+            "anchor_spans": {
+                "opening": article_text,
+                "pivot": "",
+                "closing": article_text,
+                "signature": [article_text],
+            },
+            "anti_patterns": ["不要写成解释性分析"],
         }
         return ChatCompletionResult(
             content=json.dumps(payload, ensure_ascii=False),
@@ -149,6 +189,216 @@ def _install_stone_agent_mocks(monkeypatch) -> None:
     monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
 
 
+def _extract_anchor_ids(text: str) -> list[str]:
+    anchor_ids: list[str] = []
+    for match in re.findall(r'"id"\s*:\s*"([^"]+)"', text):
+        if match not in anchor_ids:
+            anchor_ids.append(match)
+    return anchor_ids
+
+
+def _extract_topic(text: str) -> str:
+    match = re.search(r"Topic:\s*(.+)", text)
+    return match.group(1).strip() if match else "Topic"
+
+
+def _extract_target_word_count(text: str) -> int:
+    match = re.search(r"Target Word Count:\s*(\d+)", text)
+    return int(match.group(1)) if match else 600
+
+
+def _build_mock_article(topic: str, target_word_count: int) -> str:
+    paragraphs = [
+        f"{topic}先把声调压低，像夜里站台边那点风，不响，却一直贴着人。灯光照在玻璃和铁轨上，所有话都像被磨薄了一层，谁也不肯先把真正难受的部分拿出来。",
+        "人站在原地的时候，最怕的不是冷，也不是等，而是已经知道要失去什么，却还得装作眼前这一切只是普通的耽搁。越是这样，动作越轻，连抬头和回身都像是在替自己留退路。",
+        "等车迟迟不来，沉默就开始有了重量。关系里的亏欠、判断里的迟疑、那些白天压过去的话，一件件从衣角、指节、眼神里露出来。没有人解释，可代价已经摆在那儿。",
+        "到最后也不用把话说尽。只要看见有人把手从口袋里拿出来，又重新放回去，就知道这一夜没有白等。真正留下来的，不是结论，而是那一点收不干净的余温。",
+    ]
+    text = "\n\n".join(paragraphs)
+    while len(text) < max(220, int(target_word_count * 0.7)):
+        text = f"{text}\n\n站台还是安静，风从边上擦过去，像把没有说完的话再往心里按了一次。"
+    return text
+
+
+def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_stage: str | None = None) -> None:
+    def fake_chat_completion_result(self, messages, **kwargs):
+        del self, kwargs
+        system_text = str(messages[0].get("content") or "")
+        user_text = str(messages[1].get("content") or "") if len(messages) > 1 else ""
+        topic = _extract_topic(user_text)
+        target_word_count = _extract_target_word_count(user_text)
+        anchor_ids = _extract_anchor_ids(user_text)
+        primary_anchor = anchor_ids[0] if anchor_ids else "profile:seed:passage:1"
+
+        stage = "unknown"
+        if "topic adapter" in system_text:
+            stage = "topic_adapter"
+            payload = {
+                "author_angle": "先写动作和空气，再把代价慢慢显出来",
+                "entry_scene": "雨夜站台，灯下玻璃",
+                "felt_cost": "关系迟迟不说破的代价",
+                "judgment_target": "关系处境",
+                "value_lens": "代价",
+                "desired_judgment": "悬置",
+                "desired_distance": "回收",
+                "motif_path": ["站台", "玻璃", "灯影"],
+                "forbidden_drift": ["不要写成诊断报告", "不要写成写作说明"],
+                "prototype_family_hints": ["scene_vignette"],
+                "anchor_ids": anchor_ids[:4] or [primary_anchor],
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+        elif "blueprint composer" in system_text:
+            stage = "blueprint"
+            payload = {
+                "paragraph_count": 3 if target_word_count <= 800 else 4,
+                "shape_note": "起笔压低，中段显影，结尾回收。",
+                "entry_move": "先让场景和动作落地",
+                "development_move": "沿着代价和关系压力推进",
+                "turning_device": "用反差拧转句意",
+                "closure_residue": "不要把话说尽",
+                "keep_terms": ["代价", "沉默", "回身"],
+                "motif_obligations": ["站台", "玻璃"],
+                "steps": ["起笔落地", "沿压力推进", "在结尾收回去"],
+                "do_not_do": ["不要补段凑字", "不要解释分析过程"],
+                "anchor_ids": anchor_ids[:4] or [primary_anchor],
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+        elif "prototype-grounded drafter" in system_text:
+            stage = "draft"
+            content = _build_mock_article(topic, target_word_count)
+        elif "critic" in system_text and "Stone v2" in system_text:
+            stage = "critic"
+            keep_span = f"{topic}先把声调压低"
+            payload = {
+                "pass": True,
+                "score": 0.87,
+                "verdict": "approve",
+                "anchor_ids": anchor_ids[:2] or [primary_anchor],
+                "matched_signals": ["起笔克制", "结尾没有说尽"],
+                "must_keep_spans": [keep_span],
+                "line_edits": [],
+                "redraft_reason": "",
+                "risks": [],
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+        elif "whole-article redrafter" in system_text:
+            stage = "redraft"
+            content = _build_mock_article(topic, target_word_count)
+        elif "line editor" in system_text:
+            stage = "line_edit"
+            content = _build_mock_article(topic, target_word_count)
+        elif "structured writing guide from author analysis" in system_text:
+            stage = "writing_guide"
+            payload = {
+                "author_snapshot": "克制、低声、把代价放回具体场景里。",
+                "voice_dna": {
+                    "tone_profile": "压低声调，少解释",
+                    "signature_phrases": ["代价", "沉默", "回身"],
+                    "distance_rules": ["先写动作，再露情绪"],
+                },
+                "sentence_mechanics": {
+                    "cadence": ["句子偏短", "转折收着来"],
+                    "closure_style": "收口留余味",
+                },
+                "structure_patterns": ["起笔压低", "中段显影", "结尾回收"],
+                "motif_theme_bank": ["站台", "灯影", "玻璃"],
+                "worldview_and_stance": ["不替任何人开脱", "让代价自己显形"],
+                "emotional_tendencies": ["压低", "显影", "回落"],
+                "nonclinical_psychodynamics": ["防卫", "迟疑"],
+                "do_and_dont": {
+                    "do": ["先写动作", "少解释"],
+                    "dont": ["不要诊断", "不要提示词腔"],
+                },
+                "topic_translation_rules": ["把题目翻进关系压力和具体意象"],
+                "word_count_strategies": {"medium": "四段推进"},
+                "revision_rubric": ["先查句法，再查解释味"],
+                "fewshot_anchors": [{"title": "seed", "quote": "夜里写字的人，总会回到代价、关系和沉默。"}],
+                "external_slots": {
+                    "clinical_profile": {"mental_state": "克制"},
+                    "vulnerability_map": {"pain_points": ["失去"], "fragility_triggers": ["沉默"], "compensatory_moves": ["回收"]},
+                },
+            }
+            content = json.dumps(payload, ensure_ascii=False)
+        else:
+            raise AssertionError(f"unexpected writing stage: {system_text}")
+
+        if capture is not None:
+            capture.setdefault("calls", []).append({"stage": stage, "system": system_text, "user": user_text})
+        if fail_stage and stage == fail_stage:
+            raise RuntimeError(f"{stage} failed")
+
+        return ChatCompletionResult(
+            content=content,
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+            request_url="https://example.com/v1/responses",
+            request_payload={"messages": messages},
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
+
+
+def test_stone_writing_review_plan_repairs_unanchored_synthesis():
+    reviews = [
+        {
+            "dimension_label": "声线",
+            "pass": False,
+            "anchor_ids": ["profile:seed:passage:1"],
+            "violations": [
+                {
+                    "anchor_id": "profile:seed:passage:1",
+                    "span": "突然喊出口号",
+                    "issue": "声调过高",
+                }
+            ],
+            "must_keep_spans": ["雨夜站台先把声调压低"],
+            "must_rewrite_spans": [
+                {
+                    "anchor_id": "profile:seed:passage:1",
+                    "span": "突然喊出口号",
+                    "instruction": "压回低声叙述",
+                }
+            ],
+            "revision_instructions": [
+                {
+                    "anchor_id": "profile:seed:passage:1",
+                    "instruction": "删掉口号式判断",
+                }
+            ],
+        }
+    ]
+    payload = {
+        "summary": "模型给出了方向，但漏掉 anchor。",
+        "must_keep_spans": ["雨夜站台先把声调压低"],
+        "must_rewrite_spans": [{"span": "突然喊出口号", "instruction": "改得更低"}],
+        "revision_instructions": ["删掉口号式判断"],
+        "risk_watch": [],
+    }
+
+    plan = _normalize_review_plan_payload(payload, reviews)
+
+    assert _review_plan_has_valid_anchors(plan, reviews)
+    assert plan["must_rewrite_spans"][0]["anchor_id"] == "profile:seed:passage:1"
+    assert plan["revision_instructions"][0]["anchor_id"] == "profile:seed:passage:1"
+
+
+def test_stone_writing_review_plan_accepts_source_anchor_alias():
+    reviews = [{"anchor_ids": ["profile:seed:passage:2"]}]
+    payload = {
+        "revision_instructions": [
+            {
+                "source_anchor_id": "profile:seed:passage:2",
+                "instruction": "保留这个动作，不要解释。",
+            }
+        ]
+    }
+
+    plan = _normalize_review_plan_payload(payload, reviews)
+
+    assert _review_plan_has_valid_anchors(plan, reviews)
+    assert plan["revision_instructions"][0]["anchor_id"] == "profile:seed:passage:2"
+
+
 def _create_preprocessed_stone_project(client, app, monkeypatch, *, name: str) -> str:
     create_response = client.post("/api/projects", json={"name": name, "mode": "stone"})
     assert create_response.status_code == 200
@@ -190,9 +440,50 @@ def _seed_stone_analysis(app, project_id: str) -> None:
     upload_dir.mkdir(parents=True, exist_ok=True)
     storage_path = upload_dir / "seed-stone.txt"
     storage_path.write_text("夜里写字的人，总会回到代价、关系和沉默。", encoding="utf-8")
-
+    raw_text = "夜里写字的人，总会回到代价、关系和沉默。"
+    profile_v2 = normalize_stone_profile_v2(
+        {
+            "length_band": "micro",
+            "content_kernel": "夜里写字的人总会回到代价、关系和沉默这些母题。",
+            "surface_form": "aphorism",
+            "voice_mask": {
+                "person": "third",
+                "address_target": "none",
+                "distance": "回收",
+                "self_position": "none",
+            },
+            "lexicon_markers": ["代价", "关系", "沉默"],
+            "syntax_signature": {
+                "cadence": "顿挫",
+                "sentence_shape": "短句群",
+                "punctuation_habits": ["，", "。"],
+            },
+            "segment_map": ["opening", "residue"],
+            "opening_move": "从场景或物件切入",
+            "turning_move": "none",
+            "closure_move": "把情绪收进意象残响",
+            "motif_tags": ["夜", "沉默"],
+            "stance_vector": {
+                "target": "关系处境",
+                "judgment": "悬置",
+                "value_lens": "代价",
+            },
+            "emotion_curve": ["压低", "压着不说", "回落"],
+            "rhetorical_devices": ["留白"],
+            "prototype_family": "aphorism|从场景或物件切入|把情绪收进意象残响|回收|悬置|夜|沉默",
+            "anchor_spans": {
+                "opening": raw_text,
+                "pivot": "",
+                "closing": raw_text,
+                "signature": [raw_text],
+            },
+            "anti_patterns": ["不要写成解释性分析"],
+        },
+        article_text=raw_text,
+        fallback_title="Seed Stone",
+    )
     with app.state.db.session() as session:
-        repository.create_document(
+        document = repository.create_document(
             session,
             id=str(uuid4()),
             project_id=project_id,
@@ -203,10 +494,11 @@ def _seed_stone_analysis(app, project_id: str) -> None:
             title="Seed Stone",
             author_guess="Author",
             created_at_guess=None,
-            raw_text="夜里写字的人，总会回到代价、关系和沉默。",
-            clean_text="夜里写字的人，总会回到代价、关系和沉默。",
+            raw_text=raw_text,
+            clean_text=raw_text,
             language="zh",
             metadata_json={
+                "stone_profile_v2": profile_v2,
                 "stone_profile": {
                     "content_summary": "夜里写字的人总会回到代价、关系和沉默这些母题。",
                     "content_type": "抽象",
@@ -219,6 +511,57 @@ def _seed_stone_analysis(app, project_id: str) -> None:
             error_message=None,
             storage_path=str(storage_path),
         )
+        seeded_profiles = [{"document_id": document.id, "title": "Seed Stone", **profile_v2}]
+        short_clusters = build_short_text_clusters(seeded_profiles)
+        author_model = build_stone_author_model_v2(
+            project_name="Stone Writing",
+            profiles=seeded_profiles,
+            short_text_clusters=short_clusters,
+        )
+        prototype_index = build_stone_prototype_index_v2(
+            project_name="Stone Writing",
+            profiles=seeded_profiles,
+            documents=[{"document_id": document.id, "title": "Seed Stone", "text": raw_text, "clean_text": raw_text, "raw_text": raw_text}],
+        )
+        preprocess_run = repository.create_stone_preprocess_run(
+            session,
+            project_id=project_id,
+            status="completed",
+            summary_json={
+                "stone_profile_total": 1,
+                "stone_profile_completed": 1,
+                "stone_author_model_v2_draft_id": None,
+                "stone_prototype_index_v2_draft_id": None,
+            },
+        )
+        preprocess_run.started_at = preprocess_run.created_at
+        preprocess_run.finished_at = preprocess_run.created_at
+        author_draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_author_model_v2",
+            markdown_text="# Stone Author Model V2",
+            json_payload=author_model,
+            prompt_text=json.dumps(author_model, ensure_ascii=False, indent=2),
+            notes="seed",
+        )
+        prototype_draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_prototype_index_v2",
+            markdown_text="# Stone Prototype Index V2",
+            json_payload=prototype_index,
+            prompt_text=json.dumps(prototype_index, ensure_ascii=False, indent=2),
+            notes="seed",
+        )
+        preprocess_run.summary_json = {
+            "stone_profile_total": 1,
+            "stone_profile_completed": 1,
+            "stone_author_model_v2_draft_id": author_draft.id,
+            "stone_prototype_index_v2_draft_id": prototype_draft.id,
+        }
         run = repository.create_analysis_run(
             session,
             project_id,
@@ -297,6 +640,7 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
     preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_run_id)
     assert preprocess_payload["status"] == "completed"
     detail_profile = preprocess_payload["documents"][0]["stone_profile"]
+    detail_profile_v2 = preprocess_payload["documents"][0]["stone_profile_v2"]
     assert set(detail_profile) == {
         "content_summary",
         "content_type",
@@ -304,6 +648,10 @@ def test_stone_mode_text_document_api_and_analysis_flow(client, app):
         "emotion_label",
         "selected_passages",
     }
+    assert detail_profile_v2["length_band"] in {"micro", "short", "medium", "long"}
+    assert detail_profile_v2["opening_move"]
+    assert detail_profile_v2["closure_move"]
+    assert detail_profile_v2["prototype_family"]
     assert detail_profile["content_summary"]
     assert detail_profile["selected_passages"]
 
@@ -556,10 +904,9 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
     assert preprocess_payload["prompt_tokens"] == 12
     assert preprocess_payload["completion_tokens"] == 8
     assert preprocess_payload["total_tokens"] == 20
-    assert preprocess_payload["documents"][0]["stone_profile"]["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
-    assert preprocess_payload["documents"][0]["stone_profile"]["content_type"] == "自嘲式抱怨"
-    assert preprocess_payload["documents"][0]["stone_profile"]["emotion_label"] == "闷着难受"
-    assert preprocess_payload["documents"][0]["stone_profile"]["selected_passages"] == [
+    assert preprocess_payload["documents"][0]["stone_profile_v2"]["content_kernel"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
+    assert preprocess_payload["documents"][0]["stone_profile_v2"]["surface_form"] == "confession"
+    assert preprocess_payload["documents"][0]["stone_profile_v2"]["anchor_spans"]["signature"] == [
         "作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"
     ]
 
@@ -587,10 +934,8 @@ def test_stone_analysis_agent_records_raw_text_tool_usage(client, app, monkeypat
         "emotion_label",
         "selected_passages",
     }
+    assert refreshed_docs[0]["metadata_json"]["stone_profile_v2"]["content_kernel"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
     assert stone_profile["content_summary"] == "作者习惯先压低声调，再把情绪往句子深处回收。"
-    assert stone_profile["content_type"] == "自嘲式抱怨"
-    assert stone_profile["emotion_label"] == "闷着难受"
-    assert stone_profile["selected_passages"] == ["作者总是先压低声调，再把情绪推回句子深处，最后留一个没有完全关上的收口。"]
 
 
 def test_stone_analysis_skips_embeddings_when_embedding_service_is_configured(client, app, monkeypatch):
@@ -933,15 +1278,18 @@ def test_stone_profile_paging_ignores_none_like_filter_strings(client, app):
     assert all(item["content_type"] == "rant" for item in payload["profiles"])
 
 
-def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exists(client, app):
+def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exists(client, app, monkeypatch):
     create_response = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"})
     assert create_response.status_code == 200
     project_id = create_response.json()["id"]
     _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_writing_mocks(monkeypatch)
 
     assets_page = client.get(f"/projects/{project_id}/assets")
     assert assets_page.status_code == 200
-    assert "Writing Guide" in assets_page.text
+    assert "Stone Author Model V2" in assets_page.text
+    assert "Stone Prototype Index V2" in assets_page.text
     assert "Claude Code Skill" not in assets_page.text
 
     writing_page = client.get(f"/projects/{project_id}/writing")
@@ -949,6 +1297,7 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     assert "analysis" in writing_page.text
     assert "writing_guide" not in writing_page.text
     assert "Author的石生产线" in writing_page.text
+    assert "theme-ambient--writing" in writing_page.text
     assert "data-stage-feed-list" not in writing_page.text
     assert "preprocess-context" not in writing_page.text
 
@@ -969,38 +1318,58 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     )
     stage_events = [payload for name, payload in events if name == "stage"]
     done_events = [payload for name, payload in events if name == "done"]
-    assert stage_events[0]["message_kind"] == "draft"
-    assert len(stage_events[1:]) == len(get_facets_for_mode("stone"))
-    assert all(payload["actor_role"] == "reviewer" for payload in stage_events[1:])
+    assert [payload["message_kind"] for payload in stage_events[:3]] == [
+        "topic_adapter",
+        "prototype_selector",
+        "blueprint",
+    ]
+    assert stage_events[3]["message_kind"] == "draft"
+    assert [payload["message_kind"] for payload in stage_events[4:-1]] == ["critic"] * 3
+    assert all(payload["actor_role"] == "critic" for payload in stage_events[4:-1])
     assert done_events[-1]["message_kind"] == "final"
     assert done_events[-1]["actor_role"] == "writer"
 
     detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
-    assert detail_payload["timeline_turn_count"] == 11
+    assert detail_payload["timeline_turn_count"] == 9
     assert detail_payload["turns"][0]["role"] == "user"
-    assert detail_payload["turns"][1]["message_kind"] == "draft"
+    assert [turn["message_kind"] for turn in detail_payload["turns"][1:4]] == [
+        "topic_adapter",
+        "prototype_selector",
+        "blueprint",
+    ]
+    assert detail_payload["turns"][-2]["message_kind"] == "critic"
     assert detail_payload["turns"][-1]["message_kind"] == "final"
     assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
     assert assistant_turns
     latest_turn = assistant_turns[-1]
-    assert latest_turn["trace"]["baseline_source"] == "analysis_run"
-    assert latest_turn["trace"]["analysis_facets"] == [facet.key for facet in get_facets_for_mode("stone")]
-    assert len(latest_turn["trace"]["reviews"]) == len(get_facets_for_mode("stone"))
-    assert latest_turn["trace"]["review_plan"]
+    assert latest_turn["trace"]["baseline_source"] == "stone_v2_baseline"
+    assert latest_turn["trace"]["analysis_facets"] == []
+    assert latest_turn["trace"]["degraded_mode"] is False
+    assert latest_turn["trace"]["generation_packet"]["baseline"]["author_model_ready"] is True
+    assert latest_turn["trace"]["generation_packet"]["baseline"]["prototype_index_ready"] is True
+    assert latest_turn["trace"]["topic_adapter"]["anchor_ids"]
+    assert latest_turn["trace"]["prototype_selection"]["selected_documents"]
+    assert latest_turn["trace"]["blueprint"]["anchor_ids"]
+    assert latest_turn["trace"]["anchor_ids"]
+    assert len(latest_turn["trace"]["critics"]) == 3
+    assert all(critic["anchor_ids"] for critic in latest_turn["trace"]["critics"])
     assert latest_turn["trace"]["final_assessment"]
+    assert "如果沿着" not in latest_turn["content"]
+    assert "分析里最能充当锚点" not in latest_turn["content"]
+    assert "这次修订最重要" not in latest_turn["content"]
 
-    draft_response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "writing_guide"})
+    draft_response = client.post(f"/api/projects/{project_id}/assets/generate", json={"asset_kind": "stone_author_model_v2"})
     assert draft_response.status_code == 200
     draft_payload = draft_response.json()
     draft_id = draft_payload["id"]
-    assert draft_payload["asset_kind"] == "writing_guide"
+    assert draft_payload["asset_kind"] == "stone_author_model_v2"
 
     publish_response = client.post(
         f"/api/projects/{project_id}/assets/{draft_id}/publish",
-        json={"asset_kind": "writing_guide"},
+        json={"asset_kind": "stone_author_model_v2"},
     )
     assert publish_response.status_code == 200
-    assert publish_response.json()["asset_kind"] == "writing_guide"
+    assert publish_response.json()["asset_kind"] == "stone_author_model_v2"
 
     published_session = client.post(
         f"/api/projects/{project_id}/writing/sessions",
@@ -1021,13 +1390,16 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
         f"/api/projects/{project_id}/writing/sessions/{published_session_id}"
     ).json()
     published_assistant_turns = [turn for turn in published_detail["turns"] if turn["role"] == "assistant"]
-    assert published_assistant_turns[-1]["trace"]["baseline_source"] == "analysis_run"
-    assert len(published_assistant_turns[-1]["trace"]["reviews"]) == len(get_facets_for_mode("stone"))
+    assert published_assistant_turns[-1]["trace"]["baseline_source"] == "stone_v2_baseline"
+    assert len(published_assistant_turns[-1]["trace"]["critics"]) == 3
+    assert published_assistant_turns[-1]["trace"]["generation_packet"]["baseline"]["author_model_ready"] is True
 
 
-def test_stone_writing_message_parser_accepts_natural_language_payload(client, app):
+def test_stone_writing_message_parser_accepts_natural_language_payload(client, app, monkeypatch):
     project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
     _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_writing_mocks(monkeypatch)
 
     session_id = client.post(
         f"/api/projects/{project_id}/writing/sessions",
@@ -1042,7 +1414,11 @@ def test_stone_writing_message_parser_accepts_natural_language_payload(client, a
         client,
         f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
     )
-    assert [payload for name, payload in events if name == "stage"][0]["message_kind"] == "draft"
+    assert [payload["message_kind"] for name, payload in events if name == "stage"][:3] == [
+        "topic_adapter",
+        "prototype_selector",
+        "blueprint",
+    ]
 
     detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
     assert detail_payload["turns"][0]["content"] == "写一篇雨夜车站，800字，克制一点"
@@ -1063,3 +1439,70 @@ def test_stone_writing_message_parser_rejects_missing_word_count(client, app):
     )
     assert response.status_code == 400
     assert "800字" in response.json()["detail"]
+
+
+def test_stone_writing_pipeline_fails_without_silent_fallback_when_llm_stage_errors(client, app, monkeypatch):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_writing_mocks(monkeypatch, fail_stage="draft")
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Failure Session"},
+    ).json()["id"]
+
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"topic": "Rainy Night Station", "target_word_count": 600},
+    ).json()
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+
+    error_events = [payload for name, payload in events if name == "error"]
+    done_events = [payload for name, payload in events if name == "done"]
+    assert not done_events
+    assert error_events
+    assert error_events[-1]["status"] == "failed"
+    assert error_events[-1]["stage"] == "draft"
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    assert assistant_turns
+    latest_turn = assistant_turns[-1]
+    assert latest_turn["trace"]["status"] == "failed"
+    assert latest_turn["trace"]["degraded_mode"] is True
+    assert latest_turn["trace"]["failed_stage"] == "draft"
+    assert "草稿不可用，需要重试" in latest_turn["content"]
+
+
+def test_stone_drafter_prompt_includes_topic_translation_outline_and_constraints(client, app, monkeypatch):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    capture: dict[str, list[dict[str, str]]] = {}
+    _install_writing_mocks(monkeypatch, capture=capture)
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Prompt Session"},
+    ).json()["id"]
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"topic": "Rainy Night Station", "target_word_count": 600, "extra_requirements": "keep it restrained"},
+    ).json()
+    _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+
+    draft_call = next(item for item in capture["calls"] if item["stage"] == "draft")
+    assert "topic_adapter JSON" in draft_call["user"]
+    assert "prototype_selection JSON" in draft_call["user"]
+    assert "blueprint JSON" in draft_call["user"]
+    assert "stone_v2_generation_packet JSON" in draft_call["user"]
+    assert "anti_patterns" in draft_call["user"]
+    assert "nonclinical_psychodynamics" not in draft_call["user"]
+    assert "Stone multi-facet baseline" not in draft_call["user"]

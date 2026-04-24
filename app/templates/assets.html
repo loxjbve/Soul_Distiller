@@ -37,7 +37,7 @@
         } | tojson | safe }}
     </script>
 
-    <section class="page-content">
+    <section class="page-content {% if asset_kind in ['stone_author_model_v2', 'stone_prototype_index_v2'] %}page-content--stone-assets{% endif %}">
         <article class="panel-shell assets-card--generate">
             <div class="panel-header">
                 <div>
@@ -92,15 +92,17 @@
                     <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
                     <input type="hidden" name="markdown_text" id="asset-markdown-text" value="{{ draft.markdown_text if draft else '' }}">
 
-                    <section class="asset-draft-monitor">
-                        <div class="asset-draft-monitor__head" style="align-items: center; justify-content: flex-start; gap: 12px; margin-bottom: 6px;">
-                            <h3 style="margin: 0; font-size: 0.9rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);">输出跟踪</h3>
-                            <span class="helper-text" style="margin: 0;">点击可手动切换文件，流式输出时自动跟随</span>
-                        </div>
-                        <div id="asset-document-status" class="asset-document-status-board" data-documents-board>
-                            <!-- JS injected pills -->
-                        </div>
-                    </section>
+                    {% if asset_kind not in ['stone_author_model_v2', 'stone_prototype_index_v2'] %}
+                        <section class="asset-draft-monitor">
+                            <div class="asset-draft-monitor__head" style="align-items: center; justify-content: flex-start; gap: 12px; margin-bottom: 6px;">
+                                <h3 style="margin: 0; font-size: 0.9rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);">输出跟踪</h3>
+                                <span class="helper-text" style="margin: 0;">点击可手动切换文件，流式输出时自动跟随</span>
+                            </div>
+                            <div id="asset-document-status" class="asset-document-status-board" data-documents-board>
+                                <!-- JS injected pills -->
+                            </div>
+                        </section>
+                    {% endif %}
 
                     <div class="asset-draft-scroll panel-scroll" data-panel-scroll>
                         {% if asset_kind == "cc_skill" %}
@@ -146,6 +148,59 @@
                                             <textarea name="notes" rows="10" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
                                         </label>
                                     </section>
+                                </div>
+                            </div>
+                        {% elif asset_kind in ["stone_author_model_v2", "stone_prototype_index_v2"] %}
+                            <div class="stone-asset-workbench">
+                                <section class="stone-asset-preview-shell">
+                                    <div class="stone-asset-preview-shell__head">
+                                        <div>
+                                            <p class="eyebrow">Preview</p>
+                                            <h3>{{ asset_label }}</h3>
+                                        </div>
+                                        <p class="helper-text">
+                                            {% if asset_kind == "stone_author_model_v2" %}
+                                                跨文档总结作者稳定写法，只保留必要的证据窗口，不展开检索目录。
+                                            {% else %}
+                                                面向检索与原型回搬的目录资产，保留文档窗口、族群和召回词，不重复作者总论。
+                                            {% endif %}
+                                        </p>
+                                    </div>
+                                    <div id="stone-asset-preview" class="stone-asset-preview"></div>
+                                </section>
+
+                                <div class="stone-asset-editors">
+                                    <details class="stone-asset-editor-panel" open>
+                                        <summary>{{ ui.field_json }}</summary>
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_json }}</span>
+                                            <textarea name="json_payload" rows="18" id="asset-json-payload" class="asset-editor-textarea">{{ draft_json_pretty }}</textarea>
+                                        </label>
+                                    </details>
+
+                                    <details class="stone-asset-editor-panel">
+                                        <summary>{{ ui.field_markdown }}</summary>
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_markdown }}</span>
+                                            <textarea name="markdown_text_display" rows="18" id="asset-single-markdown" class="asset-editor-textarea">{{ draft.markdown_text if draft else "" }}</textarea>
+                                        </label>
+                                    </details>
+
+                                    <details class="stone-asset-editor-panel">
+                                        <summary>{{ ui.field_prompt }}</summary>
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_prompt }}</span>
+                                            <textarea name="prompt_text" rows="12" id="asset-prompt-text" class="asset-editor-textarea">{{ draft.system_prompt if draft else "" }}</textarea>
+                                        </label>
+                                    </details>
+
+                                    <details class="stone-asset-editor-panel">
+                                        <summary>{{ ui.field_notes }}</summary>
+                                        <label class="asset-editor-field">
+                                            <span>{{ ui.field_notes }}</span>
+                                            <textarea name="notes" rows="8" class="asset-editor-textarea" id="asset-notes">{{ (draft.notes if draft else "") or "" }}</textarea>
+                                        </label>
+                                    </details>
                                 </div>
                             </div>
                         {% else %}

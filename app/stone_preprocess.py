@@ -12,7 +12,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.stone import build_stone_profile, build_stone_profile_messages, normalize_stone_profile
+from app.analysis.stone_v2 import (
+    build_short_text_clusters,
+    build_stone_author_model_v2,
+    build_stone_profile_v2,
+    build_stone_profile_v2_messages,
+    build_stone_prototype_index_v2,
+    normalize_stone_profile_v2,
+    render_stone_author_model_markdown,
+    render_stone_prototype_index_markdown,
+)
 from app.db import Database
 from app.llm import OpenAICompatibleClient, parse_json_response
 from app.models import StonePreprocessRun
@@ -221,7 +230,7 @@ class StonePreprocessWorker:
                         return
 
                     metadata = dict(document.metadata_json or {})
-                    if "stone_profile" in metadata and isinstance(metadata["stone_profile"], dict):
+                    if "stone_profile_v2" in metadata and isinstance(metadata["stone_profile_v2"], dict):
                         completed_count += 1
                         self._update_progress(session, run, completed_count, total_docs, "Profiling documents")
                         return
@@ -240,13 +249,15 @@ class StonePreprocessWorker:
                     )
                 except Exception as e:
                     logger.exception("Failed to build stone profile for document %s", document.id)
-                    profile_result = StoneProfileResult(profile=build_stone_profile(document), usage={})
+                    profile_result = StoneProfileResult(profile=build_stone_profile_v2(document), usage={})
 
                 with self.db.session() as session:
                     doc = repository.get_document(session, document.id)
                     if doc:
                         metadata = dict(doc.metadata_json or {})
-                        metadata["stone_profile"] = profile_result.profile
+                        metadata["stone_profile_v2"] = profile_result.profile
+                        metadata["stone_profile_version"] = "v2"
+                        metadata.pop("stone_profile", None)
                         doc.metadata_json = metadata
                         session.add(doc)
 
@@ -266,6 +277,11 @@ class StonePreprocessWorker:
         with self.db.session() as session:
             run = repository.get_stone_preprocess_run(session, run_id)
             if run and run.status == "running":
+                asset_ids = self._refresh_stone_v2_assets(session, project_id)
+                summary = dict(run.summary_json or {})
+                summary["stone_author_model_v2_draft_id"] = asset_ids.get("stone_author_model_v2")
+                summary["stone_prototype_index_v2_draft_id"] = asset_ids.get("stone_prototype_index_v2")
+                run.summary_json = summary
                 run.status = "completed"
                 run.finished_at = datetime.now(UTC).replace(tzinfo=None)
                 run.current_stage = "Completed"
@@ -295,12 +311,12 @@ class StonePreprocessWorker:
     ) -> StoneProfileResult:
         text = str(document.clean_text or document.raw_text or "").strip()
         if not text:
-            return StoneProfileResult(profile=build_stone_profile(document), usage={})
+            return StoneProfileResult(profile=build_stone_profile_v2(document), usage={})
         if not chat_config:
-            return StoneProfileResult(profile=build_stone_profile(document), usage={})
+            return StoneProfileResult(profile=build_stone_profile_v2(document), usage={})
             
         client = OpenAICompatibleClient(chat_config, log_path=self.llm_log_path)
-        messages = build_stone_profile_messages(
+        messages = build_stone_profile_v2_messages(
             project_name,
             document.title or document.filename,
             text,
@@ -314,7 +330,7 @@ class StonePreprocessWorker:
             )
             parsed = parse_json_response(response.content, fallback=True)
             return StoneProfileResult(
-                profile=normalize_stone_profile(
+                profile=normalize_stone_profile_v2(
                     parsed,
                     article_text=text,
                     fallback_title=document.title or document.filename,
@@ -323,7 +339,77 @@ class StonePreprocessWorker:
             )
         except Exception as e:
             logger.exception("Failed to build stone profile for document %s", document.id)
-            return StoneProfileResult(profile=build_stone_profile(document), usage={})
+            return StoneProfileResult(profile=build_stone_profile_v2(document), usage={})
+
+    def _refresh_stone_v2_assets(self, session: Session, project_id: str) -> dict[str, str]:
+        project = repository.get_project(session, project_id)
+        if not project:
+            return {}
+
+        profiles: list[dict[str, Any]] = []
+        documents: list[dict[str, Any]] = []
+        for document in repository.list_project_documents(session, project_id):
+            metadata = dict(document.metadata_json or {})
+            profile = metadata.get("stone_profile_v2")
+            if not isinstance(profile, dict):
+                continue
+            normalized = normalize_stone_profile_v2(
+                profile,
+                article_text=str(document.clean_text or document.raw_text or ""),
+                fallback_title=document.title or document.filename,
+            )
+            normalized["document_id"] = document.id
+            normalized["title"] = document.title or document.filename
+            profiles.append(normalized)
+            documents.append(
+                {
+                    "document_id": document.id,
+                    "title": document.title or document.filename,
+                    "clean_text": document.clean_text,
+                    "raw_text": document.raw_text,
+                    "text": str(document.clean_text or document.raw_text or ""),
+                }
+            )
+
+        if not profiles:
+            return {}
+
+        clusters = build_short_text_clusters(profiles)
+        author_model = build_stone_author_model_v2(
+            project_name=project.name,
+            profiles=profiles,
+            short_text_clusters=clusters,
+        )
+        prototype_index = build_stone_prototype_index_v2(
+            project_name=project.name,
+            profiles=profiles,
+            documents=documents,
+        )
+
+        author_draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_author_model_v2",
+            markdown_text=render_stone_author_model_markdown(author_model),
+            json_payload=author_model,
+            prompt_text=json.dumps(author_model, ensure_ascii=False, indent=2),
+            notes="Stone v2 preprocess auto-generated baseline draft.",
+        )
+        prototype_draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_prototype_index_v2",
+            markdown_text=render_stone_prototype_index_markdown(prototype_index),
+            json_payload=prototype_index,
+            prompt_text=json.dumps(prototype_index, ensure_ascii=False, indent=2),
+            notes="Stone v2 preprocess auto-generated prototype draft.",
+        )
+        return {
+            "stone_author_model_v2": author_draft.id,
+            "stone_prototype_index_v2": prototype_draft.id,
+        }
 
     def _mark_failed(self, run_id: str, error_message: str) -> None:
         with self.db.session() as session:

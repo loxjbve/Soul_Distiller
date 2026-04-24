@@ -1,81 +1,256 @@
 .page-writing {
-    --writing-bg: linear-gradient(180deg, rgba(248, 240, 228, 0.72), rgba(241, 233, 218, 0.24));
-    --writing-panel: rgba(255, 249, 241, 0.92);
-    --writing-panel-strong: rgba(255, 252, 247, 0.98);
-    --writing-border: rgba(112, 79, 42, 0.14);
-    --writing-shadow: 0 22px 48px rgba(107, 73, 37, 0.11);
-    --writing-text: #24170c;
-    --writing-muted: #7b6853;
-    --writing-accent: #9d5f28;
-    --writing-accent-soft: rgba(157, 95, 40, 0.12);
-    --writing-review: rgba(134, 93, 58, 0.08);
-    --writing-user: linear-gradient(135deg, #bb6d2c, #8a4a1e);
+    --writing-canvas: #050914;
+    --writing-panel: rgba(8, 14, 29, 0.82);
+    --writing-panel-strong: rgba(12, 20, 38, 0.94);
+    --writing-panel-soft: rgba(15, 25, 47, 0.66);
+    --writing-border: rgba(126, 221, 255, 0.18);
+    --writing-border-strong: rgba(126, 221, 255, 0.34);
+    --writing-text: #edf8ff;
+    --writing-muted: #8da3bd;
+    --writing-faint: #5f7189;
+    --writing-accent: #68e8ff;
+    --writing-accent-2: #9b83ff;
+    --writing-success: #7cffc7;
+    --writing-danger: #ff6b9d;
+    --writing-shadow: 0 28px 72px rgba(0, 0, 0, 0.42);
+    --writing-glow: 0 0 28px rgba(104, 232, 255, 0.18);
+    --writing-user: linear-gradient(135deg, #20d8ff 0%, #7567ff 56%, #b36cff 100%);
+    position: relative;
+    color: var(--writing-text);
+}
+
+body.theme-ambient--writing {
+    background:
+        radial-gradient(circle at 18% 14%, rgba(72, 128, 255, 0.16), transparent 28rem),
+        radial-gradient(circle at 82% 8%, rgba(118, 72, 255, 0.16), transparent 24rem),
+        radial-gradient(circle at 58% 100%, rgba(0, 222, 255, 0.12), transparent 30rem),
+        linear-gradient(180deg, #0b1020 0%, #060912 58%, #03050b 100%);
+}
+
+body.theme-ambient--writing .screen-grid {
+    background:
+        linear-gradient(rgba(104, 232, 255, 0.095) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(104, 232, 255, 0.095) 1px, transparent 1px);
+    background-size: 34px 34px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.82), transparent 86%);
+    opacity: 0.42;
+}
+
+body.theme-ambient--writing .header-shell {
+    border-color: rgba(126, 221, 255, 0.18);
+    background:
+        linear-gradient(135deg, rgba(17, 27, 49, 0.92), rgba(8, 12, 24, 0.84)),
+        rgba(8, 12, 24, 0.88);
+    box-shadow: 0 18px 54px rgba(0, 0, 0, 0.34), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+}
+
+body.theme-ambient--writing .brand-mark {
+    background:
+        radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.52), transparent 22%),
+        linear-gradient(135deg, rgba(31, 216, 255, 0.28), rgba(141, 101, 255, 0.34));
+    border-color: rgba(126, 221, 255, 0.34);
+    box-shadow: 0 0 22px rgba(104, 232, 255, 0.18);
+}
+
+.page-writing::before {
+    content: "";
+    position: absolute;
+    inset: 1.2rem -2rem auto;
+    height: 16rem;
+    pointer-events: none;
+    background:
+        linear-gradient(90deg, transparent, rgba(104, 232, 255, 0.16), transparent),
+        radial-gradient(ellipse at center, rgba(130, 112, 255, 0.12), transparent 64%);
+    filter: blur(18px);
+    opacity: 0.8;
+    z-index: -1;
+}
+
+.page-writing .eyebrow {
+    color: var(--writing-accent);
+    letter-spacing: 0.16em;
+}
+
+.page-writing .muted {
+    color: var(--writing-muted);
+}
+
+.page-writing .primary-button,
+.page-writing .ghost-button,
+.page-writing .danger-button {
+    min-height: 34px;
+    border-radius: 999px;
+    letter-spacing: 0.03em;
+}
+
+.page-writing .primary-button {
+    color: #02131f;
+    border: 1px solid rgba(138, 246, 255, 0.76);
+    background: linear-gradient(135deg, #8df5ff, #6f8cff 62%, #a681ff);
+    box-shadow: 0 10px 28px rgba(93, 161, 255, 0.22), 0 0 18px rgba(104, 232, 255, 0.18);
+}
+
+.page-writing .primary-button:hover {
+    background: linear-gradient(135deg, #b8fbff, #83a0ff 58%, #ba96ff);
+    box-shadow: 0 14px 34px rgba(93, 161, 255, 0.28), 0 0 26px rgba(104, 232, 255, 0.26);
+}
+
+.page-writing .ghost-button {
+    color: #dceeff;
+    border-color: rgba(126, 221, 255, 0.2);
+    background: rgba(11, 21, 40, 0.68);
+}
+
+.page-writing .ghost-button:hover {
+    color: #ffffff;
+    border-color: rgba(126, 221, 255, 0.46);
+    background: rgba(23, 41, 72, 0.78);
+    box-shadow: 0 0 18px rgba(104, 232, 255, 0.16);
+}
+
+.page-writing .danger-button {
+    color: #ffe7ef;
+    border-color: rgba(255, 107, 157, 0.28);
+    background: rgba(255, 107, 157, 0.12);
+}
+
+.page-writing .danger-button:hover {
+    border-color: rgba(255, 107, 157, 0.54);
+    background: rgba(255, 107, 157, 0.2);
+    box-shadow: 0 0 20px rgba(255, 107, 157, 0.16);
 }
 
 .page-writing .writing-shell {
     display: grid;
-    grid-template-columns: 300px minmax(0, 1fr);
-    gap: 1.25rem;
-    min-height: calc(100vh - 11rem);
+    grid-template-columns: 292px minmax(0, 1fr);
+    gap: 1.15rem;
+    min-height: calc(100vh - 10.5rem);
+}
+
+html[data-shell-mode="fixed"] .page-writing .writing-shell {
+    height: calc(100dvh - 8.65rem);
+    min-height: 0;
 }
 
 .page-writing .writing-rail,
-.page-writing .writing-stage {
+.page-writing .writing-stage,
+.page-writing .writing-composer {
+    position: relative;
     min-height: 0;
     border: 1px solid var(--writing-border);
-    background: var(--writing-panel);
-    box-shadow: var(--writing-shadow);
-    backdrop-filter: blur(18px);
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.055), transparent 42%),
+        var(--writing-panel);
+    box-shadow: var(--writing-shadow), var(--writing-glow), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(22px);
+}
+
+.page-writing .writing-rail::before,
+.page-writing .writing-stage::before,
+.page-writing .writing-composer::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background:
+        linear-gradient(90deg, transparent, rgba(104, 232, 255, 0.2), transparent) top / 100% 1px no-repeat,
+        radial-gradient(circle at 20% 0%, rgba(104, 232, 255, 0.08), transparent 34%);
 }
 
 .page-writing .writing-rail {
-    border-radius: 1.75rem;
-    padding: 1rem;
-    background-image: linear-gradient(180deg, rgba(255, 250, 244, 0.98), rgba(247, 239, 228, 0.94));
+    display: flex;
+    flex-direction: column;
+    border-radius: 1.65rem;
+    padding: 0.95rem;
+    overflow: hidden;
+}
+
+.page-writing .writing-rail::after {
+    content: "";
+    position: absolute;
+    inset: auto 1rem 0;
+    height: 7rem;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent, rgba(6, 9, 18, 0.82));
 }
 
 .page-writing .writing-rail__header {
+    position: relative;
+    z-index: 1;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
-    margin-bottom: 1rem;
+    gap: 0.8rem;
+    padding-bottom: 0.9rem;
 }
 
 .page-writing .writing-rail__header h2 {
-    margin: 0.15rem 0 0;
+    margin: 0.12rem 0 0;
+    color: var(--writing-text);
+    font-size: 1.45rem;
+    letter-spacing: -0.04em;
+}
+
+.page-writing .writing-session-list,
+.page-writing .writing-message-stage {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(104, 232, 255, 0.32) transparent;
+}
+
+.page-writing .writing-session-list::-webkit-scrollbar,
+.page-writing .writing-message-stage::-webkit-scrollbar {
+    width: 7px;
+}
+
+.page-writing .writing-session-list::-webkit-scrollbar-thumb,
+.page-writing .writing-message-stage::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(104, 232, 255, 0.28);
 }
 
 .page-writing .writing-session-list {
+    position: relative;
+    z-index: 1;
     display: flex;
+    flex: 1 1 auto;
     flex-direction: column;
-    gap: 0.75rem;
-    max-height: calc(100vh - 17rem);
+    gap: 0.7rem;
     overflow: auto;
-    padding-right: 0.25rem;
+    padding-right: 0.2rem;
 }
 
 .page-writing .writing-session-item {
     width: 100%;
-    padding: 0.95rem 1rem;
-    border: 1px solid rgba(112, 79, 42, 0.12);
-    border-radius: 1.15rem;
-    background: rgba(255, 252, 247, 0.92);
+    padding: 0.92rem 0.95rem;
+    border: 1px solid rgba(126, 221, 255, 0.14);
+    border-radius: 1.1rem;
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.035), transparent 58%),
+        rgba(8, 16, 31, 0.72);
     color: var(--writing-text);
     text-align: left;
-    transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    transition:
+        transform 160ms var(--easing-standard),
+        border-color 160ms var(--easing-standard),
+        background 160ms var(--easing-standard),
+        box-shadow 160ms var(--easing-standard);
 }
 
 .page-writing .writing-session-item:hover,
 .page-writing .writing-session-item:focus-visible {
     transform: translateY(-1px);
-    border-color: rgba(157, 95, 40, 0.28);
-    background: rgba(255, 248, 238, 0.98);
+    border-color: rgba(104, 232, 255, 0.36);
+    background: rgba(16, 31, 58, 0.86);
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24), 0 0 20px rgba(104, 232, 255, 0.1);
 }
 
 .page-writing .writing-session-item.is-active {
-    border-color: rgba(157, 95, 40, 0.36);
-    background: linear-gradient(135deg, rgba(239, 220, 193, 0.65), rgba(255, 248, 238, 0.96));
+    border-color: rgba(104, 232, 255, 0.58);
+    background:
+        linear-gradient(135deg, rgba(104, 232, 255, 0.16), rgba(155, 131, 255, 0.1)),
+        rgba(11, 23, 43, 0.94);
+    box-shadow: inset 3px 0 0 rgba(104, 232, 255, 0.86), 0 0 26px rgba(104, 232, 255, 0.13);
 }
 
 .page-writing .writing-session-item strong,
@@ -83,20 +258,46 @@
     display: block;
 }
 
+.page-writing .writing-session-item strong {
+    color: var(--writing-text);
+}
+
 .page-writing .writing-session-item small {
-    margin-top: 0.35rem;
+    margin-top: 0.34rem;
     color: var(--writing-muted);
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
 }
 
 .page-writing .writing-stage {
     display: grid;
     grid-template-rows: auto auto minmax(0, 1fr) auto;
     gap: 1rem;
-    border-radius: 2rem;
-    padding: 1.1rem;
-    background-image:
-        radial-gradient(circle at top right, rgba(233, 199, 148, 0.2), transparent 28%),
-        var(--writing-bg);
+    border-radius: 1.9rem;
+    padding: 1.05rem;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at 82% 8%, rgba(104, 232, 255, 0.12), transparent 22rem),
+        radial-gradient(circle at 18% 100%, rgba(155, 131, 255, 0.12), transparent 24rem),
+        linear-gradient(180deg, rgba(9, 17, 34, 0.92), rgba(6, 10, 20, 0.9));
+}
+
+.page-writing .writing-stage::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, transparent 0 58%, rgba(104, 232, 255, 0.035) 59%, transparent 60%);
+    background-size: 100% 8px;
+    opacity: 0.42;
+    animation: writing-scan 11s linear infinite;
+}
+
+.page-writing .writing-channel-header,
+.page-writing .writing-pinned,
+.page-writing .writing-message-stage,
+.page-writing .writing-composer {
+    z-index: 1;
 }
 
 .page-writing .writing-channel-header {
@@ -111,11 +312,13 @@
 }
 
 .page-writing .writing-channel-header__copy h1 {
-    margin: 0.15rem 0 0;
+    margin: 0.12rem 0 0;
+    max-width: 16ch;
     color: var(--writing-text);
-    font-size: clamp(1.8rem, 2vw, 2.6rem);
-    line-height: 1.02;
-    letter-spacing: -0.04em;
+    font-size: clamp(2rem, 2.45vw, 3rem);
+    line-height: 0.98;
+    letter-spacing: -0.06em;
+    text-shadow: 0 0 28px rgba(104, 232, 255, 0.16);
 }
 
 .page-writing .writing-channel-header__toggle {
@@ -133,53 +336,88 @@
 .page-writing .writing-pill {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.45rem;
     min-height: 2rem;
-    padding: 0.35rem 0.8rem;
+    padding: 0.35rem 0.82rem;
     border-radius: 999px;
-    border: 1px solid rgba(112, 79, 42, 0.12);
-    background: rgba(255, 252, 247, 0.78);
-    color: var(--writing-text);
-    font-size: 0.88rem;
+    border: 1px solid rgba(126, 221, 255, 0.18);
+    background: rgba(8, 18, 36, 0.74);
+    color: #dff7ff;
+    font-family: var(--font-mono);
+    font-size: 0.77rem;
+    letter-spacing: 0.02em;
+}
+
+.page-writing .writing-pill::before {
+    content: "";
+    width: 0.44rem;
+    height: 0.44rem;
+    border-radius: 999px;
+    background: var(--writing-accent);
+    box-shadow: 0 0 12px rgba(104, 232, 255, 0.72);
 }
 
 .page-writing .writing-pill--baseline {
-    background: rgba(245, 231, 210, 0.82);
-    border-color: rgba(157, 95, 40, 0.18);
+    border-color: rgba(124, 255, 199, 0.32);
+    background: rgba(18, 44, 48, 0.66);
+}
+
+.page-writing .writing-pill--baseline::before {
+    background: var(--writing-success);
+    box-shadow: 0 0 12px rgba(124, 255, 199, 0.68);
 }
 
 .page-writing .writing-channel-header__actions {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
-    gap: 0.65rem;
+    gap: 0.6rem;
 }
 
 .page-writing .writing-pinned {
-    padding: 1rem 1.1rem;
-    border-radius: 1.4rem;
-    border: 1px solid rgba(157, 95, 40, 0.16);
-    background: linear-gradient(135deg, rgba(247, 235, 216, 0.96), rgba(255, 250, 243, 0.88));
+    position: relative;
+    padding: 0.95rem 1.1rem 0.95rem 2.7rem;
+    border: 1px solid rgba(126, 221, 255, 0.18);
+    border-radius: 1.25rem;
+    background:
+        linear-gradient(135deg, rgba(104, 232, 255, 0.09), rgba(155, 131, 255, 0.06)),
+        rgba(7, 15, 30, 0.68);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.page-writing .writing-pinned::before {
+    content: "";
+    position: absolute;
+    left: 1.1rem;
+    top: 1.18rem;
+    width: 0.72rem;
+    height: 0.72rem;
+    border-radius: 999px;
+    background: var(--writing-success);
+    box-shadow: 0 0 0 6px rgba(124, 255, 199, 0.1), 0 0 22px rgba(124, 255, 199, 0.4);
+    animation: writing-pulse 2.6s ease-in-out infinite;
 }
 
 .page-writing .writing-pinned__label {
-    margin-bottom: 0.45rem;
+    margin-bottom: 0.34rem;
     color: var(--writing-accent);
-    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
 }
 
 .page-writing .writing-pinned p {
     margin: 0;
-    color: var(--writing-text);
+    color: #cfe4f5;
 }
 
 .page-writing .writing-message-stage {
     min-height: 0;
     overflow: auto;
-    padding-right: 0.35rem;
+    padding: 0.1rem 0.35rem 0.15rem 0;
+    mask-image: linear-gradient(180deg, transparent, #000 1.2rem, #000 calc(100% - 1rem), transparent);
 }
 
 .page-writing .writing-message-list {
@@ -187,13 +425,15 @@
     flex-direction: column;
     gap: 1rem;
     min-height: 100%;
+    padding: 0.35rem 0 0.45rem;
 }
 
 .page-writing .group-message {
     display: grid;
-    grid-template-columns: 3rem minmax(0, 1fr);
-    gap: 0.85rem;
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    gap: 0.82rem;
     align-items: start;
+    animation: writing-message-in 260ms var(--easing-standard) both;
 }
 
 .page-writing .group-message--user {
@@ -208,67 +448,105 @@
 .page-writing .group-message__avatar {
     display: grid;
     place-items: center;
-    width: 3rem;
-    height: 3rem;
+    width: 2.75rem;
+    height: 2.75rem;
+    border: 1px solid rgba(126, 221, 255, 0.24);
     border-radius: 1rem;
-    background: linear-gradient(135deg, rgba(157, 95, 40, 0.88), rgba(205, 153, 91, 0.92));
-    color: #fff;
-    font-weight: 700;
-    box-shadow: 0 12px 24px rgba(157, 95, 40, 0.18);
+    background:
+        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.34), transparent 24%),
+        linear-gradient(135deg, rgba(26, 217, 255, 0.22), rgba(117, 103, 255, 0.28)),
+        rgba(8, 18, 36, 0.9);
+    color: #effbff;
+    font-family: var(--font-mono);
+    font-size: 0.92rem;
+    font-weight: 800;
+    box-shadow: 0 0 22px rgba(104, 232, 255, 0.12);
 }
 
 .page-writing .group-message--review .group-message__avatar {
-    background: linear-gradient(135deg, rgba(103, 77, 46, 0.92), rgba(151, 116, 72, 0.92));
+    border-color: rgba(155, 131, 255, 0.34);
+    background:
+        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.28), transparent 24%),
+        linear-gradient(135deg, rgba(155, 131, 255, 0.32), rgba(37, 50, 99, 0.92));
 }
 
 .page-writing .group-message--final .group-message__avatar {
-    background: linear-gradient(135deg, rgba(188, 112, 37, 0.92), rgba(122, 68, 25, 0.92));
+    border-color: rgba(124, 255, 199, 0.36);
+    background:
+        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.3), transparent 24%),
+        linear-gradient(135deg, rgba(124, 255, 199, 0.3), rgba(20, 74, 84, 0.9));
 }
 
 .page-writing .group-message__inner {
     min-width: 0;
-    max-width: min(52rem, 100%);
+    max-width: min(54rem, 100%);
 }
 
 .page-writing .group-message--user .group-message__inner {
-    max-width: min(42rem, 82%);
+    max-width: min(44rem, 82%);
 }
 
 .page-writing .group-message__meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.6rem;
-    margin-bottom: 0.45rem;
+    gap: 0.58rem;
+    margin-bottom: 0.42rem;
     color: var(--writing-muted);
-    font-size: 0.86rem;
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
 }
 
 .page-writing .group-message__meta strong {
-    color: var(--writing-text);
+    color: #dff7ff;
+    font-family: var(--font-sans);
+    font-size: 0.86rem;
 }
 
 .page-writing .group-message__bubble {
-    padding: 1rem 1.05rem;
-    border-radius: 1.4rem;
-    border: 1px solid rgba(112, 79, 42, 0.12);
-    background: var(--writing-panel-strong);
-    color: var(--writing-text);
+    padding: 0.95rem 1rem;
+    border: 1px solid rgba(126, 221, 255, 0.16);
+    border-radius: 1.2rem;
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 54%),
+        rgba(10, 19, 36, 0.86);
+    color: #dcecf8;
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
 }
 
 .page-writing .group-message--user .group-message__bubble {
-    border-color: transparent;
+    border-color: rgba(154, 205, 255, 0.52);
     background: var(--writing-user);
-    color: #fff;
-    border-bottom-right-radius: 0.4rem;
+    color: #ffffff;
+    border-bottom-right-radius: 0.36rem;
+    box-shadow: 0 16px 34px rgba(92, 117, 255, 0.2), 0 0 26px rgba(104, 232, 255, 0.12);
 }
 
 .page-writing .group-message--review .group-message__bubble {
-    background: linear-gradient(135deg, rgba(255, 251, 246, 0.96), var(--writing-review));
+    border-color: rgba(155, 131, 255, 0.24);
+    background:
+        linear-gradient(135deg, rgba(155, 131, 255, 0.12), transparent 56%),
+        rgba(10, 17, 36, 0.9);
+}
+
+.page-writing .group-message--review_synthesis .group-message__bubble {
+    border-color: rgba(104, 232, 255, 0.28);
+    background:
+        linear-gradient(135deg, rgba(104, 232, 255, 0.12), rgba(155, 131, 255, 0.08)),
+        rgba(10, 19, 36, 0.92);
 }
 
 .page-writing .group-message--final .group-message__bubble {
-    background: linear-gradient(135deg, rgba(255, 248, 236, 0.98), rgba(255, 255, 255, 0.98));
-    border-color: rgba(157, 95, 40, 0.22);
+    border-color: rgba(124, 255, 199, 0.3);
+    background:
+        linear-gradient(135deg, rgba(124, 255, 199, 0.12), rgba(104, 232, 255, 0.06)),
+        rgba(8, 22, 31, 0.94);
+}
+
+.page-writing .group-message--error .group-message__bubble {
+    border-color: rgba(255, 107, 157, 0.36);
+    background:
+        linear-gradient(135deg, rgba(255, 107, 157, 0.14), transparent 58%),
+        rgba(34, 12, 24, 0.92);
 }
 
 .page-writing .group-message__bubble > :first-child {
@@ -281,35 +559,37 @@
 
 .page-writing .group-message__details {
     margin-top: 0.55rem;
-    border: 1px solid rgba(112, 79, 42, 0.1);
+    border: 1px solid rgba(126, 221, 255, 0.14);
     border-radius: 1rem;
-    background: rgba(255, 251, 246, 0.82);
+    background: rgba(3, 8, 17, 0.58);
     overflow: hidden;
 }
 
 .page-writing .group-message__details summary {
     cursor: pointer;
-    padding: 0.75rem 0.9rem;
+    padding: 0.7rem 0.86rem;
     color: var(--writing-muted);
-    font-size: 0.87rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
 }
 
 .page-writing .group-message__details pre {
     margin: 0;
-    padding: 0 0.9rem 0.9rem;
+    padding: 0 0.86rem 0.86rem;
     overflow: auto;
     white-space: pre-wrap;
     word-break: break-word;
-    color: var(--writing-text);
-    font-size: 0.82rem;
+    color: #bdeeff;
+    font-size: 0.78rem;
     line-height: 1.55;
 }
 
 .page-writing .writing-composer {
-    padding: 1rem;
-    border-radius: 1.5rem;
-    border: 1px solid rgba(112, 79, 42, 0.12);
-    background: rgba(255, 252, 247, 0.94);
+    padding: 0.95rem;
+    border-radius: 1.35rem;
+    background:
+        linear-gradient(135deg, rgba(104, 232, 255, 0.07), transparent 52%),
+        rgba(8, 15, 29, 0.9);
 }
 
 .page-writing .writing-composer__field {
@@ -318,27 +598,36 @@
 
 .page-writing .writing-composer__field span {
     display: inline-block;
-    margin-bottom: 0.55rem;
+    margin-bottom: 0.52rem;
     color: var(--writing-muted);
-    font-size: 0.88rem;
-    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
 .page-writing .writing-composer textarea {
     width: 100%;
-    min-height: 6rem;
+    min-height: 5.8rem;
     resize: vertical;
-    padding: 0.95rem 1rem;
-    border: 1px solid rgba(112, 79, 42, 0.12);
-    border-radius: 1.15rem;
-    background: rgba(255, 255, 255, 0.82);
+    padding: 0.92rem 1rem;
+    border: 1px solid rgba(126, 221, 255, 0.16);
+    border-radius: 1rem;
+    background: rgba(2, 8, 18, 0.74);
     color: var(--writing-text);
+    caret-color: var(--writing-accent);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+}
+
+.page-writing .writing-composer textarea::placeholder {
+    color: rgba(176, 195, 217, 0.58);
 }
 
 .page-writing .writing-composer textarea:focus {
-    outline: 2px solid rgba(157, 95, 40, 0.18);
-    outline-offset: 0;
-    border-color: rgba(157, 95, 40, 0.24);
+    outline: none;
+    border-color: rgba(104, 232, 255, 0.58);
+    box-shadow: 0 0 0 3px rgba(104, 232, 255, 0.12), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 .page-writing .writing-composer__footer {
@@ -346,7 +635,7 @@
     align-items: flex-end;
     justify-content: space-between;
     gap: 1rem;
-    margin-top: 0.9rem;
+    margin-top: 0.85rem;
 }
 
 .page-writing .writing-composer__status {
@@ -358,13 +647,47 @@
 }
 
 .page-writing .writing-composer__error {
-    margin-top: 0.4rem;
-    color: #a53e23;
+    margin-top: 0.38rem;
+    color: #ff9aba;
+}
+
+@keyframes writing-scan {
+    0% {
+        background-position: 0 0;
+    }
+    100% {
+        background-position: 0 100%;
+    }
+}
+
+@keyframes writing-pulse {
+    0%,
+    100% {
+        transform: scale(1);
+        opacity: 0.78;
+    }
+    50% {
+        transform: scale(1.18);
+        opacity: 1;
+    }
+}
+
+@keyframes writing-message-in {
+    0% {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 @media (max-width: 980px) {
     .page-writing .writing-shell {
         grid-template-columns: 1fr;
+        height: auto;
+        min-height: calc(100vh - 9rem);
     }
 
     .page-writing .writing-channel-header {
@@ -384,7 +707,8 @@
     }
 
     .page-writing [data-sessions-open="true"] .writing-rail {
-        display: block;
+        display: flex;
+        min-height: 18rem;
     }
 
     .page-writing .writing-composer__footer {
@@ -394,5 +718,13 @@
 
     .page-writing .group-message--user .group-message__inner {
         max-width: 100%;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .page-writing .writing-stage::after,
+    .page-writing .writing-pinned::before,
+    .page-writing .group-message {
+        animation: none;
     }
 }
