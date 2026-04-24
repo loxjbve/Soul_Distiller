@@ -857,7 +857,8 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.2,
                 max_tokens=900,
-                timeout=35.0,
+                timeout=240.0,
+                stream=True,
             )
             model_name = round_result.model or model_name
             for key in usage:
@@ -3883,7 +3884,7 @@ def _build_fallback_evidence_plan_v2(
     topic_terms = _extract_topic_keywords_v2(normalize_whitespace(state.topic).lower())
     prototype_candidates = _rank_prototype_documents_for_fallback_v2(bundle, topic_terms)
     anchor_candidates = _rank_source_anchors_for_fallback_v2(bundle, topic_terms, prototype_candidates)
-    chosen_anchors = anchor_candidates[:4] or list(bundle.source_anchors[:4])
+    chosen_anchors = anchor_candidates[:4]
     anchor_ids = [
         str(item.get("id") or "").strip()
         for item in chosen_anchors
@@ -3891,10 +3892,13 @@ def _build_fallback_evidence_plan_v2(
     ]
     motif_path = _unique_preserve_order(
         [
-            tag
-            for item in prototype_candidates[:2]
-            for tag in (item.get("motif_tags") or [])[:3]
-            if str(tag or "").strip()
+            *[
+                tag
+                for item in prototype_candidates[:2]
+                for tag in (item.get("motif_tags") or [])[:3]
+                if str(tag or "").strip()
+            ],
+            *[term for term in topic_terms if len(term) >= 3],
         ]
     )[:6]
     family_hints = _unique_preserve_order(
@@ -3936,13 +3940,8 @@ def _build_fallback_evidence_plan_v2(
         "desired_distance": _fallback_desired_distance_v2(prototype_candidates),
         "motif_path": motif_path,
         "forbidden_drift": ["不要写成分析说明", "不要写成诊断、鸡汤或教程"],
-        "prototype_family_hints": family_hints
-        or [
-            str(item.get("family_key") or item.get("label") or "").strip()
-            for item in (bundle.prototype_index.get("prototype_families") or [])[:2]
-            if str(item.get("family_key") or item.get("label") or "").strip()
-        ],
-        "search_terms": search_terms,
+        "prototype_family_hints": family_hints,
+        "search_terms": topic_terms[:6] or search_terms,
         "anchor_ids": anchor_ids,
         "evidence_windows": evidence_windows,
         "plan_steps": [
@@ -3950,7 +3949,7 @@ def _build_fallback_evidence_plan_v2(
             "沿着代价和关系压力慢慢推进",
             "结尾收回到一个没说尽的残响",
         ],
-        "coverage_gaps": [] if evidence_windows else ["本轮未拿到更细片段，只能用默认 anchors 兜底。"],
+        "coverage_gaps": [] if evidence_windows else ["本轮没有检到与题目直接相关的高置信片段，先按题目本身保守成型。"],
         "query_trace": [],
         "queried_anchor_ids": anchor_ids,
         "queried_document_ids": [
@@ -4205,8 +4204,8 @@ def _rank_prototype_documents_for_fallback_v2(
             score += 1
         scored.append((score, item))
     scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("title") or "")))
-    ranked = [item for score, item in scored if score > 0]
-    return ranked[:4] or [item for _, item in scored[:3]]
+    ranked = [item for score, item in scored if score >= 4]
+    return ranked[:4]
 
 
 def _rank_source_anchors_for_fallback_v2(
@@ -4234,8 +4233,8 @@ def _rank_source_anchors_for_fallback_v2(
             score += 3
         scored.append((score, anchor))
     scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("id") or "")))
-    ranked = [item for score, item in scored if score > 0]
-    return ranked[:6] or [item for _, item in scored[:4]]
+    ranked = [item for score, item in scored if score >= 4]
+    return ranked[:6]
 
 
 def _fallback_anchor_reason_v2(anchor: dict[str, Any]) -> str:
@@ -4300,6 +4299,7 @@ def _normalize_topic_adapter_payload_v2(
     *,
     evidence_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    fallback_mode = str((evidence_plan or {}).get("planner_mode") or "").strip() == "heuristic_fallback"
     available_anchor_ids = _available_anchor_ids(bundle)
     anchor_ids = [
         anchor_id
@@ -4308,10 +4308,10 @@ def _normalize_topic_adapter_payload_v2(
     ]
     if not anchor_ids:
         anchor_ids = available_anchor_ids[:4]
-    family_hints = _normalize_string_list(payload.get("prototype_family_hints"), limit=6)
-    if not family_hints:
+    family_hints = [] if fallback_mode else _normalize_string_list(payload.get("prototype_family_hints"), limit=6)
+    if not family_hints and not fallback_mode:
         family_hints = _normalize_string_list((evidence_plan or {}).get("prototype_family_hints"), limit=6)
-    if not family_hints:
+    if not family_hints and not fallback_mode:
         family_hints = [
             str(item.get("family_key") or item.get("label") or "").strip()
             for item in (bundle.author_model.get("prototype_families") or [])[:3]
@@ -4853,17 +4853,28 @@ def _extract_topic_keywords_v2(topic: str) -> list[str]:
         "自己",
         "我的",
     }
+    splitter_chars = "的了和在是把给跟与及就还都也又并但却而着过地得让把将被向对把呢吗啊呀吧"
     candidates: list[str] = []
     for token in re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", topic):
         if token in stop_terms:
             continue
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,}", token):
+            parts = [piece for piece in re.split(f"[{splitter_chars}]+", token) if len(piece) >= 2]
+            if not parts:
+                parts = [token]
+            for part in parts:
+                if part in stop_terms:
+                    continue
+                candidates.append(part)
+                if len(part) >= 4:
+                    for size in (4, 3):
+                        if len(part) >= size:
+                            for index in range(0, len(part) - size + 1):
+                                piece = part[index:index + size]
+                                if piece not in stop_terms:
+                                    candidates.append(piece)
+            continue
         candidates.append(token)
-        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", token):
-            for size in (4, 3, 2):
-                for index in range(0, len(token) - size + 1):
-                    piece = token[index:index + size]
-                    if piece not in stop_terms:
-                        candidates.append(piece)
     return _unique_preserve_order(sorted(candidates, key=len, reverse=True))[:10]
 
 

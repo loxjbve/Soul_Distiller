@@ -1808,6 +1808,7 @@ def test_stone_writing_evidence_plan_timeout_falls_back_to_local_plan(client, ap
     latest_turn = assistant_turns[-1]
     assert latest_turn["trace"]["evidence_plan"]["planner_mode"] == "heuristic_fallback"
     assert latest_turn["trace"]["evidence_plan"]["fallback_reason"]
+    assert latest_turn["trace"]["evidence_plan"]["prototype_family_hints"] == []
     assert latest_turn["trace"]["final_assessment"]
 
 

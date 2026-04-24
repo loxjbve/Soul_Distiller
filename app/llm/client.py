@@ -265,6 +265,7 @@ class OpenAICompatibleClient:
         temperature: float = 0.2,
         max_tokens: int | None = 1400,
         timeout: float | None = None,
+        stream: bool = False,
     ) -> ToolRoundResult:
         return self._run_with_fallbacks(
             lambda client, config: client._tool_round_once(
@@ -279,6 +280,7 @@ class OpenAICompatibleClient:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                stream=stream,
             )
         )
 
@@ -291,6 +293,7 @@ class OpenAICompatibleClient:
         temperature: float,
         max_tokens: int | None,
         timeout: float | None,
+        stream: bool,
     ) -> ToolRoundResult:
         resolved_timeout = float(timeout or 90.0)
         if normalize_api_mode(self.config.api_mode) == "responses":
@@ -303,6 +306,24 @@ class OpenAICompatibleClient:
             }
             if max_tokens is not None:
                 payload["max_output_tokens"] = max_tokens
+            if stream:
+                stream_payload = {**payload, "stream": True}
+                meta = self._post_stream_tool_round_with_meta(
+                    "/responses",
+                    stream_payload,
+                    timeout=resolved_timeout,
+                    api_mode="responses",
+                )
+                content = meta["content"]
+                tool_calls = list(meta.get("tool_calls") or [])
+                usage = self._extract_usage({"usage": meta.get("usage") or {}}, messages, content)
+                return ToolRoundResult(
+                    content=content,
+                    model=str(meta.get("model") or resolved_model),
+                    usage=usage,
+                    tool_calls=tool_calls,
+                    provider_response_id=meta.get("response_id"),
+                )
             data, _meta = self._post_json_with_meta("/responses", payload, timeout=resolved_timeout)
             tool_calls = self._extract_responses_tool_calls(data)
             content = self._extract_responses_text(data)
@@ -323,6 +344,24 @@ class OpenAICompatibleClient:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if stream:
+            stream_payload = {**payload, "stream": True}
+            meta = self._post_stream_tool_round_with_meta(
+                "/chat/completions",
+                stream_payload,
+                timeout=resolved_timeout,
+                api_mode="chat_completions",
+            )
+            content = meta["content"]
+            tool_calls = list(meta.get("tool_calls") or [])
+            usage = self._extract_usage({"usage": meta.get("usage") or {}}, messages, content)
+            return ToolRoundResult(
+                content=content,
+                model=str(meta.get("model") or resolved_model),
+                usage=usage,
+                tool_calls=tool_calls,
+                provider_response_id=meta.get("response_id"),
+            )
         data, meta = self._post_json_with_meta("/chat/completions", payload, timeout=resolved_timeout)
         try:
             message = data["choices"][0]["message"]
@@ -787,6 +826,242 @@ class OpenAICompatibleClient:
             "response_id": response_id,
             "usage": usage,
         }
+
+    def _post_stream_tool_round_with_meta(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: float,
+        api_mode: str,
+    ) -> dict[str, Any]:
+        url = self._url(path)
+        raw_lines: list[str] = []
+        content_parts: list[str] = []
+        response_id: str | None = None
+        model_name: str | None = None
+        usage: dict[str, Any] = {}
+        tool_states: dict[str, dict[str, Any]] = {}
+        tool_order: list[str] = []
+        try:
+            with _HTTP_CLIENT.stream("POST", url, headers=self._headers(), json=payload, timeout=timeout) as response:
+                if response.is_error:
+                    response_text = response.read().decode("utf-8", errors="replace")
+                    self._append_log(
+                        {
+                            "timestamp": _utcnow_iso(),
+                            "method": "POST",
+                            "path": path,
+                            "url": url,
+                            "provider_kind": self.config.provider_kind,
+                            "api_mode": normalize_api_mode(self.config.api_mode),
+                            "request_body": payload,
+                            "status_code": response.status_code,
+                            "response_text": response_text,
+                            "ok": False,
+                            "error": f"HTTP {response.status_code}",
+                            "stream": True,
+                        }
+                    )
+                    raise LLMError(
+                        f"Remote service returned HTTP {response.status_code}.",
+                        raw_text=response_text,
+                        request_url=url,
+                        status_code=response.status_code,
+                        request_payload=payload,
+                    )
+                for raw_line in response.iter_lines():
+                    line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
+                    if not line:
+                        continue
+                    raw_lines.append(line)
+                    if line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data_text = line[5:].strip()
+                    if not data_text or data_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        continue
+                    if api_mode == "responses":
+                        response_id, model_name, usage = self._consume_responses_tool_stream_event(
+                            event,
+                            response_id=response_id,
+                            model_name=model_name,
+                            usage=usage,
+                            content_parts=content_parts,
+                            tool_states=tool_states,
+                            tool_order=tool_order,
+                        )
+                    else:
+                        response_id, model_name, usage = self._consume_chat_tool_stream_event(
+                            event,
+                            response_id=response_id,
+                            model_name=model_name,
+                            usage=usage,
+                            content_parts=content_parts,
+                            tool_states=tool_states,
+                            tool_order=tool_order,
+                        )
+        except LLMError:
+            raise
+        except Exception as exc:
+            partial_text = "".join(content_parts) or "\n".join(raw_lines) or None
+            self._append_log(
+                {
+                    "timestamp": _utcnow_iso(),
+                    "method": "POST",
+                    "path": path,
+                    "url": url,
+                    "provider_kind": self.config.provider_kind,
+                    "api_mode": normalize_api_mode(self.config.api_mode),
+                    "request_body": payload,
+                    "response_text": partial_text,
+                    "raw_stream": "\n".join(raw_lines),
+                    "ok": False,
+                    "error": str(exc),
+                    "stream": True,
+                }
+            )
+            raise LLMError(
+                f"Request failed: {exc}",
+                raw_text=partial_text,
+                request_url=url,
+                request_payload=payload,
+            ) from exc
+
+        content = "".join(content_parts)
+        tool_calls = [
+            LLMToolCall(
+                id=str(state.get("id") or key),
+                name=str(state.get("name") or ""),
+                arguments_json=str(state.get("arguments") or "{}"),
+                arguments=parse_json_response(str(state.get("arguments") or "{}")),
+            )
+            for key in tool_order
+            for state in [tool_states.get(key) or {}]
+            if str(state.get("name") or "").strip() or str(state.get("arguments") or "").strip()
+        ]
+        self._append_log(
+            {
+                "timestamp": _utcnow_iso(),
+                "method": "POST",
+                "path": path,
+                "url": url,
+                "provider_kind": self.config.provider_kind,
+                "api_mode": normalize_api_mode(self.config.api_mode),
+                "request_body": payload,
+                "response_text": content,
+                "raw_stream": "\n".join(raw_lines),
+                "ok": True,
+                "stream": True,
+            }
+        )
+        return {
+            "url": url,
+            "response_text": content,
+            "raw_stream": "\n".join(raw_lines),
+            "content": content,
+            "response_id": response_id,
+            "usage": usage,
+            "tool_calls": tool_calls,
+            "model": model_name,
+        }
+
+    @staticmethod
+    def _consume_responses_tool_stream_event(
+        event: dict[str, Any],
+        *,
+        response_id: str | None,
+        model_name: str | None,
+        usage: dict[str, Any],
+        content_parts: list[str],
+        tool_states: dict[str, dict[str, Any]],
+        tool_order: list[str],
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        response = event.get("response") or {}
+        if isinstance(response, dict):
+            response_id = str(response.get("id") or "") or response_id
+            model_name = str(response.get("model") or "") or model_name
+            if isinstance(response.get("usage"), dict):
+                usage = dict(response["usage"])
+        if isinstance(event.get("usage"), dict):
+            usage = dict(event["usage"])
+        event_type = str(event.get("type") or "")
+        if event_type == "response.output_text.delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                content_parts.append(delta)
+
+        item = event.get("item") or event.get("output_item") or {}
+        if not isinstance(item, dict):
+            item = {}
+        if item.get("type") == "function_call" or "function_call" in event_type:
+            call_id = (
+                str(event.get("call_id") or "")
+                or str(item.get("call_id") or "")
+                or str(item.get("id") or "")
+                or str(event.get("item_id") or "")
+            )
+            if not call_id:
+                call_id = f"call_{len(tool_order)}"
+            if call_id not in tool_states:
+                tool_states[call_id] = {"id": call_id, "name": "", "arguments": ""}
+                tool_order.append(call_id)
+            state = tool_states[call_id]
+            state["id"] = str(item.get("call_id") or item.get("id") or call_id)
+            if item.get("name"):
+                state["name"] = str(item.get("name") or "")
+            if event.get("name"):
+                state["name"] = str(event.get("name") or "")
+            if item.get("arguments") is not None:
+                state["arguments"] = str(item.get("arguments") or "{}")
+            delta = str(event.get("delta") or event.get("arguments_delta") or "")
+            if delta:
+                state["arguments"] = f"{state.get('arguments') or ''}{delta}"
+        return response_id, model_name, usage
+
+    @staticmethod
+    def _consume_chat_tool_stream_event(
+        event: dict[str, Any],
+        *,
+        response_id: str | None,
+        model_name: str | None,
+        usage: dict[str, Any],
+        content_parts: list[str],
+        tool_states: dict[str, dict[str, Any]],
+        tool_order: list[str],
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
+        response_id = str(event.get("id") or "") or response_id
+        model_name = str(event.get("model") or "") or model_name
+        if isinstance(event.get("usage"), dict):
+            usage = dict(event["usage"])
+        for choice in event.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if isinstance(content, str):
+                content_parts.append(content)
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("text"):
+                        content_parts.append(str(item.get("text") or ""))
+            for tool_call in delta.get("tool_calls") or []:
+                index = str(tool_call.get("index") if tool_call.get("index") is not None else len(tool_order))
+                if index not in tool_states:
+                    tool_states[index] = {"id": "", "name": "", "arguments": ""}
+                    tool_order.append(index)
+                state = tool_states[index]
+                if tool_call.get("id"):
+                    state["id"] = str(tool_call.get("id") or "")
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    state["name"] = f"{state.get('name') or ''}{str(function.get('name') or '')}"
+                if function.get("arguments"):
+                    state["arguments"] = f"{state.get('arguments') or ''}{str(function.get('arguments') or '')}"
+        return response_id, model_name, usage
 
     def _post_json_with_meta(
         self,

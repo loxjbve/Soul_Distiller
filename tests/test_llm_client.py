@@ -160,6 +160,102 @@ def test_tool_round_omits_chat_token_limit_when_disabled(monkeypatch):
     assert "max_tokens" not in captured["payload"]
 
 
+def test_tool_round_can_stream_responses_tool_calls(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post_stream_tool_round_with_meta(self, path, payload, *, timeout, api_mode):
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        captured["api_mode"] = api_mode
+        return {
+            "url": "https://example.com/v1/responses",
+            "response_text": "",
+            "raw_stream": "data: ...",
+            "content": "working",
+            "response_id": "resp_1",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+            "tool_calls": [
+                type("Call", (), {
+                    "id": "call_1",
+                    "name": "list_project_documents",
+                    "arguments_json": "{}",
+                    "arguments": {},
+                })()
+            ],
+            "model": "demo-model",
+        }
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_stream_tool_round_with_meta", fake_post_stream_tool_round_with_meta)
+    client = OpenAICompatibleClient(
+        ServiceConfig(base_url="https://example.com/v1", api_key="sk-test", model="demo-model", api_mode="responses")
+    )
+
+    result = client.tool_round(
+        [{"role": "user", "content": "hello"}],
+        build_tool_schemas(),
+        stream=True,
+        timeout=120.0,
+    )
+
+    assert result.content == "working"
+    assert result.tool_calls[0].name == "list_project_documents"
+    assert captured["path"] == "/responses"
+    assert captured["payload"]["stream"] is True
+    assert captured["timeout"] == 120.0
+    assert captured["api_mode"] == "responses"
+
+
+def test_tool_round_can_stream_chat_tool_calls(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post_stream_tool_round_with_meta(self, path, payload, *, timeout, api_mode):
+        captured["path"] = path
+        captured["payload"] = payload
+        captured["timeout"] = timeout
+        captured["api_mode"] = api_mode
+        return {
+            "url": "https://example.com/v1/chat/completions",
+            "response_text": "",
+            "raw_stream": "data: ...",
+            "content": "",
+            "response_id": "chatcmpl_1",
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            "tool_calls": [
+                type("Call", (), {
+                    "id": "call_1",
+                    "name": "list_project_documents",
+                    "arguments_json": "{}",
+                    "arguments": {},
+                })()
+            ],
+            "model": "demo-model",
+        }
+
+    monkeypatch.setattr(OpenAICompatibleClient, "_post_stream_tool_round_with_meta", fake_post_stream_tool_round_with_meta)
+    client = OpenAICompatibleClient(
+        ServiceConfig(
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+            model="demo-model",
+            api_mode="chat_completions",
+        )
+    )
+
+    result = client.tool_round(
+        [{"role": "user", "content": "hello"}],
+        build_tool_schemas(),
+        stream=True,
+        timeout=120.0,
+    )
+
+    assert result.tool_calls[0].name == "list_project_documents"
+    assert captured["path"] == "/chat/completions"
+    assert captured["payload"]["stream"] is True
+    assert captured["timeout"] == 120.0
+    assert captured["api_mode"] == "chat_completions"
+
+
 def test_analyze_with_llm_disables_token_limit(monkeypatch):
     captured: dict[str, object] = {}
 
