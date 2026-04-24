@@ -287,12 +287,15 @@ if (bootstrap?.project_id) {
     }
 
     function renderDocumentCard(doc) {
-        const profile = doc.stone_profile || {};
+        const profile = doc.stone_profile_v2 || {};
+        const voiceMask = profile.voice_mask || {};
+        const stance = profile.stance_vector || {};
         const status = String(doc.lamp_status || deriveLampStatus(doc));
         const metaTags = [
-            profile.content_type,
-            profile.length_label,
-            profile.emotion_label,
+            profile.surface_form,
+            profile.length_band,
+            voiceMask.distance,
+            stance.judgment,
         ].filter(Boolean);
 
         return `
@@ -342,7 +345,7 @@ if (bootstrap?.project_id) {
         if (!elements.hovercardBody || !elements.hovercardTitle || !elements.hovercardStatus) {
             return;
         }
-        const profile = doc.stone_profile || null;
+        const profile = doc.stone_profile_v2 || null;
         elements.hovercardTitle.textContent = doc.title || doc.filename || "文章画像";
         setStatusTone(elements.hovercardStatus, doc.lamp_status || deriveLampStatus(doc), buildStatusLabel(doc.lamp_status || deriveLampStatus(doc)));
 
@@ -356,16 +359,31 @@ if (bootstrap?.project_id) {
             return;
         }
 
+        const voiceMask = profile.voice_mask || {};
+        const stance = profile.stance_vector || {};
+        const syntax = profile.syntax_signature || {};
+        const anchorSpans = profile.anchor_spans || {};
         elements.hovercardBody.innerHTML = `
-            ${renderHovercardSection("内容", profile.content_summary || "暂无总结")}
+            ${renderHovercardSection("语义核", profile.content_kernel || "暂无总结")}
             <div class="stone-hovercard__facts">
-                ${renderFactCard("性质", profile.content_type || "其他")}
-                ${renderFactCard("长短", profile.length_label || "短文")}
-                ${renderFactCard("情绪", profile.emotion_label || "不确定")}
+                ${renderFactCard("表层形态", profile.surface_form || "未标注")}
+                ${renderFactCard("长度", profile.length_band || "short")}
+                ${renderFactCard("套路族", profile.prototype_family || "未归类")}
             </div>
+            <div class="stone-hovercard__facts">
+                ${renderFactCard("距离", voiceMask.distance || "回收")}
+                ${renderFactCard("判断", stance.judgment || "悬置")}
+                ${renderFactCard("镜头", stance.value_lens || "代价")}
+            </div>
+            ${renderHovercardSection("起笔 / 收口", `${profile.opening_move || "未标注"}\n${profile.closure_move || "未标注"}`)}
+            ${renderHovercardSection("句法签名", [syntax.cadence, syntax.sentence_shape, ...(syntax.punctuation_habits || [])].filter(Boolean).join(" / ") || "暂无")}
             <section class="stone-hovercard__section">
-                <span class="stone-hovercard__label">精选段落</span>
-                ${renderPassages(profile.selected_passages || [])}
+                <span class="stone-hovercard__label">母题 / 修辞</span>
+                ${renderTagChips([...(profile.motif_tags || []), ...(profile.rhetorical_devices || [])])}
+            </section>
+            <section class="stone-hovercard__section">
+                <span class="stone-hovercard__label">原文锚点</span>
+                ${renderAnchorSpans(anchorSpans)}
             </section>
         `;
     }
@@ -397,6 +415,34 @@ if (bootstrap?.project_id) {
                 ${passages.map((item) => `<article class="stone-hovercard__passage">${escapeWithBreaks(item)}</article>`).join("")}
             </div>
         `;
+    }
+
+    function renderTagChips(items) {
+        const rows = Array.isArray(items)
+            ? items.filter((item) => String(item || "").trim())
+            : [];
+        if (!rows.length) {
+            return `<div class="stone-hovercard__empty"><p>暂无标签。</p></div>`;
+        }
+        return `
+            <div class="stone-hovercard__facts">
+                ${rows.slice(0, 8).map((item) => `<article class="stone-hovercard__fact"><strong>${escapeHtml(String(item))}</strong></article>`).join("")}
+            </div>
+        `;
+    }
+
+    function renderAnchorSpans(anchorSpans) {
+        const signature = Array.isArray(anchorSpans?.signature) ? anchorSpans.signature.filter(Boolean) : [];
+        const passages = [
+            anchorSpans?.opening,
+            anchorSpans?.pivot,
+            anchorSpans?.closing,
+            ...signature,
+        ].filter((item, index, array) => {
+            const value = String(item || "").trim();
+            return value && array.findIndex((candidate) => String(candidate || "").trim() === value) === index;
+        });
+        return renderPassages(passages.slice(0, 4));
     }
 
     function updateHovercardPosition(clientX, clientY) {
@@ -442,18 +488,20 @@ if (bootstrap?.project_id) {
     }
 
     function deriveLampStatus(doc) {
-        if (doc.has_profile || doc.stone_profile) {
+        if (doc.has_profile || doc.stone_profile_v2) {
             return "completed";
         }
         return "queued";
     }
 
     function buildDocumentPreview(doc) {
-        const profile = doc.stone_profile || {};
+        const profile = doc.stone_profile_v2 || {};
+        const anchors = profile.anchor_spans || {};
         return (
             doc.profile_preview
-            || profile.content_summary
-            || (Array.isArray(profile.selected_passages) ? profile.selected_passages[0] : "")
+            || profile.content_kernel
+            || anchors.opening
+            || (Array.isArray(anchors.signature) ? anchors.signature[0] : "")
             || buildDocumentFallback(doc)
         );
     }
@@ -461,13 +509,13 @@ if (bootstrap?.project_id) {
     function buildDocumentFallback(doc) {
         const status = String(doc.lamp_status || deriveLampStatus(doc));
         if (status === "running") {
-            return "正在提取这篇文章的极简画像字段...";
+            return "正在提取这篇文章的 Stone v2 画像...";
         }
         if (status === "failed") {
             return "当前未完成，可重新运行预分析。";
         }
         if (status === "completed") {
-            return "画像已生成，悬浮即可查看。";
+            return "Stone v2 画像已生成，悬浮即可查看。";
         }
         return "等待进入处理队列。";
     }
@@ -475,16 +523,16 @@ if (bootstrap?.project_id) {
     function buildLiveNote(bundle, documents) {
         const status = String(bundle?.status || "idle");
         if (status === "running" || status === "queued") {
-            return "系统正在逐篇生成极简画像，完成后会立即同步到右侧卡片，并支持悬浮预览。";
+            return "系统正在逐篇生成 Stone v2 画像，完成后会立即同步到卡片，并支持悬浮预览。";
         }
         if (status === "completed") {
-            return `本轮预分析已完成，共生成 ${countCompletedDocuments(documents)} 篇文章画像；现在可以悬浮查看每篇文章的结果。`;
+            return `本轮预分析已完成，共生成 ${countCompletedDocuments(documents)} 篇 Stone v2 画像；现在可以悬浮查看每篇文章的结果。`;
         }
         if (status === "failed") {
             return bundle?.error_message || "本轮预分析执行失败，可以修复后重新运行。";
         }
         return documents.length
-            ? "运行后会为每篇文章生成极简画像，并把结果写回文档元数据。"
+            ? "运行后会为每篇文章生成 Stone v2 画像，并把结果写回文档元数据。"
             : "先上传文章，然后再启动逐篇预分析。";
     }
 
@@ -509,7 +557,7 @@ if (bootstrap?.project_id) {
     }
 
     function countCompletedDocuments(documents) {
-        return documents.filter((item) => item?.has_profile || item?.stone_profile).length;
+        return documents.filter((item) => item?.has_profile || item?.stone_profile_v2).length;
     }
 
     function buildStatusLabel(status) {

@@ -11,7 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import FacetDefinition
-from app.analysis.stone import build_stone_facet_messages, expand_stone_profile_for_analysis
+from app.analysis.stone import build_stone_facet_messages
+from app.analysis.stone_v2 import expand_stone_profile_v2_for_analysis, normalize_stone_profile_v2
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import DocumentRecord, Project
 from app.schemas import ServiceConfig
@@ -168,9 +169,10 @@ class StoneAnalysisAgent:
 
     @staticmethod
     def _profile_snapshot(document: DocumentRecord) -> dict[str, Any]:
-        profile = dict((document.metadata_json or {}).get("stone_profile") or {})
-        expanded = expand_stone_profile_for_analysis(
+        profile = dict((document.metadata_json or {}).get("stone_profile_v2") or {})
+        expanded = expand_stone_profile_v2_for_analysis(
             profile,
+            article_text=str(document.clean_text or document.raw_text or ""),
             title=document.title or document.filename,
         )
         return {

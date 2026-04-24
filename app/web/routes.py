@@ -20,12 +20,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis.stone_v2 import (
+    STONE_V2_ASSET_KINDS,
     build_short_text_clusters,
     build_stone_author_model_v2,
     build_stone_prototype_index_v2,
     normalize_stone_profile_v2,
     render_stone_author_model_markdown,
     render_stone_prototype_index_markdown,
+    validate_stone_v2_asset_payload,
 )
 from app.analysis.facets import FACETS, get_facets_for_mode
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
@@ -971,6 +973,7 @@ def publish_asset_form(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
+    _ensure_valid_stone_v2_asset_payload(draft.asset_kind, draft.json_payload)
     version = repository.publish_asset_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -2026,6 +2029,24 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
             emit_status("prepare", 6, f"开始生成{_asset_label(asset_kind)}草稿", document_key=default_document_key)
             with request.app.state.db.session() as session:
                 project = _ensure_project(session, project_id)
+                if project.mode == "stone" and asset_kind in STONE_V2_ASSET_KINDS:
+                    emit_status("load", 28, "正在读取 Stone 预处理基线", document_key=default_document_key)
+                    draft = _generate_asset_draft(request, session, project_id, asset_kind=asset_kind)
+                    emit_status("persist", 94, "正在保存 Stone V2 基线资产", document_key=default_document_key)
+                    events.put(
+                        {
+                            "type": "done",
+                            "status": "completed",
+                            "phase": "done",
+                            "progress_percent": 100,
+                            "message": "草稿生成完成，已同步到编辑区。",
+                            "draft_id": draft.id,
+                            "draft": _serialize_draft(draft),
+                            "asset_kind": asset_kind,
+                            "document_key": default_document_key,
+                        }
+                    )
+                    return
                 run = repository.get_latest_analysis_run(session, project_id)
                 if not run or run.status in {"queued", "running"}:
                     events.put({"type": "error", "message": "分析结果尚未就绪。"})
@@ -2180,6 +2201,7 @@ def publish_asset_api(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到资产草稿。")
+    _ensure_valid_stone_v2_asset_payload(draft.asset_kind, draft.json_payload)
     version = repository.publish_asset_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -3298,6 +3320,9 @@ def _normalize_saved_asset_content(
     markdown_text: str,
     prompt_text: str,
 ) -> tuple[dict[str, Any], str]:
+    if asset_kind in STONE_V2_ASSET_KINDS:
+        _ensure_valid_stone_v2_asset_payload(asset_kind, json_payload)
+        return dict(json_payload or {}), prompt_text
     if asset_kind not in {"skill", "cc_skill"}:
         return json_payload, prompt_text
 
@@ -3322,6 +3347,15 @@ def _normalize_saved_asset_content(
         }
     payload["documents"] = documents
     return payload, markdown_text
+
+
+def _ensure_valid_stone_v2_asset_payload(asset_kind: str, json_payload: dict[str, Any] | None) -> None:
+    if asset_kind not in STONE_V2_ASSET_KINDS:
+        return
+    try:
+        validate_stone_v2_asset_payload(asset_kind, json_payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _ordered_facets(facets: list[AnalysisFacet], summary: dict[str, Any] | None = None) -> list[AnalysisFacet]:
@@ -4689,6 +4723,7 @@ def _generate_asset_draft(request: Request, session: Session, project_id: str, *
                 documents=documents,
             )
             markdown = render_stone_prototype_index_markdown(payload)
+        _ensure_valid_stone_v2_asset_payload(asset_kind, payload)
         draft = repository.create_asset_draft(
             session,
             project_id=project_id,

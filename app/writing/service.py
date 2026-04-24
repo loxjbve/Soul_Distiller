@@ -11,12 +11,14 @@ from typing import Any
 from uuid import uuid4
 
 from app.analysis.facets import FacetDefinition, get_facets_for_mode
-from app.analysis.stone import estimate_word_count, expand_stone_profile_for_analysis, render_writing_request
+from app.analysis.stone import estimate_word_count, render_writing_request
 from app.analysis.stone_v2 import (
     build_short_text_clusters,
     build_stone_author_model_v2,
     build_stone_prototype_index_v2,
     build_short_text_cluster_key,
+    expand_stone_profile_v2_for_analysis,
+    is_valid_stone_v2_asset_payload,
     normalize_stone_profile_v2,
     render_stone_author_model_markdown,
     render_stone_prototype_index_markdown,
@@ -678,6 +680,8 @@ class WritingAgentService:
                             "You are the Stone v2 prototype-grounded drafter.\n"
                             "Write article prose only.\n"
                             "Follow the blueprint, selected prototypes, and author model constraints.\n"
+                            "Imitate the author's structural pressure, cadence, lexicon, and closure residue from the author_style_pack.\n"
+                            "Do not write a generic essay; make the topic sound native to this author.\n"
                             "Do not explain your plan or mention JSON, anchors, critic feedback, or analysis terms.\n"
                             "Do not use DSM, diagnosis, or pathology labels.\n"
                             "Return only the article body."
@@ -690,6 +694,7 @@ class WritingAgentService:
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
+                            f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
                             "Hard bans:\n"
                             "- No prompt language, no analysis language, no anchor ids.\n"
@@ -700,7 +705,7 @@ class WritingAgentService:
                     },
                 ],
                 model=client.config.model,
-                temperature=0.65,
+                temperature=0.45,
                 max_tokens=None,
             )
         except Exception as exc:
@@ -823,6 +828,8 @@ class WritingAgentService:
                             "You are the Stone v2 whole-article redrafter.\n"
                             "Throw away the failed draft and write a fresh article from the blueprint.\n"
                             "Use critic feedback only to avoid syntheticness and formal drift.\n"
+                            "Imitate the author's structural pressure, cadence, lexicon, and closure residue from the author_style_pack.\n"
+                            "Do not write a generic essay; make the topic sound native to this author.\n"
                             "Return only the article body."
                         ),
                     },
@@ -834,12 +841,13 @@ class WritingAgentService:
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
                             f"critic feedback JSON:\n{json.dumps(critics, ensure_ascii=False, indent=2)}\n\n"
+                            f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}"
                         ),
                     },
                 ],
                 model=client.config.model,
-                temperature=0.55,
+                temperature=0.42,
                 max_tokens=None,
             )
         except Exception as exc:
@@ -873,6 +881,7 @@ class WritingAgentService:
                             "You are the Stone v2 line editor.\n"
                             "Keep the working draft structure and closing energy.\n"
                             "Only apply local edits requested by the critics.\n"
+                            "Tighten cadence, lexicon, and closure residue toward the author_style_pack without adding analysis language.\n"
                             "Return only the article body."
                         ),
                     },
@@ -885,12 +894,13 @@ class WritingAgentService:
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
                             f"critic feedback JSON:\n{json.dumps(critics, ensure_ascii=False, indent=2)}\n\n"
+                            f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}"
                         ),
                     },
                 ],
                 model=client.config.model,
-                temperature=0.4,
+                temperature=0.32,
                 max_tokens=None,
             )
         except Exception as exc:
@@ -1395,11 +1405,12 @@ def _load_stone_profiles(session, project_id: str) -> list[dict[str, Any]]:
     profiles: list[dict[str, Any]] = []
     for document in repository.list_project_documents(session, project_id):
         metadata = dict(document.metadata_json or {})
-        profile = metadata.get("stone_profile")
+        profile = metadata.get("stone_profile_v2")
         if not isinstance(profile, dict):
             continue
-        expanded = expand_stone_profile_for_analysis(
+        expanded = expand_stone_profile_v2_for_analysis(
             profile,
+            article_text=str(document.clean_text or document.raw_text or ""),
             title=document.title or document.filename,
         )
         profiles.append(
@@ -1526,7 +1537,7 @@ def _build_source_anchors(
             role = "opening" if passage_index == 1 else "turn" if passage_index < len(passages[:4]) else "closing"
             add_anchor(
                 anchor_id=f"profile:{document_id}:passage:{passage_index}",
-                source="stone_profile",
+                source="stone_profile_v2",
                 title=title,
                 quote=passage,
                 role=role,
@@ -2604,10 +2615,10 @@ def _load_stone_documents_v2(session, project_id: str) -> list[dict[str, Any]]:
 
 def _load_v2_asset_payload(session, project_id: str, *, asset_kind: str) -> dict[str, Any]:
     version = repository.get_latest_asset_version(session, project_id, asset_kind=asset_kind)
-    if version and isinstance(version.json_payload, dict):
+    if version and isinstance(version.json_payload, dict) and is_valid_stone_v2_asset_payload(asset_kind, version.json_payload):
         return dict(version.json_payload)
     draft = repository.get_latest_asset_draft(session, project_id, asset_kind=asset_kind)
-    if draft and isinstance(draft.json_payload, dict):
+    if draft and isinstance(draft.json_payload, dict) and is_valid_stone_v2_asset_payload(asset_kind, draft.json_payload):
         return dict(draft.json_payload)
     return {}
 
@@ -2821,7 +2832,7 @@ def _select_prototypes_for_topic_v2(
             }
         )
     scored.sort(key=lambda item: (-float(item.get("score") or 0.0), str(item.get("title") or "")))
-    selected_documents = scored[:2]
+    selected_documents = scored[:3]
     selected_windows: list[dict[str, Any]] = []
     for item in selected_documents:
         document_id = str(item.get("document_id") or "")
@@ -2855,7 +2866,7 @@ def _select_prototypes_for_topic_v2(
                 }
             )
     selected_windows.sort(key=lambda item: (-float(item.get("score") or 0.0), item.get("role") != "opening"))
-    selected_windows = selected_windows[:6]
+    selected_windows = selected_windows[:9]
     anchor_ids = _unique_preserve_order(
         [
             *(topic_adapter.get("anchor_ids") or []),
@@ -3028,7 +3039,7 @@ def _compact_prototype_selection_for_draft_v2(selection: dict[str, Any]) -> dict
                     "closing": _trim_text((item.get("windows") or {}).get("closing"), 220),
                 },
             }
-            for item in (selection.get("selected_documents") or [])[:2]
+            for item in (selection.get("selected_documents") or [])[:3]
         ],
         "selected_windows": [
             {
@@ -3037,8 +3048,37 @@ def _compact_prototype_selection_for_draft_v2(selection: dict[str, Any]) -> dict
                 "role": item.get("role"),
                 "quote": _trim_text(item.get("quote"), 220),
             }
-            for item in (selection.get("selected_windows") or [])[:6]
+            for item in (selection.get("selected_windows") or [])[:9]
         ],
+    }
+
+
+def _build_author_style_pack_v2(bundle: StoneWritingAnalysisBundle, selection: dict[str, Any]) -> dict[str, Any]:
+    views = dict(bundle.author_model.get("views") or {})
+    style_invariants = dict(bundle.author_model.get("style_invariants") or {})
+    return {
+        "voice_form": list(views.get("voice_form") or [])[:6],
+        "motif_worldview": list(views.get("motif_worldview") or [])[:6],
+        "lexicon_tics": list(style_invariants.get("lexicon_tics") or [])[:10],
+        "rhetoric_preferences": list(style_invariants.get("rhetoric_preferences") or [])[:8],
+        "opening_signatures": list(style_invariants.get("opening_signatures") or [])[:6],
+        "closure_signatures": list(style_invariants.get("closure_signatures") or [])[:6],
+        "prototype_windows": [
+            {
+                "role": item.get("role"),
+                "quote": _trim_text(item.get("quote"), 240),
+            }
+            for item in (selection.get("selected_windows") or [])[:9]
+        ],
+        "evidence_windows": [
+            {
+                "family": item.get("prototype_family"),
+                "opening": _trim_text(item.get("opening"), 180),
+                "closing": _trim_text(item.get("closing"), 180),
+            }
+            for item in (bundle.author_model.get("evidence_windows") or [])[:6]
+        ],
+        "anti_patterns": list(bundle.author_model.get("anti_patterns") or [])[:8],
     }
 
 
@@ -3153,9 +3193,14 @@ def _render_critic_message_v2(critic: dict[str, Any]) -> str:
 
 def _resolve_critic_action_v2(critics: list[dict[str, Any]]) -> str:
     verdicts = [str(item.get("verdict") or "approve") for item in critics]
+    scores = [_clamp_score(item.get("score"), default=0.0) for item in critics]
     if any(verdict == "redraft" for verdict in verdicts):
         return "redraft"
+    if any(score < 0.52 for score in scores):
+        return "redraft"
     if any(verdict == "line_edit" for verdict in verdicts):
+        return "line_edit"
+    if any(score < 0.72 for score in scores):
         return "line_edit"
     return "approve"
 

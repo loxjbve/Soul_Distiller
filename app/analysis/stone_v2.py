@@ -40,6 +40,8 @@ STONE_PROFILE_V2_SURFACE_FORMS = (
     "list_bit",
 )
 
+STONE_V2_ASSET_KINDS = ("stone_author_model_v2", "stone_prototype_index_v2")
+
 _COMMON_CJK_NGRAMS = {
     "这个",
     "那个",
@@ -297,24 +299,61 @@ def build_stone_profile_v2_messages(
     ]
 
 
-def profile_v2_to_legacy_preview(profile: dict[str, Any] | None) -> dict[str, Any]:
-    normalized = normalize_stone_profile_v2(profile)
-    length_label = "长文" if normalized["length_band"] in {"medium", "long"} else "短文"
-    selected = [
+def expand_stone_profile_v2_for_analysis(
+    profile: dict[str, Any] | None,
+    *,
+    article_text: str = "",
+    title: str | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_stone_profile_v2(
+        profile,
+        article_text=article_text,
+        fallback_title=title,
+    )
+    anchor_spans = dict(normalized.get("anchor_spans") or {})
+    selected_passages = [
         item
         for item in (
-            normalized["anchor_spans"].get("opening"),
-            *list(normalized["anchor_spans"].get("signature") or []),
-            normalized["anchor_spans"].get("closing"),
+            anchor_spans.get("opening"),
+            *(anchor_spans.get("signature") or []),
+            anchor_spans.get("closing"),
         )
-        if _normalize_short_text(item)
+        if normalize_whitespace(str(item or ""))
+    ][:3]
+    emotion_curve = [
+        str(item or "").strip()
+        for item in (normalized.get("emotion_curve") or [])
+        if str(item or "").strip()
     ]
+    voice_mask = dict(normalized.get("voice_mask") or {})
+    stance_vector = dict(normalized.get("stance_vector") or {})
     return {
-        "content_summary": normalized["content_kernel"],
-        "content_type": "",
-        "length_label": length_label,
-        "emotion_label": "",
-        "selected_passages": _unique_preserve_order(selected)[:3],
+        "content_summary": normalized.get("content_kernel") or "",
+        "content_type": normalized.get("surface_form") or "",
+        "length_label": normalized.get("length_band") or "",
+        "emotion_label": " / ".join(emotion_curve[:2]),
+        "selected_passages": selected_passages,
+        "article_theme": normalized.get("content_kernel") or (title or ""),
+        "document_theme": normalized.get("content_kernel") or (title or ""),
+        "narrative_pov": voice_mask.get("person") or "",
+        "tone": " / ".join(
+            item
+            for item in (
+                normalized.get("surface_form"),
+                stance_vector.get("judgment"),
+                voice_mask.get("distance"),
+            )
+            if str(item or "").strip()
+        ),
+        "structure_template": " -> ".join(
+            str(item or "").strip()
+            for item in (normalized.get("segment_map") or [])
+            if str(item or "").strip()
+        ),
+        "lexical_markers": list(normalized.get("lexicon_markers") or [])[:6],
+        "emotional_progression": " -> ".join(emotion_curve[:3]),
+        "nonclinical_signals": list(normalized.get("anti_patterns") or [])[:4],
+        "representative_lines": list(anchor_spans.get("signature") or [])[:3],
     }
 
 
@@ -380,6 +419,15 @@ def build_stone_author_model_v2(
     normalized_profiles = [normalize_stone_profile_v2(profile) for profile in profiles]
     voice_form = _build_voice_form_view(normalized_profiles)
     motif_worldview = _build_motif_worldview_view(normalized_profiles)
+    style_invariants = {
+        "voice_form": voice_form,
+        "motif_worldview": motif_worldview,
+        "lexicon_tics": _build_lexicon_tics(normalized_profiles),
+        "rhetoric_preferences": _build_rhetoric_preferences(normalized_profiles),
+        "opening_signatures": _build_opening_signatures(normalized_profiles),
+        "closure_signatures": _build_closure_signatures(normalized_profiles),
+    }
+    blueprint_rules = _build_blueprint_rules(normalized_profiles, short_text_clusters)
     prototype_families = [
         {
             "family_key": cluster["cluster_key"],
@@ -392,7 +440,6 @@ def build_stone_author_model_v2(
                 f"判断：{cluster.get('judgment') or ''}",
             ],
             "motif_tags": list(cluster.get("motif_tags") or [])[:4],
-            "exemplar_windows": list(cluster.get("exemplar_windows") or [])[:4],
         }
         for cluster in short_text_clusters
     ]
@@ -404,10 +451,10 @@ def build_stone_author_model_v2(
         "version": "v2",
         "project_name": project_name,
         "profile_count": len(normalized_profiles),
-        "style_invariants": {
-            "voice_form": voice_form,
-            "motif_worldview": motif_worldview,
-        },
+        "family_count": len(prototype_families),
+        "evidence_window_count": len(_collect_author_evidence_windows(normalized_profiles)),
+        "style_invariants": style_invariants,
+        "blueprint_rules": blueprint_rules,
         "prototype_families": prototype_families,
         "topic_translation_map": topic_translation_map,
         "anti_patterns": anti_patterns,
@@ -423,6 +470,77 @@ def build_stone_author_model_v2(
         },
         "evidence_windows": _collect_author_evidence_windows(normalized_profiles),
     }
+
+
+def is_valid_stone_v2_asset_payload(asset_kind: str, payload: dict[str, Any] | None) -> bool:
+    try:
+        validate_stone_v2_asset_payload(asset_kind, payload)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_stone_v2_asset_payload(asset_kind: str, payload: dict[str, Any] | None) -> None:
+    if asset_kind not in STONE_V2_ASSET_KINDS:
+        raise ValueError(f"Unsupported Stone v2 asset kind: {asset_kind}")
+    if not isinstance(payload, dict):
+        raise ValueError("Stone v2 asset payload must be a JSON object.")
+    if payload.get("asset_kind") != asset_kind:
+        raise ValueError(f"Stone v2 payload asset_kind must be {asset_kind}.")
+    if asset_kind == "stone_author_model_v2":
+        _validate_stone_author_model_payload(payload)
+        return
+    _validate_stone_prototype_index_payload(payload)
+
+
+def _validate_stone_author_model_payload(payload: dict[str, Any]) -> None:
+    views = payload.get("views")
+    style_invariants = payload.get("style_invariants")
+    if not isinstance(views, dict) or not isinstance(style_invariants, dict):
+        raise ValueError("Stone Author Model V2 must include views and style_invariants.")
+    if not isinstance(payload.get("topic_translation_map"), list):
+        raise ValueError("Stone Author Model V2 must include topic_translation_map.")
+    if not isinstance(payload.get("anti_patterns"), list):
+        raise ValueError("Stone Author Model V2 must include anti_patterns.")
+    has_author_signal = any(
+        isinstance(views.get(key), list)
+        for key in ("voice_form", "motif_worldview", "prototype_families", "anti_patterns")
+    )
+    has_style_signal = any(
+        isinstance(style_invariants.get(key), list)
+        for key in (
+            "lexicon_tics",
+            "rhetoric_preferences",
+            "opening_signatures",
+            "closure_signatures",
+            "voice_form",
+            "motif_worldview",
+        )
+    )
+    if not has_author_signal or not has_style_signal:
+        raise ValueError("Stone Author Model V2 lacks author-style signals.")
+
+
+def _validate_stone_prototype_index_payload(payload: dict[str, Any]) -> None:
+    documents = payload.get("documents")
+    if not isinstance(documents, list) or not documents:
+        raise ValueError("Stone Prototype Index V2 must include prototype documents.")
+    if not any(_prototype_document_has_anchor_window(item) for item in documents if isinstance(item, dict)):
+        raise ValueError("Stone Prototype Index V2 must include document windows that can form source anchors.")
+
+
+def _prototype_document_has_anchor_window(item: dict[str, Any]) -> bool:
+    document_id = str(item.get("document_id") or item.get("id") or "").strip()
+    if not document_id:
+        return False
+    windows = item.get("windows")
+    if not isinstance(windows, dict):
+        return False
+    for key in ("opening", "pivot", "closing"):
+        if normalize_whitespace(str(windows.get(key) or "")):
+            return True
+    signatures = windows.get("signature_line")
+    return isinstance(signatures, list) and any(normalize_whitespace(str(value or "")) for value in signatures)
 
 
 def build_stone_prototype_index_v2(
@@ -451,6 +569,14 @@ def build_stone_prototype_index_v2(
                 "length_band": normalized["length_band"],
                 "prototype_family": normalized["prototype_family"],
                 "surface_form": normalized["surface_form"],
+                "retrieval_facets": {
+                    "prototype_family": normalized["prototype_family"],
+                    "length_band": normalized["length_band"],
+                    "judgment": ((normalized.get("stance_vector") or {}).get("judgment") or ""),
+                    "value_lens": ((normalized.get("stance_vector") or {}).get("value_lens") or ""),
+                    "distance": ((normalized.get("voice_mask") or {}).get("distance") or ""),
+                    "motif_tags": list(normalized.get("motif_tags") or [])[:4],
+                },
                 "motif_tags": list(normalized.get("motif_tags") or [])[:4],
                 "voice_mask": dict(normalized.get("voice_mask") or {}),
                 "stance_vector": dict(normalized.get("stance_vector") or {}),
@@ -469,43 +595,128 @@ def build_stone_prototype_index_v2(
                 )[:12],
             }
         )
+    family_summary = _summarize_prototype_families(entries)
     return {
         "asset_kind": "stone_prototype_index_v2",
         "version": "v2",
         "project_name": project_name,
         "document_count": len(entries),
+        "family_count": len(family_summary),
+        "retrieval_policy": {
+            "ranking_formula": "prototype_family 35% + length_band 25% + stance_vector 20% + motif_tags 10% + voice_mask 10%",
+            "weights": {
+                "prototype_family": 35,
+                "length_band": 25,
+                "stance_vector": 20,
+                "motif_tags": 10,
+                "voice_mask": 10,
+            },
+            "ranking_fields": [
+                "prototype_family",
+                "length_band",
+                "stance_vector.judgment",
+                "stance_vector.value_lens",
+                "motif_tags",
+                "voice_mask.distance",
+            ],
+        },
+        "prototype_families": family_summary,
+        "retrieval_term_index": _build_retrieval_term_index(entries),
         "documents": entries,
     }
 
 
 def render_stone_author_model_markdown(payload: dict[str, Any]) -> str:
     views = dict(payload.get("views") or {})
+    style_invariants = dict(payload.get("style_invariants") or {})
+    blueprint_rules = dict(payload.get("blueprint_rules") or {})
+    length_behaviors = list(payload.get("length_behaviors") or [])[:6]
+    topic_translation_map = list(payload.get("topic_translation_map") or [])[:6]
+    prototype_families = list(payload.get("prototype_families") or [])[:6]
+    evidence_windows = list(payload.get("evidence_windows") or [])[:4]
     lines = [
         "# Stone Author Model V2",
         "",
         f"- project: {payload.get('project_name') or ''}",
         f"- profile_count: {payload.get('profile_count') or 0}",
+        f"- family_count: {payload.get('family_count') or len(prototype_families)}",
         "",
         "## Voice / Form",
     ]
     lines.extend(f"- {item}" for item in views.get("voice_form") or [])
     lines.extend(["", "## Motif / Worldview"])
     lines.extend(f"- {item}" for item in views.get("motif_worldview") or [])
+    lines.extend(["", "## Lexicon / Rhetoric"])
+    lines.extend(f"- {item}" for item in style_invariants.get("lexicon_tics") or [])
+    lines.extend(f"- {item}" for item in style_invariants.get("rhetoric_preferences") or [])
+    lines.extend(["", "## Opening / Closure Signatures"])
+    for item in style_invariants.get("opening_signatures") or []:
+        lines.append(f"- opening: {item.get('move') or ''} ({item.get('count') or 0}) | {item.get('anchor') or ''}")
+    for item in style_invariants.get("closure_signatures") or []:
+        lines.append(f"- closing: {item.get('move') or ''} ({item.get('count') or 0}) | {item.get('anchor') or ''}")
+    lines.extend(["", "## Blueprint Rules"])
+    for key in ("entry_rules", "development_rules", "closure_rules"):
+        values = list(blueprint_rules.get(key) or [])
+        if values:
+            lines.append(f"- {key}: {'；'.join(values)}")
+    lines.extend(["", "## Length Behaviors"])
+    for item in length_behaviors:
+        lines.append(
+            f"- {item.get('length_band') or ''}: {item.get('surface_form') or ''}; "
+            f"opening={item.get('opening_move') or ''}; closing={item.get('closure_move') or ''}"
+        )
+    lines.extend(["", "## Topic Translation Map"])
+    for item in topic_translation_map:
+        lines.append(
+            f"- {item.get('value_lens') or ''}: motifs={', '.join(item.get('motif_tags') or [])}; "
+            f"opening={', '.join(item.get('opening_moves') or [])}; closing={', '.join(item.get('closure_moves') or [])}"
+        )
     lines.extend(["", "## Prototype Families"])
-    lines.extend(f"- {item}" for item in views.get("prototype_families") or [])
+    for item in prototype_families:
+        lines.append(f"- {item.get('label') or item.get('family_key') or ''} ({item.get('member_count') or 0})")
     lines.extend(["", "## Anti-Patterns"])
     lines.extend(f"- {item}" for item in views.get("anti_patterns") or [])
+    lines.extend(["", "## Evidence Windows"])
+    for item in evidence_windows:
+        lines.extend(
+            [
+                f"- family: {item.get('prototype_family') or ''}",
+                f"  opening: {item.get('opening') or ''}",
+                f"  closing: {item.get('closing') or ''}",
+            ]
+        )
     return "\n".join(lines).strip()
 
 
 def render_stone_prototype_index_markdown(payload: dict[str, Any]) -> str:
+    family_summary = list(payload.get("prototype_families") or [])[:8]
+    retrieval_policy = dict(payload.get("retrieval_policy") or {})
+    term_index = list(payload.get("retrieval_term_index") or [])[:12]
     lines = [
         "# Stone Prototype Index V2",
         "",
         f"- project: {payload.get('project_name') or ''}",
         f"- document_count: {payload.get('document_count') or 0}",
+        f"- family_count: {payload.get('family_count') or len(family_summary)}",
         "",
+        "## Retrieval Policy",
+        f"- formula: {retrieval_policy.get('ranking_formula') or ''}",
+        f"- fields: {', '.join(retrieval_policy.get('ranking_fields') or [])}",
+        "",
+        "## Family Summary",
     ]
+    for item in family_summary:
+        lines.append(
+            f"- {item.get('label') or item.get('family_key') or ''}: "
+            f"{item.get('member_count') or 0} docs; motifs={', '.join(item.get('motif_tags') or [])}"
+        )
+    lines.extend(["", "## Retrieval Term Index"])
+    for item in term_index:
+        lines.append(
+            f"- {item.get('term') or ''}: {item.get('count') or 0}; "
+            f"families={', '.join(item.get('families') or [])}"
+        )
+    lines.append("")
     for item in (payload.get("documents") or [])[:12]:
         lines.extend(
             [
@@ -513,12 +724,36 @@ def render_stone_prototype_index_markdown(payload: dict[str, Any]) -> str:
                 f"- family: {item.get('prototype_family') or ''}",
                 f"- length_band: {item.get('length_band') or ''}",
                 f"- motifs: {', '.join(item.get('motif_tags') or [])}",
+                f"- retrieval_terms: {', '.join(item.get('retrieval_terms') or [])}",
                 f"- opening: {(item.get('windows') or {}).get('opening') or ''}",
                 f"- closing: {(item.get('windows') or {}).get('closing') or ''}",
                 "",
             ]
         )
     return "\n".join(lines).strip()
+
+
+def _summarize_prototype_families(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in entries:
+        family = _normalize_short_text(item.get("prototype_family"))
+        if family:
+            grouped[family].append(item)
+    rows: list[dict[str, Any]] = []
+    for family, items in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        motif_counter: Counter[str] = Counter()
+        for item in items:
+            motif_counter.update(item.get("motif_tags") or [])
+        rows.append(
+            {
+                "family_key": family,
+                "label": family,
+                "member_count": len(items),
+                "motif_tags": [value for value, _ in motif_counter.most_common(4)],
+                "sample_titles": [str(item.get("title") or "").strip() for item in items[:3] if str(item.get("title") or "").strip()],
+            }
+        )
+    return rows
 
 
 def _resolve_length_band(value: Any, text: str) -> str:
@@ -1048,6 +1283,67 @@ def _build_motif_worldview_view(profiles: list[dict[str, Any]]) -> list[str]:
     return lines[:6]
 
 
+def _build_lexicon_tics(profiles: list[dict[str, Any]]) -> list[str]:
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        counter.update(profile.get("lexicon_markers") or [])
+    return [f"高辨识词：{_top_counter_line(counter)}"] if counter else []
+
+
+def _build_rhetoric_preferences(profiles: list[dict[str, Any]]) -> list[str]:
+    rhetoric_counter: Counter[str] = Counter()
+    cadence_counter: Counter[str] = Counter()
+    punctuation_counter: Counter[str] = Counter()
+    for profile in profiles:
+        rhetoric_counter.update(profile.get("rhetorical_devices") or [])
+        cadence_counter.update([((profile.get("syntax_signature") or {}).get("cadence") or "")])
+        punctuation_counter.update((profile.get("syntax_signature") or {}).get("punctuation_habits") or [])
+    lines: list[str] = []
+    if rhetoric_counter:
+        lines.append(f"偏好修辞：{_top_counter_line(rhetoric_counter)}")
+    if cadence_counter:
+        lines.append(f"节拍重心：{_top_counter_line(cadence_counter)}")
+    if punctuation_counter:
+        lines.append(f"标点习惯：{_top_counter_line(punctuation_counter)}")
+    return lines[:4]
+
+
+def _build_opening_signatures(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for profile in profiles:
+        move = _normalize_short_text(profile.get("opening_move"))
+        if move:
+            grouped[move].append(profile)
+    rows: list[dict[str, Any]] = []
+    for move, items in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))[:4]:
+        rows.append(
+            {
+                "move": move,
+                "count": len(items),
+                "anchor": str(((items[0].get("anchor_spans") or {}).get("opening") or "")).strip(),
+            }
+        )
+    return rows
+
+
+def _build_closure_signatures(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for profile in profiles:
+        move = _normalize_short_text(profile.get("closure_move"))
+        if move:
+            grouped[move].append(profile)
+    rows: list[dict[str, Any]] = []
+    for move, items in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))[:4]:
+        rows.append(
+            {
+                "move": move,
+                "count": len(items),
+                "anchor": str(((items[0].get("anchor_spans") or {}).get("closing") or "")).strip(),
+            }
+        )
+    return rows
+
+
 def _derive_author_anti_patterns(profiles: list[dict[str, Any]]) -> list[str]:
     counts: Counter[str] = Counter()
     for profile in profiles:
@@ -1097,6 +1393,32 @@ def _build_topic_translation_map(profiles: list[dict[str, Any]]) -> list[dict[st
     return rows[:8]
 
 
+def _build_blueprint_rules(
+    profiles: list[dict[str, Any]],
+    short_text_clusters: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    entry_rules = _top_counter_values(Counter(profile.get("opening_move") or "" for profile in profiles), limit=3)
+    closure_rules = _top_counter_values(Counter(profile.get("closure_move") or "" for profile in profiles), limit=3)
+    development_rules = _unique_preserve_order(
+        [
+            *[
+                f"{cluster.get('prototype_family') or ''} 常走 {cluster.get('opening_move') or ''} -> {cluster.get('closure_move') or ''}"
+                for cluster in short_text_clusters[:2]
+                if cluster.get("prototype_family")
+            ],
+            *[
+                f"{item.get('length_band') or ''} 常见 {item.get('surface_form') or ''}"
+                for item in _build_length_behaviors(profiles)[:2]
+            ],
+        ]
+    )
+    return {
+        "entry_rules": entry_rules[:3],
+        "development_rules": development_rules[:4],
+        "closure_rules": closure_rules[:3],
+    }
+
+
 def _collect_author_evidence_windows(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     windows: list[dict[str, Any]] = []
     for profile in profiles[:8]:
@@ -1111,6 +1433,30 @@ def _collect_author_evidence_windows(profiles: list[dict[str, Any]]) -> list[dic
             }
         )
     return windows
+
+
+def _build_retrieval_term_index(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    term_counts: Counter[str] = Counter()
+    families_by_term: dict[str, set[str]] = defaultdict(set)
+    for item in entries:
+        family = _normalize_short_text(item.get("prototype_family"))
+        for term in item.get("retrieval_terms") or []:
+            text = _normalize_short_text(term)
+            if not text:
+                continue
+            term_counts[text] += 1
+            if family:
+                families_by_term[text].add(family)
+    rows: list[dict[str, Any]] = []
+    for term, count in term_counts.most_common(16):
+        rows.append(
+            {
+                "term": term,
+                "count": count,
+                "families": sorted(families_by_term.get(term) or [])[:4],
+            }
+        )
+    return rows
 
 
 def _top_counter_line(counter: Counter[str], *, limit: int = 3) -> str:

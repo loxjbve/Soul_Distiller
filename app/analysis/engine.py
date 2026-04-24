@@ -14,7 +14,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import ALL_FACETS, FACETS, FacetDefinition, get_facet_definition, get_facet_prompt_profile, get_facets_for_mode
-from app.analysis.stone import build_stone_profile, build_stone_profile_messages, normalize_stone_profile
 from app.analysis.stone_agent import StoneAnalysisAgent
 from app.analysis.streaming import AnalysisStreamHub
 from app.analysis.telegram_agent import TelegramAnalysisAgent
@@ -1164,7 +1163,7 @@ class AnalysisEngine:
         profiled_document_ids = [
             document.id
             for document in documents
-            if isinstance(dict(document.metadata_json or {}).get("stone_profile"), dict)
+            if isinstance(dict(document.metadata_json or {}).get("stone_profile_v2"), dict)
         ]
         retrieval_trace = {
             "mode": "stone_agent",

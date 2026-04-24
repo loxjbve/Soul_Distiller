@@ -19,11 +19,10 @@
 
     .page-project .page-content {
         grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr) minmax(250px, 0.82fr);
-        grid-template-rows: minmax(200px, 0.86fr) minmax(240px, 1.14fr);
+        grid-template-rows: minmax(220px, 0.86fr) minmax(280px, 1.14fr);
         grid-template-areas:
             "upload primary rail"
             "documents documents rail";
-        gap: 12px;
     }
 
     .project-panel--upload {
@@ -43,29 +42,15 @@
         min-height: 0;
         display: grid;
         grid-template-rows: auto minmax(0, 1fr);
-        gap: 12px;
+        gap: var(--space-3);
     }
 
     .page-project--telegram-parent .page-content {
-        grid-template-columns: minmax(280px, 0.68fr) minmax(0, 1.62fr) minmax(240px, 0.7fr);
-        grid-template-rows: minmax(0, 1.12fr) minmax(160px, 0.64fr);
+        grid-template-columns: minmax(220px, 0.54fr) minmax(0, 1.82fr) minmax(220px, 0.68fr);
+        grid-template-rows: minmax(0, 1.42fr) minmax(150px, 0.58fr);
         grid-template-areas:
             "primary primary rail"
             "upload documents rail";
-        gap: 10px;
-    }
-
-    .page-project--telegram-parent .project-panel--upload .dropzone {
-        min-height: 80px;
-        padding: 12px;
-    }
-
-    .page-project--telegram-parent .project-panel--upload .dropzone strong {
-        font-size: 0.9rem;
-    }
-
-    .page-project--telegram-parent .project-panel--upload .dropzone small {
-        display: none;
     }
 
     .page-project--telegram-child .page-content {
@@ -81,77 +66,46 @@
         overflow: hidden;
     }
 
-    .persona-stage-card--unified {
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
-        gap: 0;
-        padding: 0;
-        height: 100%;
-    }
-
-    .persona-stage-step {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 12px 16px;
-        min-height: 0;
-    }
-
-    .persona-stage-step--target {
-        flex: 1.15;
-    }
-
-    .persona-stage-step--config {
-        flex: 0.85;
-    }
-
-    .persona-stage-divider {
-        width: 1px;
-        background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.08) 15%, rgba(255, 255, 255, 0.08) 85%, transparent);
-        margin: 12px 0;
-    }
-
-    .persona-config-form {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        height: 100%;
-    }
-
-    .persona-config-row {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        gap: 12px;
-        margin-top: auto;
-    }
-
-    .persona-config-row > label {
-        flex: 0 0 100px;
-    }
-
-    .persona-config-row .button-row {
-        flex: 1;
-        margin-top: 0 !important;
-    }
-
     .page-project--telegram-parent .persona-studio-shell,
     .page-project--telegram-child .telegram-bind-needed-form {
-        grid-template-columns: 1fr;
-        grid-template-areas: "main";
-        grid-template-rows: 1fr;
+        grid-template-columns: minmax(0, 1.62fr) minmax(320px, 0.92fr);
+        grid-auto-rows: minmax(0, auto);
+    }
+
+    .page-project--telegram-parent .persona-studio-shell {
+        grid-template-areas:
+            "target summary"
+            "target context"
+            "target launch";
+        grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+
+    .page-project--telegram-child .telegram-bind-needed-form {
+        grid-template-areas:
+            "target summary"
+            "target context"
+            "target launch";
     }
 
     .page-project--telegram-parent .persona-studio-main,
-    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-main {
-        grid-area: main;
-        display: flex;
+    .page-project--telegram-parent .persona-studio-shell .persona-stage-stack,
+    .page-project--telegram-parent .persona-studio-rail,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-main,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-stack,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-rail {
+        display: contents;
     }
 
-    .page-project--telegram-parent .persona-studio-rail,
-    .page-project--telegram-child .telegram-bind-needed-form .persona-studio-rail {
-        grid-area: rail;
-        display: flex;
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :first-child {
+        grid-area: summary;
+    }
+
+    .page-project--telegram-parent .persona-studio-shell > .persona-studio-rail > :last-child {
+        display: none;
+    }
+
+    .page-project--telegram-child .telegram-bind-needed-form > .persona-studio-rail > :first-child {
+        grid-area: summary;
     }
 
     .persona-studio-shell,
@@ -223,13 +177,6 @@
         gap: 10px;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 14px 28px rgba(3, 8, 20, 0.18);
         overflow: hidden;
-        transition: transform var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard);
-    }
-
-    .persona-stage-card:hover {
-        transform: translateY(-1px);
-        border-color: rgba(255, 255, 255, 0.12);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 18px 32px rgba(3, 8, 20, 0.24);
     }
 
     .persona-stage-card::before,
@@ -336,30 +283,29 @@
     }
 
     .persona-top-user-grid {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
         align-content: start;
     }
 
     .persona-top-user-card {
         position: relative;
         appearance: none;
-        display: flex;
-        gap: 6px;
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 12px;
         align-items: center;
         text-align: left;
         width: 100%;
-        min-height: 38px;
-        padding: 4px 8px;
-        border-radius: 8px;
+        min-height: 54px;
+        padding: 10px 14px;
+        border-radius: 12px;
         border: 1px solid rgba(255, 255, 255, 0.09);
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)),
             rgba(12, 17, 28, 0.6);
-        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
-        cursor: pointer;
-        overflow: hidden;
+        transition: transform 160ms ease, border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
     }
 
     .persona-top-user-card:hover {
@@ -368,64 +314,51 @@
         background:
             linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
             rgba(16, 21, 36, 0.8);
-        box-shadow: 0 4px 12px rgba(97, 168, 255, 0.08);
-    }
-
-    .persona-top-user-card__info {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-        flex: 1;
-        overflow: hidden;
     }
 
     .persona-top-user-card strong {
-        font-size: 0.8rem;
-        line-height: 1.2;
+        width: 100%;
+        min-height: auto;
+        font-size: 0.92rem;
+        line-height: 1.3;
+        letter-spacing: 0.01em;
         color: var(--text-strong);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        display: block;
-        max-width: 100%;
     }
 
     .persona-top-user-card small {
-        font-size: 0.68rem;
         color: var(--text-secondary);
+        width: auto;
+        margin-top: 0;
+        min-height: auto;
+        font-size: 0.78rem;
+        line-height: 1.3;
         white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        display: block;
-        max-width: 100%;
+    }
+
+    .persona-top-user-card.is-selected {
+        border-color: rgba(97, 168, 255, 0.42);
+        background:
+            linear-gradient(135deg, rgba(97, 168, 255, 0.2), rgba(99, 199, 255, 0.08)),
+            radial-gradient(circle at top right, rgba(97, 168, 255, 0.2), transparent 56%),
+            rgba(15, 21, 37, 0.95);
+        box-shadow: inset 0 0 0 1px rgba(97, 168, 255, 0.18), 0 20px 38px rgba(8, 14, 32, 0.28);
     }
 
     .persona-top-user-card__rank {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        width: 18px;
-        height: 18px;
-        border-radius: 4px;
-        background: rgba(97, 168, 255, 0.15);
+        width: max-content;
+        padding: 5px 9px;
+        border-radius: 999px;
+        border: 1px solid rgba(97, 168, 255, 0.2);
+        background: rgba(97, 168, 255, 0.1);
         color: #9fcbff;
-        font: 700 0.6rem/1 var(--font-mono);
-    }
-
-    .persona-manual-row {
-        margin-top: 4px;
-    }
-
-    .persona-manual-row .inline-label {
-        display: grid;
-        grid-template-columns: auto 1fr;
-        align-items: center;
-        gap: 8px;
-    }
-
-    .persona-manual-row input {
-        padding: 6px 10px;
-        min-height: 32px;
+        font: 700 0.68rem/1 var(--font-mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
     }
 
     .telegram-binding-card,
@@ -441,14 +374,6 @@
         flex-direction: column;
         gap: 8px;
         overflow: hidden;
-        transition: transform var(--motion-base) var(--easing-standard), border-color var(--motion-base) var(--easing-standard), box-shadow var(--motion-base) var(--easing-standard);
-    }
-
-    .telegram-binding-card:hover,
-    .persona-rail-card:hover {
-        transform: translateY(-2px);
-        border-color: rgba(255, 255, 255, 0.15);
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
     }
 
     .persona-rail-card--focus {
@@ -522,150 +447,10 @@
         font-size: 0.96rem;
     }
 
-    .persona-profile-card--collapsible {
-        padding: 0;
-        overflow: hidden;
-        transition: all var(--motion-base) var(--easing-standard);
-    }
-
-    .persona-profile-card__summary {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 8px 12px;
-        cursor: pointer;
-        background: rgba(255, 255, 255, 0.02);
-        transition: background var(--motion-fast) var(--easing-standard);
-    }
-
-    .persona-profile-card__summary:hover {
-        background: rgba(255, 255, 255, 0.05);
-    }
-
-    .persona-profile-card__info {
+    .persona-profile-list {
         display: flex;
         flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-    }
-
-    .persona-profile-card__status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
-
-    .collapsible-icon {
-        width: 14px;
-        height: 14px;
-        display: block;
-        position: relative;
-        color: var(--text-muted);
-        transition: transform var(--motion-base) var(--easing-standard);
-    }
-
-    .collapsible-icon::before {
-        content: "";
-        position: absolute;
-        inset: 3px;
-        border-right: 2px solid currentColor;
-        border-bottom: 2px solid currentColor;
-        transform: rotate(45deg);
-    }
-
-    .persona-profile-card.is-expanded .collapsible-icon {
-        transform: rotate(180deg);
-    }
-
-    .persona-profile-card__actions {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-    }
-
-    .persona-profile-rerun-controls {
-        display: flex;
-        align-items: flex-end;
-        justify-content: space-between;
-        gap: 10px;
-    }
-
-    .persona-profile-rerun-controls label {
-        flex: 0 0 80px;
-    }
-
-    .persona-profile-rerun-controls .ghost-button {
-        flex: 1;
-    }
-
-    .persona-profile-card__info strong {
-        font-size: 0.88rem;
-        color: var(--text-strong);
-    }
-
-    .persona-profile-card__info p {
-        margin: 0;
-        font-size: 0.76rem;
-        color: var(--text-secondary);
-    }
-
-    .persona-profile-card__content {
-        display: none;
-        padding: 12px;
-        flex-direction: column;
-        gap: 12px;
-        border-top: 1px solid rgba(255, 255, 255, 0.06);
-        background: rgba(0, 0, 0, 0.1);
-    }
-
-    .persona-profile-card.is-expanded .persona-profile-card__content {
-        display: flex;
-    }
-
-    .persona-binding-summary {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 6px 10px;
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .persona-binding-summary strong {
-        font-size: 0.82rem;
-        color: var(--text-strong);
-    }
-
-    .persona-binding-summary small {
-        font-size: 0.74rem;
-        color: var(--text-muted);
-    }
-
-    .persona-profile-rerun-form {
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        padding: 10px;
-        border-radius: 10px;
-        background: rgba(255, 255, 255, 0.03);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .persona-profile-button-grid {
-        display: grid;
-        grid-template-columns: repeat(2, 1fr);
-        gap: 6px;
-    }
-
-    .persona-profile-button-grid form {
-        display: contents;
-    }
-
-    .truncate {
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        gap: var(--space-3);
     }
 
     .telegram-relationship-panel .panel-body {
@@ -707,13 +492,6 @@
             rgba(10, 15, 25, 0.84);
         display: grid;
         gap: 6px;
-        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
-    }
-
-    .telegram-relationship-metric:hover {
-        transform: translateY(-2px);
-        border-color: rgba(255, 255, 255, 0.15);
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
     }
 
     .telegram-relationship-metric span {
@@ -799,16 +577,6 @@
         display: grid;
         gap: 8px;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-        transition: transform var(--motion-fast) var(--easing-standard), border-color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), box-shadow var(--motion-fast) var(--easing-standard);
-    }
-
-    .telegram-relationship-item:hover {
-        transform: translateY(-1px);
-        border-color: rgba(255, 255, 255, 0.12);
-        background:
-            linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
-            rgba(12, 17, 28, 0.9);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 12px rgba(0, 0, 0, 0.15);
     }
 
     .telegram-relationship-item__head {
@@ -1162,14 +930,12 @@
         padding: 8px 12px;
         font: 600 0.76rem/1 var(--font-mono);
         cursor: pointer;
-        transition: border-color var(--motion-fast) var(--easing-standard), color var(--motion-fast) var(--easing-standard), background var(--motion-fast) var(--easing-standard), transform var(--motion-fast) var(--easing-standard);
+        transition: border-color var(--motion-base) var(--easing-standard), color var(--motion-base) var(--easing-standard), background var(--motion-base) var(--easing-standard);
     }
 
     .asset-editor-tab:hover {
         border-color: rgba(97, 168, 255, 0.28);
-        background: rgba(97, 168, 255, 0.08);
         color: var(--text);
-        transform: translateY(-1px);
     }
 
     .asset-editor-tab.is-active {

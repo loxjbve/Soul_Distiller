@@ -296,7 +296,7 @@ if (bootstrap.project?.id) {
         const current = state.documents.find((item) => item.id === documentItem.id) || documentItem;
         elements.modalTitle.textContent = current.title || current.filename || state.ui.modal_document_title || "文档详情";
         const userNote = current.metadata_json?.user_note || "";
-        const stoneProfile = current.metadata_json?.stone_profile || null;
+        const stoneProfile = current.metadata_json?.stone_profile_v2 || null;
 
         elements.modalBody.innerHTML = `
             <label>
@@ -532,20 +532,33 @@ if (bootstrap.project?.id) {
     }
 
     function renderStoneProfile(profile) {
-        const lexical = Array.isArray(profile.lexical_markers) ? profile.lexical_markers : [];
-        const signals = Array.isArray(profile.nonclinical_signals) ? profile.nonclinical_signals : [];
-        const lines = Array.isArray(profile.representative_lines) ? profile.representative_lines : [];
+        const voiceMask = profile?.voice_mask || {};
+        const stance = profile?.stance_vector || {};
+        const anchors = profile?.anchor_spans || {};
+        const lexicon = Array.isArray(profile?.lexicon_markers) ? profile.lexicon_markers : [];
+        const motifs = Array.isArray(profile?.motif_tags) ? profile.motif_tags : [];
+        const rhetoric = Array.isArray(profile?.rhetorical_devices) ? profile.rhetorical_devices : [];
+        const signature = Array.isArray(anchors?.signature) ? anchors.signature.filter(Boolean) : [];
+        const tagRows = [
+            profile?.surface_form,
+            profile?.length_band,
+            voiceMask?.distance,
+            stance?.judgment,
+            stance?.value_lens,
+        ].filter(Boolean);
+
         return `
             <div class="empty-panel">
-                <strong>逐篇预分析摘要</strong>
-                <p>主题：${escapeHtml(profile.article_theme || "--")}</p>
-                <p>叙事视角：${escapeHtml(profile.narrative_pov || "--")}</p>
-                <p>语气：${escapeHtml(profile.tone || "--")}</p>
-                <p>结构模板：${escapeHtml(profile.structure_template || "--")}</p>
-                <p>情绪推进：${escapeHtml(profile.emotional_progression || "--")}</p>
-                ${lexical.length ? `<p>词汇标记：${escapeHtml(lexical.join("、"))}</p>` : ""}
-                ${signals.length ? `<p>非临床心理线索：${escapeHtml(signals.join("；"))}</p>` : ""}
-                ${lines.length ? `<p>代表句：${escapeHtml(lines.join(" / "))}</p>` : ""}
+                <strong>Stone v2 文章画像</strong>
+                ${tagRows.length ? `<p>${escapeHtml(tagRows.join(" · "))}</p>` : ""}
+                <p>语义核：${escapeHtml(profile?.content_kernel || "--")}</p>
+                <p>起笔动作：${escapeHtml(profile?.opening_move || "--")}</p>
+                <p>收口动作：${escapeHtml(profile?.closure_move || "--")}</p>
+                <p>判断镜头：${escapeHtml(stance?.target || "--")} / ${escapeHtml(stance?.judgment || "--")} / ${escapeHtml(stance?.value_lens || "--")}</p>
+                ${lexicon.length ? `<p>词汇标记：${escapeHtml(lexicon.join("、"))}</p>` : ""}
+                ${motifs.length ? `<p>母题标签：${escapeHtml(motifs.join("、"))}</p>` : ""}
+                ${rhetoric.length ? `<p>修辞动作：${escapeHtml(rhetoric.join("、"))}</p>` : ""}
+                ${signature.length ? `<p>锚点句：${escapeHtml(signature.join(" / "))}</p>` : ""}
             </div>
         `;
     }

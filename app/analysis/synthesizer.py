@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from app.analysis.stone import expand_stone_profile_for_analysis
+from app.analysis.stone_v2 import expand_stone_profile_v2_for_analysis
 from app.analysis.prompts import build_asset_messages, build_cc_skill_messages
 from app.analysis.writing_guide import (
     build_writing_guide_payload_from_facets as _build_writing_guide_payload_from_facets,
@@ -66,6 +66,8 @@ class AssetSynthesizer:
         retrieval_service: Any | None = None,
     ) -> AssetBundle:
         normalized_kind = "cc_skill" if asset_kind == "skill" else (asset_kind if asset_kind in ASSET_KINDS else "cc_skill")
+        if normalized_kind in {"stone_author_model_v2", "stone_prototype_index_v2"}:
+            raise ValueError("Stone V2 assets must be generated from Stone preprocess output, not the generic synthesizer.")
         self._emit_progress(
             progress_callback,
             phase="prepare",
@@ -1010,11 +1012,12 @@ class AssetSynthesizer:
         profiles: list[dict[str, Any]] = []
         for document in repository.list_project_documents(session, project_id):
             metadata = dict(document.metadata_json or {})
-            profile = metadata.get("stone_profile")
+            profile = metadata.get("stone_profile_v2")
             if not isinstance(profile, dict):
                 continue
-            expanded = expand_stone_profile_for_analysis(
+            expanded = expand_stone_profile_v2_for_analysis(
                 profile,
+                article_text=str(document.clean_text or document.raw_text or ""),
                 title=document.title or document.filename,
             )
             profiles.append(
