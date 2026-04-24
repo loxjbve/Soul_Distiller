@@ -264,6 +264,7 @@ class OpenAICompatibleClient:
         model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int | None = 1400,
+        timeout: float | None = None,
     ) -> ToolRoundResult:
         return self._run_with_fallbacks(
             lambda client, config: client._tool_round_once(
@@ -277,6 +278,7 @@ class OpenAICompatibleClient:
                 ),
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=timeout,
             )
         )
 
@@ -288,7 +290,9 @@ class OpenAICompatibleClient:
         resolved_model: str,
         temperature: float,
         max_tokens: int | None,
+        timeout: float | None,
     ) -> ToolRoundResult:
+        resolved_timeout = float(timeout or 90.0)
         if normalize_api_mode(self.config.api_mode) == "responses":
             payload = {
                 "model": resolved_model,
@@ -299,7 +303,7 @@ class OpenAICompatibleClient:
             }
             if max_tokens is not None:
                 payload["max_output_tokens"] = max_tokens
-            data, _meta = self._post_json_with_meta("/responses", payload)
+            data, _meta = self._post_json_with_meta("/responses", payload, timeout=resolved_timeout)
             tool_calls = self._extract_responses_tool_calls(data)
             content = self._extract_responses_text(data)
             usage = self._extract_usage(data, messages, content)
@@ -319,7 +323,7 @@ class OpenAICompatibleClient:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
-        data, meta = self._post_json_with_meta("/chat/completions", payload)
+        data, meta = self._post_json_with_meta("/chat/completions", payload, timeout=resolved_timeout)
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:

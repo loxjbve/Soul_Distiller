@@ -1777,6 +1777,40 @@ def test_stone_writing_pipeline_fails_without_silent_fallback_when_llm_stage_err
     assert "草稿不可用，需要重试" in latest_turn["content"]
 
 
+def test_stone_writing_evidence_plan_timeout_falls_back_to_local_plan(client, app, monkeypatch):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_writing_mocks(monkeypatch, fail_stage="evidence_plan")
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Fallback Session"},
+    ).json()["id"]
+
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"topic": "写我吃肯德基的故事", "target_word_count": 400},
+    ).json()
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+
+    assert not [payload for name, payload in events if name == "error"]
+    stage_events = [payload for name, payload in events if name == "stage"]
+    assert stage_events[0]["message_kind"] == "evidence_plan"
+    assert "回退原因" in stage_events[0]["body"]
+    assert [payload for name, payload in events if name == "done"]
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    latest_turn = assistant_turns[-1]
+    assert latest_turn["trace"]["evidence_plan"]["planner_mode"] == "heuristic_fallback"
+    assert latest_turn["trace"]["evidence_plan"]["fallback_reason"]
+    assert latest_turn["trace"]["final_assessment"]
+
+
 def test_stone_drafter_prompt_includes_topic_translation_outline_and_constraints(client, app, monkeypatch):
     project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
     _seed_stone_analysis(app, project_id)

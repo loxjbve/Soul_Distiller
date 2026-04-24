@@ -291,7 +291,7 @@ class WritingAgentService:
         analysis_bundle.generation_packet["evidence_plan"] = evidence_plan
         evidence_payload = _build_writer_message_payload(
             message_kind="evidence_plan",
-            label="证据规划已完成",
+            label="证据规划已完成" if not evidence_plan.get("fallback_reason") else "证据规划已完成（已降级）",
             body=_render_evidence_plan_v2(evidence_plan),
             detail=evidence_plan,
             stage="evidence_plan",
@@ -598,18 +598,22 @@ class WritingAgentService:
             raise WritingPipelineError("evidence_plan", "写作模型未配置，无法规划证据。")
         try:
             response = self._run_evidence_tool_loop_v2(state, analysis_bundle, client)
+            payload = parse_json_response(response["content"], fallback=True)
+            plan = _normalize_evidence_plan_payload_v2(
+                payload,
+                analysis_bundle,
+                query_trace=response.get("tool_trace") or [],
+                queried_anchor_ids=response.get("queried_anchor_ids") or [],
+                queried_document_ids=response.get("queried_document_ids") or [],
+            )
+            plan["planner_mode"] = "tool_loop"
+            return plan
         except Exception as exc:
-            raise WritingPipelineError("evidence_plan", f"证据规划失败：{exc}") from exc
-
-        payload = parse_json_response(response["content"], fallback=True)
-        plan = _normalize_evidence_plan_payload_v2(
-            payload,
-            analysis_bundle,
-            query_trace=response.get("tool_trace") or [],
-            queried_anchor_ids=response.get("queried_anchor_ids") or [],
-            queried_document_ids=response.get("queried_document_ids") or [],
-        )
-        return plan
+            return _build_fallback_evidence_plan_v2(
+                state,
+                analysis_bundle,
+                reason=str(exc),
+            )
 
     def _run_evidence_tool_loop_v2(
         self,
@@ -630,7 +634,8 @@ class WritingAgentService:
                 self._evidence_tool_schemas_v2(),
                 model=client.config.model,
                 temperature=0.2,
-                max_tokens=1200,
+                max_tokens=900,
+                timeout=35.0,
             )
             model_name = round_result.model or model_name
             for key in usage:
@@ -3549,7 +3554,98 @@ def _render_evidence_plan_v2(payload: dict[str, Any]) -> str:
     )
     if payload.get("coverage_gaps"):
         lines.extend(["", "待补证据：", *[f"- {item}" for item in (payload.get("coverage_gaps") or [])[:4]]])
+    if payload.get("fallback_reason"):
+        lines.extend(["", f"回退原因：{payload.get('fallback_reason')}"])
     return "\n".join(lines).strip()
+
+
+def _build_fallback_evidence_plan_v2(
+    state: WritingStreamState,
+    bundle: StoneWritingAnalysisBundle,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    topic_terms = _extract_topic_keywords_v2(normalize_whitespace(state.topic).lower())
+    prototype_candidates = _rank_prototype_documents_for_fallback_v2(bundle, topic_terms)
+    anchor_candidates = _rank_source_anchors_for_fallback_v2(bundle, topic_terms, prototype_candidates)
+    chosen_anchors = anchor_candidates[:4] or list(bundle.source_anchors[:4])
+    anchor_ids = [
+        str(item.get("id") or "").strip()
+        for item in chosen_anchors
+        if str(item.get("id") or "").strip()
+    ]
+    motif_path = _unique_preserve_order(
+        [
+            tag
+            for item in prototype_candidates[:2]
+            for tag in (item.get("motif_tags") or [])[:3]
+            if str(tag or "").strip()
+        ]
+    )[:6]
+    family_hints = _unique_preserve_order(
+        [
+            str(item.get("prototype_family") or "").strip()
+            for item in prototype_candidates[:3]
+            if str(item.get("prototype_family") or "").strip()
+        ]
+    )[:6]
+    evidence_windows = [
+        {
+            "anchor_id": str(item.get("id") or "").strip(),
+            "document_id": str(item.get("document_id") or "").strip(),
+            "title": str(item.get("title") or "").strip(),
+            "role": str(item.get("role") or "").strip(),
+            "quote": _trim_text(item.get("quote"), 220),
+            "reason": _fallback_anchor_reason_v2(item),
+        }
+        for item in chosen_anchors[:4]
+        if str(item.get("id") or "").strip()
+    ]
+    first_anchor = chosen_anchors[0] if chosen_anchors else {}
+    entry_scene = _infer_entry_scene_from_anchor_v2(first_anchor, topic_terms)
+    search_terms = _unique_preserve_order(
+        [
+            *topic_terms[:4],
+            *(motif_path[:2]),
+            str(first_anchor.get("role") or "").strip(),
+        ]
+    )[:6]
+    felt_cost = _fallback_felt_cost_v2(state.topic, prototype_candidates)
+    return {
+        "author_angle": "先用本地索引兜底，抓住最贴近题目的场景、代价和收口方式。",
+        "entry_scene": entry_scene,
+        "felt_cost": felt_cost,
+        "judgment_target": "关系处境" if prototype_candidates else "眼前处境",
+        "value_lens": _fallback_value_lens_v2(prototype_candidates),
+        "desired_judgment": _fallback_desired_judgment_v2(prototype_candidates),
+        "desired_distance": _fallback_desired_distance_v2(prototype_candidates),
+        "motif_path": motif_path,
+        "forbidden_drift": ["不要写成分析说明", "不要写成诊断、鸡汤或教程"],
+        "prototype_family_hints": family_hints
+        or [
+            str(item.get("family_key") or item.get("label") or "").strip()
+            for item in (bundle.prototype_index.get("prototype_families") or [])[:2]
+            if str(item.get("family_key") or item.get("label") or "").strip()
+        ],
+        "search_terms": search_terms,
+        "anchor_ids": anchor_ids,
+        "evidence_windows": evidence_windows,
+        "plan_steps": [
+            "先从具体动作或物件起笔",
+            "沿着代价和关系压力慢慢推进",
+            "结尾收回到一个没说尽的残响",
+        ],
+        "coverage_gaps": [] if evidence_windows else ["本轮未拿到更细片段，只能用默认 anchors 兜底。"],
+        "query_trace": [],
+        "queried_anchor_ids": anchor_ids,
+        "queried_document_ids": [
+            str(item.get("document_id") or "").strip()
+            for item in prototype_candidates[:3]
+            if str(item.get("document_id") or "").strip()
+        ],
+        "planner_mode": "heuristic_fallback",
+        "fallback_reason": _trim_text(reason, 180),
+    }
 
 
 def _anchor_lookup_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, dict[str, Any]]:
@@ -3778,6 +3874,109 @@ def _matches_search_terms_v2(haystack: str, query_terms: list[str]) -> bool:
     if not query_terms:
         return True
     return all(term in haystack for term in query_terms)
+
+
+def _rank_prototype_documents_for_fallback_v2(
+    bundle: StoneWritingAnalysisBundle,
+    topic_terms: list[str],
+) -> list[dict[str, Any]]:
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for item in bundle.prototype_index.get("documents") or []:
+        haystack = _prototype_document_search_haystack_v2(item)
+        score = sum(4 if len(term) >= 4 else 2 for term in topic_terms if term in haystack)
+        if str((item.get("windows") or {}).get("opening") or "").strip():
+            score += 2
+        if str((item.get("windows") or {}).get("closing") or "").strip():
+            score += 1
+        scored.append((score, item))
+    scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("title") or "")))
+    ranked = [item for score, item in scored if score > 0]
+    return ranked[:4] or [item for _, item in scored[:3]]
+
+
+def _rank_source_anchors_for_fallback_v2(
+    bundle: StoneWritingAnalysisBundle,
+    topic_terms: list[str],
+    prototype_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidate_document_ids = {
+        str(item.get("document_id") or "").strip()
+        for item in prototype_candidates[:3]
+        if str(item.get("document_id") or "").strip()
+    }
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for anchor in bundle.source_anchors:
+        haystack = _anchor_search_haystack_v2(anchor)
+        score = sum(4 if len(term) >= 4 else 2 for term in topic_terms if term in haystack)
+        role = str(anchor.get("role") or "").strip()
+        if role == "opening":
+            score += 3
+        elif role == "closing":
+            score += 2
+        elif role == "signature":
+            score += 1
+        if candidate_document_ids and str(anchor.get("document_id") or "").strip() in candidate_document_ids:
+            score += 3
+        scored.append((score, anchor))
+    scored.sort(key=lambda pair: (-pair[0], str(pair[1].get("id") or "")))
+    ranked = [item for score, item in scored if score > 0]
+    return ranked[:6] or [item for _, item in scored[:4]]
+
+
+def _fallback_anchor_reason_v2(anchor: dict[str, Any]) -> str:
+    role = str(anchor.get("role") or "").strip()
+    if role == "opening":
+        return "适合直接拿来做起笔动作和气氛落地。"
+    if role == "closing":
+        return "适合拿来约束收口，不把话说尽。"
+    if role == "pivot":
+        return "适合中段拧出压力或句意转折。"
+    return "适合拿来补作者的句法和质感。"
+
+
+def _infer_entry_scene_from_anchor_v2(anchor: dict[str, Any], topic_terms: list[str]) -> str:
+    quote = str(anchor.get("quote") or "").strip()
+    if quote:
+        return _trim_text(quote, 28)
+    if topic_terms:
+        return f"从{_join_terms(topic_terms[:2], fallback='一个动作')}切入"
+    return "从一个动作或物件切入"
+
+
+def _fallback_felt_cost_v2(topic: str, prototype_candidates: list[dict[str, Any]]) -> str:
+    for item in prototype_candidates:
+        stance = dict(item.get("stance_vector") or {})
+        value_lens = str(stance.get("value_lens") or "").strip()
+        if value_lens:
+            return f"先把{topic}背后的{value_lens}写出来，再让情绪显形。"
+    return f"先把{topic}背后的代价写出来，再让情绪显形。"
+
+
+def _fallback_value_lens_v2(prototype_candidates: list[dict[str, Any]]) -> str:
+    for item in prototype_candidates:
+        stance = dict(item.get("stance_vector") or {})
+        value_lens = str(stance.get("value_lens") or "").strip()
+        if value_lens:
+            return value_lens
+    return "代价"
+
+
+def _fallback_desired_judgment_v2(prototype_candidates: list[dict[str, Any]]) -> str:
+    for item in prototype_candidates:
+        stance = dict(item.get("stance_vector") or {})
+        judgment = str(stance.get("judgment") or "").strip()
+        if judgment:
+            return judgment
+    return "悬置"
+
+
+def _fallback_desired_distance_v2(prototype_candidates: list[dict[str, Any]]) -> str:
+    for item in prototype_candidates:
+        voice_mask = dict(item.get("voice_mask") or {})
+        distance = str(voice_mask.get("distance") or "").strip()
+        if distance:
+            return distance
+    return "贴脸"
 
 
 def _normalize_topic_adapter_payload_v2(
