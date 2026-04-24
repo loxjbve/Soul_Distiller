@@ -4,7 +4,7 @@
 {% block title %}{{ channel_title }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424b">
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424c">
 {% endblock %}
 
 {% block content %}
@@ -55,12 +55,13 @@
         <section class="writing-composer">
             <label class="writing-composer__field" for="writing-message-input">
                 <span>{{ writing_ui.channel_live }}</span>
-                <textarea
+                <input
                     id="writing-message-input"
-                    rows="3"
+                    type="text"
+                    autocomplete="off"
                     data-message-input
                     placeholder="{{ writing_ui.composer_placeholder }}"
-                ></textarea>
+                >
             </label>
             <div class="writing-composer__footer">
                 <div class="writing-composer__status">
@@ -75,5 +76,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260424b"></script>
+<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260424c"></script>
 {% endblock %}

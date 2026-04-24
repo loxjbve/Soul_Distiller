@@ -14,6 +14,7 @@ from app.analysis.stone_v2 import (
     build_short_text_clusters,
     build_stone_author_model_v2,
     build_stone_prototype_index_v2,
+    estimate_word_count,
     normalize_stone_profile_v2,
 )
 from app.analysis.stone_agent import StoneAnalysisAgent
@@ -21,7 +22,7 @@ from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import ChatCompletionResult, LLMToolCall, ToolRoundResult
 from app.storage import repository
-from app.writing.service import _normalize_review_plan_payload, _review_plan_has_valid_anchors
+from app.writing.service import _fit_word_count_v2, _normalize_review_plan_payload, _review_plan_has_valid_anchors
 
 
 def _wait_for_ready(client, project_id: str, document_id: str, *, timeout_s: float = 12.0) -> dict:
@@ -236,12 +237,18 @@ def _build_mock_article(topic: str, target_word_count: int) -> str:
         "到最后也不用把话说尽。只要看见有人把手从口袋里拿出来，又重新放回去，就知道这一夜没有白等。真正留下来的，不是结论，而是那一点收不干净的余温。",
     ]
     text = "\n\n".join(paragraphs)
-    while len(text) < max(220, int(target_word_count * 0.7)):
+    while estimate_word_count(text) < max(220, int(target_word_count * 0.9)):
         text = f"{text}\n\n站台还是安静，风从边上擦过去，像把没有说完的话再往心里按了一次。"
     return text
 
 
-def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_stage: str | None = None) -> None:
+def _install_writing_mocks(
+    monkeypatch,
+    *,
+    capture: dict | None = None,
+    fail_stage: str | None = None,
+    critic_overrides: dict[str, dict] | None = None,
+) -> None:
     def fake_tool_round(self, messages, tools, **kwargs):
         del self, tools, kwargs
         system_text = str(messages[0].get("content") or "")
@@ -346,8 +353,15 @@ def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_sta
         elif "prototype-grounded drafter" in system_text:
             stage = "draft"
             content = _build_mock_article(topic, target_word_count)
+        elif "line editor" in system_text:
+            stage = "line_edit"
+            content = _build_mock_article(topic, target_word_count)
         elif "critic" in system_text and "Stone v2" in system_text:
             stage = "critic"
+            critic_key = next(
+                (key for key in ("formal_fidelity", "worldview_translation", "syntheticness") if key in system_text),
+                "formal_fidelity",
+            )
             keep_span = f"{topic}先把声调压低"
             payload = {
                 "pass": True,
@@ -360,12 +374,13 @@ def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_sta
                 "redraft_reason": "",
                 "risks": [],
             }
+            if critic_overrides and critic_key in critic_overrides:
+                payload.update(critic_overrides[critic_key])
+                if "verdict" in critic_overrides[critic_key] and "pass" not in critic_overrides[critic_key]:
+                    payload["pass"] = payload["verdict"] == "approve"
             content = json.dumps(payload, ensure_ascii=False)
         elif "whole-article redrafter" in system_text:
             stage = "redraft"
-            content = _build_mock_article(topic, target_word_count)
-        elif "line editor" in system_text:
-            stage = "line_edit"
             content = _build_mock_article(topic, target_word_count)
         elif "structured writing guide from author analysis" in system_text:
             stage = "writing_guide"
@@ -1895,10 +1910,60 @@ def test_stone_drafter_prompt_includes_topic_translation_outline_and_constraints
     )
 
     draft_call = next(item for item in capture["calls"] if item["stage"] == "draft")
+    assert "后台脚手架" in draft_call["system"]
     assert "topic_adapter JSON" in draft_call["user"]
     assert "prototype_selection JSON" in draft_call["user"]
     assert "blueprint JSON" in draft_call["user"]
+    assert "draft_surface_guardrails JSON" in draft_call["user"]
     assert "stone_v2_generation_packet JSON" in draft_call["user"]
     assert "anti_patterns" in draft_call["user"]
     assert "nonclinical_psychodynamics" not in draft_call["user"]
     assert "Stone multi-facet baseline" not in draft_call["user"]
+    assert "source_anchors" not in draft_call["user"]
+
+
+def test_stone_line_editor_prompt_uses_compact_edit_brief(client, app, monkeypatch):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    capture: dict[str, list[dict[str, str]]] = {}
+    _install_writing_mocks(
+        monkeypatch,
+        capture=capture,
+        critic_overrides={
+            "syntheticness": {
+                "pass": False,
+                "score": 0.61,
+                "verdict": "line_edit",
+                "line_edits": ["把“工业化的安慰”这类概念句换成更贴身的观察。"],
+                "risks": ["结尾还有一点总结陈词感。"],
+            }
+        },
+    )
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Line Edit Session"},
+    ).json()["id"]
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"topic": "写我吃肯德基的故事", "target_word_count": 400, "extra_requirements": "贴脸一点"},
+    ).json()
+    _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+
+    line_edit_call = next(item for item in capture["calls"] if item["stage"] == "line_edit")
+    assert "逐句修订" in line_edit_call["system"]
+    assert "line_edit_brief JSON" in line_edit_call["user"]
+    assert "author_style_pack JSON" in line_edit_call["user"]
+    assert "topic_adapter JSON" not in line_edit_call["user"]
+    assert "prototype_selection JSON" not in line_edit_call["user"]
+    assert "blueprint JSON" not in line_edit_call["user"]
+    assert "stone_v2_generation_packet JSON" not in line_edit_call["user"]
+
+
+def test_stone_v2_fit_word_count_does_not_append_analysis_filler():
+    text = "我把空纸袋捏在手里，边角已经软了，热气也散了。"
+    assert _fit_word_count_v2(text, 400) == text

@@ -103,7 +103,10 @@ if (shell) {
         elements.send?.addEventListener("click", () => sendMessage());
 
         elements.messageInput?.addEventListener("keydown", (event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            if (event.isComposing) {
+                return;
+            }
+            if (event.key === "Enter") {
                 event.preventDefault();
                 sendMessage();
             }

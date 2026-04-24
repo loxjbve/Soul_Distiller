@@ -1293,12 +1293,13 @@ class WritingAgentService:
                         "role": "system",
                         "content": (
                             "You are the Stone v2 prototype-grounded drafter.\n"
-                            "Write article prose only.\n"
-                            "Follow the blueprint, selected prototypes, and author model constraints.\n"
-                            "Imitate the author's structural pressure, cadence, lexicon, and closure residue from the author_style_pack.\n"
-                            "Do not write a generic essay; make the topic sound native to this author.\n"
-                            "Do not explain your plan or mention JSON, anchors, critic feedback, or analysis terms.\n"
-                            "Do not use DSM, diagnosis, or pathology labels.\n"
+                            "你只写正文。\n"
+                            "把 topic_adapter、blueprint 和 evidence plan 当成后台脚手架，不要把里面的抽象词、判断词、总结句原样搬进正文。\n"
+                            "先写动作、物件、口感、手势、身体反应，再让判断从现场里自己露出来。\n"
+                            "如果一句话脱离当前场景也成立，它就太像分析，应该删掉或改薄。\n"
+                            "每段最多允许一句轻判断，而且必须贴着前后的具体细节。\n"
+                            "不要写成 generic essay；让题目像作者自己会写的。\n"
+                            "不要解释计划，不要提 JSON、anchors、critic feedback、analysis、DSM、诊断或病理标签。\n"
                             "Return only the article body."
                         ),
                     },
@@ -1310,11 +1311,14 @@ class WritingAgentService:
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
+                            f"draft_surface_guardrails JSON:\n{json.dumps(_build_draft_surface_guardrails_v2(topic_adapter, blueprint, evidence_plan=evidence_plan), ensure_ascii=False, indent=2)}\n\n"
                             f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
                             "Hard bans:\n"
                             "- No prompt language, no analysis language, no anchor ids.\n"
                             "- No DSM, diagnosis, pathology labels, or psychological reports.\n"
+                            "- Treat topic_adapter / blueprint wording as backstage notes; do not quote it verbatim in prose.\n"
+                            "- If you need judgment, attach it to a visible object, gesture, taste, or body reaction.\n"
                             "- Micro/short targets may use 1-3 paragraphs; do not force a central twist.\n"
                             "- Keep the closure unresolved if the blueprint says so."
                         ),
@@ -1333,7 +1337,7 @@ class WritingAgentService:
             raise WritingPipelineError("draft", "首稿生成失败：模型返回为空。")
         if _contains_banned_meta(candidate):
             raise WritingPipelineError("draft", "首稿含有元分析提示词，已拒绝交付。")
-        return _fit_word_count(candidate, state.target_word_count, analysis_bundle, state.topic, state.extra_requirements)
+        return _fit_word_count_v2(candidate, state.target_word_count)
 
     def _run_holistic_critics_v2(
         self,
@@ -1407,6 +1411,7 @@ class WritingAgentService:
                         "content": (
                             f"你是 Stone v2 的 {spec['label']} critic。\n"
                             "只审当前这一项，不评价其他维度。\n"
+                            "如果发现句子发虚、概念词堆叠、解释味过重或读起来拧巴，必须在 line_edits 里点明原句或词组怎么改。\n"
                             "你只能给 approve / line_edit / redraft 三种 verdict。\n"
                             "只返回 JSON。"
                         ),
@@ -1430,7 +1435,7 @@ class WritingAgentService:
                             '  "anchor_ids": ["source anchor id"],\n'
                             '  "matched_signals": ["已命中的信号"],\n'
                             '  "must_keep_spans": ["必须保留的正文片段"],\n'
-                            '  "line_edits": ["局部修改建议"],\n'
+                            '  "line_edits": ["引用要改的原句或词组，并说明要怎么改；不要只写抽象原则"],\n'
                             '  "redraft_reason": "若 verdict=redraft，说明整篇为何要重写",\n'
                             '  "risks": ["残余风险"]\n'
                             "}"
@@ -1476,10 +1481,12 @@ class WritingAgentService:
                         "role": "system",
                         "content": (
                             "You are the Stone v2 whole-article redrafter.\n"
-                            "Throw away the failed draft and write a fresh article from the blueprint.\n"
-                            "Use critic feedback only to avoid syntheticness and formal drift.\n"
-                            "Imitate the author's structural pressure, cadence, lexicon, and closure residue from the author_style_pack.\n"
-                            "Do not write a generic essay; make the topic sound native to this author.\n"
+                            "你要丢掉失败首稿，按蓝图重写一篇新的正文。\n"
+                            "critic feedback 只用来避开 syntheticness、formal drift 和解释腔。\n"
+                            "模仿 author_style_pack 里的结构压力、节奏、词气和收口余味。\n"
+                            "topic_adapter / blueprint 是后台脚手架，不要照搬它们的抽象说法。\n"
+                            "优先让动作、物件、口感、手势和身体反应落地，再让判断自己浮出来。\n"
+                            "不要写成 generic essay；让题目像作者自己会写的。\n"
                             "Return only the article body."
                         ),
                     },
@@ -1491,6 +1498,7 @@ class WritingAgentService:
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
+                            f"draft_surface_guardrails JSON:\n{json.dumps(_build_draft_surface_guardrails_v2(topic_adapter, blueprint, evidence_plan=evidence_plan), ensure_ascii=False, indent=2)}\n\n"
                             f"critic feedback JSON:\n{json.dumps(critics, ensure_ascii=False, indent=2)}\n\n"
                             f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}"
@@ -1541,9 +1549,11 @@ class WritingAgentService:
                         "role": "system",
                         "content": (
                             "You are the Stone v2 line editor.\n"
-                            "Keep the working draft structure and closing energy.\n"
-                            "Only apply local edits requested by the critics.\n"
-                            "Tighten cadence, lexicon, and closure residue toward the author_style_pack without adding analysis language.\n"
+                            "你是逐句修订，不是整篇改写。\n"
+                            "保持原有段落数、叙述顺序和收口能量；能改一个短语就不要改一整句，能改一句就不要改一整段。\n"
+                            "只处理 critic 点出的发虚句、概念句、解释味和不顺处。\n"
+                            "朝着 author_style_pack 的节奏、词气和收口余味去收紧，但不要新增分析语言。\n"
+                            "不要补一个解释性尾段来凑字数；如果需要补字数，只能在现有段落里补 1-2 句具体观察或动作。\n"
                             "Return only the article body."
                         ),
                     },
@@ -1552,13 +1562,8 @@ class WritingAgentService:
                         "content": (
                             f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
                             f"Current draft:\n{draft}\n\n"
-                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
-                            f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
-                            f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
-                            f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
-                            f"critic feedback JSON:\n{json.dumps(critics, ensure_ascii=False, indent=2)}\n\n"
-                            f"author_style_pack JSON:\n{json.dumps(_build_author_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}\n\n"
-                            f"stone_v2_generation_packet JSON:\n{json.dumps(_build_drafting_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}"
+                            f"line_edit_brief JSON:\n{json.dumps(_build_line_edit_brief_v2(draft, critics, blueprint, state.target_word_count), ensure_ascii=False, indent=2)}\n\n"
+                            f"author_style_pack JSON:\n{json.dumps(_build_line_edit_style_pack_v2(analysis_bundle, prototype_selection), ensure_ascii=False, indent=2)}"
                         ),
                     },
                 ],
@@ -1575,7 +1580,7 @@ class WritingAgentService:
             raise WritingPipelineError("line_edit", "局部修订失败：模型返回为空。")
         if _contains_banned_meta(candidate):
             raise WritingPipelineError("line_edit", "修订稿含有元分析提示词，已拒绝交付。")
-        return _fit_word_count(candidate, state.target_word_count, analysis_bundle, state.topic, state.extra_requirements)
+        return _fit_word_count_v2(candidate, state.target_word_count)
 
     def _translate_topic(
         self,
@@ -2621,6 +2626,13 @@ def _fit_word_count(
     return trimmed or text.strip()
 
 
+def _fit_word_count_v2(text: str, target_word_count: int) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    return _light_trim_to_word_count(cleaned, target_word_count)
+
+
 def _expansion_paragraph(
     analysis_bundle: StoneWritingAnalysisBundle,
     topic: str,
@@ -3477,15 +3489,25 @@ def _build_topic_adapter_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[s
 
 def _build_drafting_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
     packet = bundle.generation_packet
+    author_model = packet.get("author_model") or {}
+    views = dict(author_model.get("views") or {})
     return {
         "baseline": packet.get("baseline") or {},
-        "author_model": packet.get("author_model") or {},
+        "author_model": {
+            "views": {
+                "voice_form": list(views.get("voice_form") or [])[:6],
+                "motif_worldview": list(views.get("motif_worldview") or [])[:6],
+            },
+            "topic_translation_map": list(author_model.get("topic_translation_map") or [])[:6],
+            "anti_patterns": list(author_model.get("anti_patterns") or [])[:8],
+            "length_behaviors": list(author_model.get("length_behaviors") or [])[:6],
+        },
         "prototype_index": {
             "document_count": (packet.get("prototype_index") or {}).get("document_count"),
             "prototype_families": (packet.get("prototype_index") or {}).get("prototype_families") or [],
         },
-        "source_anchors": packet.get("source_anchors") or [],
-        "evidence_plan": packet.get("evidence_plan") or {},
+        "source_anchor_count": len(packet.get("source_anchors") or []),
+        "evidence_plan": _compact_evidence_plan_for_prompt_v2(packet.get("evidence_plan") or {}),
     }
 
 
@@ -4700,6 +4722,111 @@ def _build_author_style_pack_v2(bundle: StoneWritingAnalysisBundle, selection: d
     }
 
 
+def _build_draft_surface_guardrails_v2(
+    topic_adapter: dict[str, Any],
+    blueprint: dict[str, Any],
+    *,
+    evidence_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    backstage_phrases = _collect_backstage_phrases_v2(
+        topic_adapter.get("author_angle"),
+        topic_adapter.get("felt_cost"),
+        topic_adapter.get("judgment_target"),
+        blueprint.get("shape_note"),
+        blueprint.get("development_move"),
+        blueprint.get("closure_residue"),
+        *(topic_adapter.get("forbidden_drift") or []),
+        *((evidence_plan or {}).get("plan_steps") or []),
+    )
+    return {
+        "entry_scene": str(topic_adapter.get("entry_scene") or "").strip(),
+        "motif_obligations": _normalize_string_list(blueprint.get("motif_obligations"), limit=6),
+        "movement_steps": _normalize_string_list(blueprint.get("steps"), limit=6),
+        "sentence_rules": [
+            "后台说明只负责定方向，不要直接照抄进正文。",
+            "先落地动作、物件、口感、手势、身体反应，再露出判断。",
+            "每段最多一句轻判断，而且要贴着前后的具体细节。",
+            "凡是脱离现场也成立的句子，都要删薄或改写。",
+        ],
+        "backstage_only_phrases": backstage_phrases,
+    }
+
+
+def _build_line_edit_style_pack_v2(
+    bundle: StoneWritingAnalysisBundle,
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    pack = _build_author_style_pack_v2(bundle, selection)
+    return {
+        "voice_form": list(pack.get("voice_form") or [])[:5],
+        "lexicon_tics": list(pack.get("lexicon_tics") or [])[:8],
+        "closure_signatures": list(pack.get("closure_signatures") or [])[:5],
+        "prototype_windows": list(pack.get("prototype_windows") or [])[:4],
+        "anti_patterns": list(pack.get("anti_patterns") or [])[:6],
+    }
+
+
+def _build_line_edit_brief_v2(
+    draft: str,
+    critics: list[dict[str, Any]],
+    blueprint: dict[str, Any],
+    target_word_count: int,
+) -> dict[str, Any]:
+    paragraphs = [item.strip() for item in re.split(r"\n\s*\n", str(draft or "")) if item.strip()]
+    edit_targets = _unique_preserve_order(
+        [item for critic in critics for item in _normalize_string_list(critic.get("line_edits"), limit=6)]
+    )[:8]
+    must_keep_spans = _unique_preserve_order(
+        [item for critic in critics for item in _normalize_string_list(critic.get("must_keep_spans"), limit=4)]
+    )[:6]
+    risk_watch = _unique_preserve_order(
+        [item for critic in critics for item in _normalize_string_list(critic.get("risks"), limit=4)]
+    )[:6]
+    return {
+        "current_word_count": estimate_word_count(draft),
+        "target_word_count": max(100, int(target_word_count or 0)),
+        "paragraph_count": len(paragraphs) or 1,
+        "must_keep_spans": must_keep_spans,
+        "edit_targets": edit_targets or ["只改发虚、解释味重或读起来拧巴的句子。"],
+        "risk_watch": risk_watch,
+        "closure_residue": str(blueprint.get("closure_residue") or "").strip(),
+        "structure_guards": [
+            f"保持 {len(paragraphs) or 1} 段结构，不重排叙述顺序。",
+            "不新增中心句、口号句或总结陈词。",
+            "如果要补字数，只能补进现有段落里的具体观察或动作。",
+        ],
+    }
+
+
+def _collect_backstage_phrases_v2(*values: Any) -> list[str]:
+    markers = (
+        "代价",
+        "判断",
+        "逻辑",
+        "镜头",
+        "工业化",
+        "标准化",
+        "体面",
+        "安慰",
+        "认输",
+        "投降",
+        "收买",
+        "解释",
+        "分析",
+        "流程",
+    )
+    phrases: list[str] = []
+    for value in values:
+        for segment in re.split(r"[\n，。；：/]+", normalize_whitespace(str(value or ""))):
+            text = segment.strip(" \"'[]()")
+            if len(text) < 4 or len(text) > 28:
+                continue
+            if not any(marker in text for marker in markers):
+                continue
+            phrases.append(text)
+    return _unique_preserve_order(phrases)[:8]
+
+
 def _critic_spec_v2(critic_key: str) -> dict[str, str]:
     mapping = {
         "formal_fidelity": {
@@ -4712,7 +4839,7 @@ def _critic_spec_v2(critic_key: str) -> dict[str, str]:
         },
         "syntheticness": {
             "label": "syntheticness",
-            "focus": "只检查这篇是否像拼出来的仿写、像 checklist、像分析结论复述，是否有假味。",
+            "focus": "只检查这篇是否像拼出来的仿写、像 checklist、像分析结论复述；句子有没有概念词堆叠、解释味过重或读起来不顺的地方。",
         },
     }
     return mapping.get(critic_key, mapping["formal_fidelity"])
