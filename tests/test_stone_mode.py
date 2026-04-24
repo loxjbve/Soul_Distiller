@@ -1812,6 +1812,68 @@ def test_stone_writing_evidence_plan_timeout_falls_back_to_local_plan(client, ap
     assert latest_turn["trace"]["final_assessment"]
 
 
+def test_stone_writing_evidence_plan_retries_before_fallback(client, app, monkeypatch):
+    project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
+    _seed_stone_analysis(app, project_id)
+    _ensure_service_config(app, "chat_service", model="demo-model")
+    _install_writing_mocks(monkeypatch)
+
+    attempts = {"count": 0}
+
+    def flaky_tool_round(self, messages, tools, **kwargs):
+        del self, messages, tools, kwargs
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise RuntimeError("Request failed: The read operation timed out")
+        payload = {
+            "author_angle": "从一个轻动作切入，再把日常代价慢慢压出来",
+            "entry_scene": "从拆袋子和拿餐开始",
+            "felt_cost": "先把日常代价写出来，再让情绪自己冒出来",
+            "judgment_target": "自己当下处境",
+            "value_lens": "代价",
+            "desired_judgment": "自损",
+            "desired_distance": "贴脸",
+            "motif_path": ["袋子", "炸鸡", "可乐"],
+            "forbidden_drift": ["不要写成分析说明"],
+            "prototype_family_hints": [],
+            "search_terms": ["肯德基", "炸鸡"],
+            "anchor_ids": [],
+            "evidence_windows": [],
+            "plan_steps": ["先落动作", "再压代价", "最后留残响"],
+            "coverage_gaps": [],
+        }
+        return ToolRoundResult(
+            content=json.dumps(payload, ensure_ascii=False),
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+            tool_calls=[],
+        )
+
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", flaky_tool_round)
+
+    session_id = client.post(
+        f"/api/projects/{project_id}/writing/sessions",
+        json={"title": "Retry Session"},
+    ).json()["id"]
+
+    message_payload = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"topic": "写我吃肯德基的故事", "target_word_count": 400},
+    ).json()
+    _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
+    )
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    latest_turn = assistant_turns[-1]
+    assert attempts["count"] == 3
+    assert latest_turn["trace"]["evidence_plan"]["planner_mode"] == "tool_loop"
+    assert latest_turn["trace"]["evidence_plan"]["attempt_count"] == 3
+    assert not latest_turn["trace"]["evidence_plan"].get("fallback_reason")
+
+
 def test_stone_drafter_prompt_includes_topic_translation_outline_and_constraints(client, app, monkeypatch):
     project_id = client.post("/api/projects", json={"name": "Stone Writing", "mode": "stone"}).json()["id"]
     _seed_stone_analysis(app, project_id)

@@ -808,30 +808,62 @@ class WritingAgentService:
     ) -> dict[str, Any]:
         if not client:
             raise WritingPipelineError("evidence_plan", "写作模型未配置，无法规划证据。")
-        try:
-            response = self._run_evidence_tool_loop_v2(state, analysis_bundle, client)
-            payload = parse_json_response(response["content"], fallback=True)
-            plan = _normalize_evidence_plan_payload_v2(
-                payload,
-                analysis_bundle,
-                query_trace=response.get("tool_trace") or [],
-                queried_anchor_ids=response.get("queried_anchor_ids") or [],
-                queried_document_ids=response.get("queried_document_ids") or [],
-            )
-            plan["planner_mode"] = "tool_loop"
-            return plan
-        except Exception as exc:
-            return _build_fallback_evidence_plan_v2(
-                state,
-                analysis_bundle,
-                reason=str(exc),
-            )
+        attempts = [
+            {"stream_tools": True, "label": "流式检索"},
+            {"stream_tools": True, "label": "流式检索重试"},
+            {"stream_tools": False, "label": "非流式检索兜底"},
+        ]
+        last_exc: Exception | None = None
+        for index, attempt in enumerate(attempts, start=1):
+            try:
+                response = self._run_evidence_tool_loop_v2(
+                    state,
+                    analysis_bundle,
+                    client,
+                    stream_tools=bool(attempt["stream_tools"]),
+                )
+                payload = parse_json_response(response["content"], fallback=True)
+                plan = _normalize_evidence_plan_payload_v2(
+                    payload,
+                    analysis_bundle,
+                    query_trace=response.get("tool_trace") or [],
+                    queried_anchor_ids=response.get("queried_anchor_ids") or [],
+                    queried_document_ids=response.get("queried_document_ids") or [],
+                )
+                plan["planner_mode"] = "tool_loop"
+                plan["attempt_label"] = str(attempt["label"])
+                plan["attempt_count"] = index
+                return plan
+            except Exception as exc:
+                last_exc = exc
+                if index >= len(attempts) or not _is_retryable_evidence_error_v2(exc):
+                    break
+                self._emit_live_writer_message(
+                    state,
+                    message_kind="evidence_plan",
+                    label="证据规划进行中",
+                    body=(
+                        f"证据规划第 {index} 次失败：{_trim_text(exc, 140)}\n"
+                        f"正在切到{attempts[index]['label']}，继续保留 agentic 检索..."
+                    ),
+                    stage="evidence_plan",
+                    stream_key=self._stream_key(state, "evidence_plan"),
+                    render_mode="plain",
+                )
+                time.sleep(min(2.0 * index, 4.0))
+        return _build_fallback_evidence_plan_v2(
+            state,
+            analysis_bundle,
+            reason=str(last_exc or "evidence planning failed"),
+        )
 
     def _run_evidence_tool_loop_v2(
         self,
         state: WritingStreamState,
         analysis_bundle: StoneWritingAnalysisBundle,
         client: OpenAICompatibleClient,
+        *,
+        stream_tools: bool = True,
     ) -> dict[str, Any]:
         messages = _build_evidence_planner_messages_v2(state, analysis_bundle)
         tool_trace: list[dict[str, Any]] = []
@@ -858,7 +890,7 @@ class WritingAgentService:
                 temperature=0.2,
                 max_tokens=900,
                 timeout=240.0,
-                stream=True,
+                stream=stream_tools,
             )
             model_name = round_result.model or model_name
             for key in usage:
@@ -3920,6 +3952,7 @@ def _build_fallback_evidence_plan_v2(
         for item in chosen_anchors[:4]
         if str(item.get("id") or "").strip()
     ]
+    has_high_confidence_evidence = bool(evidence_windows)
     first_anchor = chosen_anchors[0] if chosen_anchors else {}
     entry_scene = _infer_entry_scene_from_anchor_v2(first_anchor, topic_terms)
     search_terms = _unique_preserve_order(
@@ -3929,18 +3962,26 @@ def _build_fallback_evidence_plan_v2(
             str(first_anchor.get("role") or "").strip(),
         ]
     )[:6]
-    felt_cost = _fallback_felt_cost_v2(state.topic, prototype_candidates)
+    felt_cost = (
+        _fallback_felt_cost_v2(state.topic, prototype_candidates)
+        if has_high_confidence_evidence
+        else f"先把{state.topic}背后的日常代价写出来，再让情绪自己冒出来。"
+    )
     return {
         "author_angle": "先用本地索引兜底，抓住最贴近题目的场景、代价和收口方式。",
         "entry_scene": entry_scene,
         "felt_cost": felt_cost,
-        "judgment_target": "关系处境" if prototype_candidates else "眼前处境",
-        "value_lens": _fallback_value_lens_v2(prototype_candidates),
-        "desired_judgment": _fallback_desired_judgment_v2(prototype_candidates),
-        "desired_distance": _fallback_desired_distance_v2(prototype_candidates),
+        "judgment_target": (
+            "关系处境"
+            if has_high_confidence_evidence and prototype_candidates
+            else "自己当下处境"
+        ),
+        "value_lens": _fallback_value_lens_v2(prototype_candidates) if has_high_confidence_evidence else "代价",
+        "desired_judgment": _fallback_desired_judgment_v2(prototype_candidates) if has_high_confidence_evidence else "自损",
+        "desired_distance": _fallback_desired_distance_v2(prototype_candidates) if has_high_confidence_evidence else "贴脸",
         "motif_path": motif_path,
         "forbidden_drift": ["不要写成分析说明", "不要写成诊断、鸡汤或教程"],
-        "prototype_family_hints": family_hints,
+        "prototype_family_hints": family_hints if has_high_confidence_evidence else [],
         "search_terms": topic_terms[:6] or search_terms,
         "anchor_ids": anchor_ids,
         "evidence_windows": evidence_windows,
@@ -4291,6 +4332,29 @@ def _fallback_desired_distance_v2(prototype_candidates: list[dict[str, Any]]) ->
         if distance:
             return distance
     return "贴脸"
+
+
+def _is_retryable_evidence_error_v2(exc: Exception) -> bool:
+    message = normalize_whitespace(str(exc or "")).lower()
+    retry_markers = (
+        "timed out",
+        "timeout",
+        "winerror 10060",
+        "winerror 10061",
+        "request failed",
+        "connection attempt failed",
+        "connection reset",
+        "remote protocol error",
+        "temporarily unavailable",
+        "service unavailable",
+        "http 502",
+        "http 503",
+        "http 504",
+        "read operation timed out",
+        "connecttimeout",
+        "readtimeout",
+    )
+    return any(marker in message for marker in retry_markers)
 
 
 def _normalize_topic_adapter_payload_v2(
@@ -4863,19 +4927,80 @@ def _extract_topic_keywords_v2(topic: str) -> list[str]:
             if not parts:
                 parts = [token]
             for part in parts:
+                part = _strip_topic_action_prefix_v2(part)
+                if len(part) < 2:
+                    continue
                 if part in stop_terms:
                     continue
                 candidates.append(part)
-                if len(part) >= 4:
-                    for size in (4, 3):
-                        if len(part) >= size:
-                            for index in range(0, len(part) - size + 1):
-                                piece = part[index:index + size]
-                                if piece not in stop_terms:
-                                    candidates.append(piece)
+                if 4 <= len(part) <= 6:
+                    tail = part[-3:] if len(part) >= 3 else ""
+                    if tail and tail not in stop_terms:
+                        candidates.append(tail)
+                    if len(part) >= 2:
+                        tail2 = part[-2:]
+                        if tail2 not in stop_terms:
+                            candidates.append(tail2)
             continue
         candidates.append(token)
     return _unique_preserve_order(sorted(candidates, key=len, reverse=True))[:10]
+
+
+def _strip_topic_action_prefix_v2(value: str) -> str:
+    text = str(value or "").strip()
+    prefixes = (
+        "我",
+        "你",
+        "他",
+        "她",
+        "它",
+        "我们",
+        "你们",
+        "他们",
+        "她们",
+        "它们",
+        "自己",
+        "正在",
+        "突然",
+        "还是",
+        "就是",
+    )
+    verbs = (
+        "吃",
+        "喝",
+        "写",
+        "讲",
+        "说",
+        "做",
+        "去",
+        "来",
+        "想",
+        "要",
+        "点",
+        "买",
+        "用",
+        "聊",
+        "谈",
+        "回",
+        "进",
+        "出",
+        "看",
+        "逛",
+        "住",
+        "玩",
+    )
+    changed = True
+    while changed and len(text) >= 2:
+        changed = False
+        for prefix in prefixes:
+            if text.startswith(prefix) and len(text) - len(prefix) >= 2:
+                text = text[len(prefix):]
+                changed = True
+        for verb in verbs:
+            if text.startswith(verb) and len(text) - len(verb) >= 2:
+                text = text[len(verb):]
+                changed = True
+    return text
 
 
 def _collect_trace_anchor_ids_v2(
