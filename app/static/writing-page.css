@@ -470,6 +470,13 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
         linear-gradient(135deg, rgba(155, 131, 255, 0.32), rgba(37, 50, 99, 0.92));
 }
 
+.page-writing .group-message--evidence_plan .group-message__avatar {
+    border-color: rgba(255, 208, 102, 0.34);
+    background:
+        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.28), transparent 24%),
+        linear-gradient(135deg, rgba(255, 208, 102, 0.28), rgba(33, 56, 92, 0.92));
+}
+
 .page-writing .group-message--final .group-message__avatar {
     border-color: rgba(124, 255, 199, 0.36);
     background:
@@ -526,6 +533,13 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
     background:
         linear-gradient(135deg, rgba(155, 131, 255, 0.12), transparent 56%),
         rgba(10, 17, 36, 0.9);
+}
+
+.page-writing .group-message--evidence_plan .group-message__bubble {
+    border-color: rgba(255, 208, 102, 0.28);
+    background:
+        linear-gradient(135deg, rgba(255, 208, 102, 0.12), rgba(104, 232, 255, 0.06)),
+        rgba(12, 20, 36, 0.92);
 }
 
 .page-writing .group-message--review_synthesis .group-message__bubble {

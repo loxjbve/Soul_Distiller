@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from app.db import Database
 from app.llm.client import OpenAICompatibleClient, parse_json_response
 from app.runtime_limits import background_task_slot
 from app.storage import repository
+from app.utils.text import normalize_whitespace
 
 STONE_WRITING_FACETS: tuple[FacetDefinition, ...] = get_facets_for_mode("stone")
 WRITER_ACTOR_NAME = "写作 Agent"
@@ -285,7 +287,18 @@ class WritingAgentService:
         if not client:
             raise WritingPipelineError("generation_packet", "写作模型未配置，不能生成可交付正文。")
 
-        topic_adapter = self._adapt_topic_v2(state, analysis_bundle, client)
+        evidence_plan = self._plan_evidence_v2(state, analysis_bundle, client)
+        analysis_bundle.generation_packet["evidence_plan"] = evidence_plan
+        evidence_payload = _build_writer_message_payload(
+            message_kind="evidence_plan",
+            label="证据规划已完成",
+            body=_render_evidence_plan_v2(evidence_plan),
+            detail=evidence_plan,
+            stage="evidence_plan",
+        )
+        self._emit(state, "stage", evidence_payload)
+
+        topic_adapter = self._adapt_topic_v2(state, analysis_bundle, client, evidence_plan=evidence_plan)
         topic_payload = _build_writer_message_payload(
             message_kind="topic_adapter",
             label="题目适配已完成",
@@ -295,7 +308,12 @@ class WritingAgentService:
         )
         self._emit(state, "stage", topic_payload)
 
-        prototype_selection = self._select_prototypes_v2(state, analysis_bundle, topic_adapter)
+        prototype_selection = self._select_prototypes_v2(
+            state,
+            analysis_bundle,
+            topic_adapter,
+            evidence_plan=evidence_plan,
+        )
         prototype_payload = _build_writer_message_payload(
             message_kind="prototype_selector",
             label="原型检索已完成",
@@ -305,7 +323,14 @@ class WritingAgentService:
         )
         self._emit(state, "stage", prototype_payload)
 
-        blueprint = self._compose_blueprint_v2(state, analysis_bundle, topic_adapter, prototype_selection, client)
+        blueprint = self._compose_blueprint_v2(
+            state,
+            analysis_bundle,
+            topic_adapter,
+            prototype_selection,
+            client,
+            evidence_plan=evidence_plan,
+        )
         blueprint_payload = _build_writer_message_payload(
             message_kind="blueprint",
             label="写作蓝图已完成",
@@ -322,6 +347,7 @@ class WritingAgentService:
             prototype_selection,
             blueprint,
             client,
+            evidence_plan=evidence_plan,
         )
         draft_payload = _build_writer_message_payload(
             message_kind="draft",
@@ -340,6 +366,7 @@ class WritingAgentService:
             prototype_selection,
             blueprint,
             repository.get_service_config(session, "chat_service"),
+            evidence_plan=evidence_plan,
         )
         critic_messages: list[dict[str, Any]] = []
         for critic in critics:
@@ -347,7 +374,12 @@ class WritingAgentService:
             critic_messages.append(critic_payload)
             self._emit(state, "stage", critic_payload)
 
-        revision_action = _resolve_critic_action_v2(critics)
+        revision_action = _resolve_critic_action_v2(
+            critics,
+            draft_text=initial_draft,
+            topic=state.topic,
+            target_word_count=state.target_word_count,
+        )
         revision_payload = None
         final_text = initial_draft
         if revision_action == "redraft":
@@ -359,6 +391,7 @@ class WritingAgentService:
                 blueprint,
                 critics,
                 client,
+                evidence_plan=evidence_plan,
             )
             revision_payload = _build_writer_message_payload(
                 message_kind="redraft",
@@ -377,6 +410,7 @@ class WritingAgentService:
                 blueprint,
                 critics,
                 client,
+                evidence_plan=evidence_plan,
             )
             revision_payload = _build_writer_message_payload(
                 message_kind="line_edit",
@@ -422,16 +456,33 @@ class WritingAgentService:
             "analysis_context": analysis_bundle.analysis_context,
             "analysis_facets": [],
             "generation_packet": analysis_bundle.generation_packet,
+            "evidence_plan": evidence_plan,
             "topic_adapter": topic_adapter,
             "prototype_selection": prototype_selection,
             "blueprint": blueprint,
-            "anchor_ids": _collect_trace_anchor_ids_v2(analysis_bundle, topic_adapter, prototype_selection, blueprint, critics),
-            "blocks": _build_trace_blocks_v2(analysis_bundle, topic_adapter, prototype_selection, blueprint, critics, revision_action),
+            "anchor_ids": _collect_trace_anchor_ids_v2(
+                analysis_bundle,
+                evidence_plan,
+                topic_adapter,
+                prototype_selection,
+                blueprint,
+                critics,
+            ),
+            "blocks": _build_trace_blocks_v2(
+                analysis_bundle,
+                evidence_plan,
+                topic_adapter,
+                prototype_selection,
+                blueprint,
+                critics,
+                revision_action,
+            ),
             "critics": critics,
             "draft": initial_draft,
             "final_text": final_text,
             "final_assessment": final_assessment,
             "timeline": [
+                evidence_payload,
                 topic_payload,
                 prototype_payload,
                 blueprint_payload,
@@ -537,11 +588,253 @@ class WritingAgentService:
         bundle.generation_packet = _build_generation_packet_v2(bundle)
         return bundle
 
+    def _plan_evidence_v2(
+        self,
+        state: WritingStreamState,
+        analysis_bundle: StoneWritingAnalysisBundle,
+        client: OpenAICompatibleClient | None,
+    ) -> dict[str, Any]:
+        if not client:
+            raise WritingPipelineError("evidence_plan", "写作模型未配置，无法规划证据。")
+        try:
+            response = self._run_evidence_tool_loop_v2(state, analysis_bundle, client)
+        except Exception as exc:
+            raise WritingPipelineError("evidence_plan", f"证据规划失败：{exc}") from exc
+
+        payload = parse_json_response(response["content"], fallback=True)
+        plan = _normalize_evidence_plan_payload_v2(
+            payload,
+            analysis_bundle,
+            query_trace=response.get("tool_trace") or [],
+            queried_anchor_ids=response.get("queried_anchor_ids") or [],
+            queried_document_ids=response.get("queried_document_ids") or [],
+        )
+        return plan
+
+    def _run_evidence_tool_loop_v2(
+        self,
+        state: WritingStreamState,
+        analysis_bundle: StoneWritingAnalysisBundle,
+        client: OpenAICompatibleClient,
+    ) -> dict[str, Any]:
+        messages = _build_evidence_planner_messages_v2(state, analysis_bundle)
+        tool_trace: list[dict[str, Any]] = []
+        queried_anchor_ids: set[str] = set()
+        queried_document_ids: set[str] = set()
+        model_name = client.config.model
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        for iteration in range(1, 6):
+            round_result = client.tool_round(
+                messages,
+                self._evidence_tool_schemas_v2(),
+                model=client.config.model,
+                temperature=0.2,
+                max_tokens=1200,
+            )
+            model_name = round_result.model or model_name
+            for key in usage:
+                usage[key] += int(round_result.usage.get(key, 0) or 0)
+            if not round_result.tool_calls:
+                return {
+                    "content": round_result.content,
+                    "usage": usage,
+                    "tool_trace": tool_trace,
+                    "queried_anchor_ids": sorted(queried_anchor_ids),
+                    "queried_document_ids": sorted(queried_document_ids),
+                    "iterations": iteration,
+                    "model": model_name,
+                }
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": round_result.content,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "name": call.name,
+                            "arguments_json": call.arguments_json,
+                        }
+                        for call in round_result.tool_calls
+                    ],
+                }
+            )
+            for call in round_result.tool_calls:
+                output, state_delta = self._execute_evidence_tool_v2(
+                    call.name,
+                    call.arguments,
+                    analysis_bundle=analysis_bundle,
+                )
+                queried_anchor_ids.update(state_delta.get("anchor_ids", set()))
+                queried_document_ids.update(state_delta.get("document_ids", set()))
+                tool_trace.append(
+                    {
+                        "tool": call.name,
+                        "arguments": call.arguments,
+                        "anchor_ids": sorted(state_delta.get("anchor_ids", set())),
+                        "document_ids": sorted(state_delta.get("document_ids", set())),
+                        "result_preview": _trim_text(output, 420),
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "content": json.dumps(output, ensure_ascii=False),
+                    }
+                )
+
+        raise WritingPipelineError("evidence_plan", "证据规划超过了最大工具调用轮数。")
+
+    def _execute_evidence_tool_v2(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        analysis_bundle: StoneWritingAnalysisBundle,
+    ) -> tuple[dict[str, Any], dict[str, set[str]]]:
+        if name == "search_source_anchors":
+            output, state_delta = _search_source_anchors_v2(analysis_bundle, args)
+            return output, state_delta
+        if name == "read_source_anchor":
+            output, state_delta = _read_source_anchor_v2(analysis_bundle, args)
+            return output, state_delta
+        if name == "search_stone_profiles":
+            output, state_delta = _search_stone_profiles_v2(analysis_bundle, args)
+            return output, state_delta
+        if name == "read_stone_profile":
+            output, state_delta = _read_stone_profile_v2(analysis_bundle, args)
+            return output, state_delta
+        if name == "list_prototype_families":
+            output, state_delta = _list_prototype_families_v2(analysis_bundle)
+            return output, state_delta
+        if name == "search_prototype_documents":
+            output, state_delta = _search_prototype_documents_v2(analysis_bundle, args)
+            return output, state_delta
+        if name == "read_prototype_document":
+            output, state_delta = _read_prototype_document_v2(analysis_bundle, args)
+            return output, state_delta
+        return {"error": f"未知 Stone evidence 工具：{name}"}, {"anchor_ids": set(), "document_ids": set()}
+
+    @staticmethod
+    def _evidence_tool_schemas_v2() -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_source_anchors",
+                    "description": "按关键词或来源过滤 source anchors，找到更细的原文片段。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "source": {"type": "string"},
+                            "facet_key": {"type": "string"},
+                            "role": {"type": "string"},
+                            "document_id": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_source_anchor",
+                    "description": "按 anchor_id 读取单条 source anchor 的完整内容。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "anchor_id": {"type": "string"},
+                        },
+                        "required": ["anchor_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_stone_profiles",
+                    "description": "在 stone_profile_v2 中搜索更细的文章画像切片。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "content_type": {"type": "string"},
+                            "length_band": {"type": "string"},
+                            "emotion_label": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_stone_profile",
+                    "description": "按 document_id 读取单篇 Stone 画像的详细信息。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "document_id": {"type": "string"},
+                        },
+                        "required": ["document_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_prototype_families",
+                    "description": "列出 prototype family 的聚类信息。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_prototype_documents",
+                    "description": "在 prototype_index 中按关键词和 family 过滤，找到更贴近的原型文档。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                            "family_key": {"type": "string"},
+                            "length_band": {"type": "string"},
+                            "surface_form": {"type": "string"},
+                            "limit": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_prototype_document",
+                    "description": "按 document_id 读取 prototype document 的详细窗口。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "document_id": {"type": "string"},
+                        },
+                        "required": ["document_id"],
+                    },
+                },
+            },
+        ]
+
     def _adapt_topic_v2(
         self,
         state: WritingStreamState,
         analysis_bundle: StoneWritingAnalysisBundle,
         client: OpenAICompatibleClient | None,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not client:
             raise WritingPipelineError("topic_adapter", "写作模型未配置，无法适配题目。")
@@ -561,6 +854,7 @@ class WritingAgentService:
                         "role": "user",
                         "content": (
                             f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"stone_v2_generation_packet JSON:\n{json.dumps(_build_topic_adapter_packet_v2(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
                             "请返回 JSON：\n"
                             "{\n"
@@ -586,7 +880,7 @@ class WritingAgentService:
         except Exception as exc:
             raise WritingPipelineError("topic_adapter", f"题目适配失败：{exc}") from exc
         payload = parse_json_response(response.content, fallback=True)
-        adapted = _normalize_topic_adapter_payload_v2(payload, analysis_bundle)
+        adapted = _normalize_topic_adapter_payload_v2(payload, analysis_bundle, evidence_plan=evidence_plan)
         if not adapted["anchor_ids"]:
             raise WritingPipelineError("topic_adapter", "题目适配没有绑定任何 source anchor。")
         return adapted
@@ -596,8 +890,15 @@ class WritingAgentService:
         state: WritingStreamState,
         analysis_bundle: StoneWritingAnalysisBundle,
         topic_adapter: dict[str, Any],
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        selection = _select_prototypes_for_topic_v2(analysis_bundle, topic_adapter, target_word_count=state.target_word_count)
+        selection = _select_prototypes_for_topic_v2(
+            analysis_bundle,
+            topic_adapter,
+            target_word_count=state.target_word_count,
+            evidence_plan=evidence_plan,
+        )
         if not selection["selected_documents"]:
             raise WritingPipelineError("prototype_selector", "原型检索为空，无法继续写作。")
         return selection
@@ -609,6 +910,8 @@ class WritingAgentService:
         topic_adapter: dict[str, Any],
         prototype_selection: dict[str, Any],
         client: OpenAICompatibleClient | None,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not client:
             raise WritingPipelineError("blueprint", "写作模型未配置，无法生成蓝图。")
@@ -628,6 +931,7 @@ class WritingAgentService:
                         "role": "user",
                         "content": (
                             f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(prototype_selection, ensure_ascii=False, indent=2)}\n\n"
                             f"author_model JSON:\n{json.dumps(_compact_author_model_for_blueprint_v2(analysis_bundle.author_model), ensure_ascii=False, indent=2)}\n\n"
@@ -668,6 +972,8 @@ class WritingAgentService:
         prototype_selection: dict[str, Any],
         blueprint: dict[str, Any],
         client: OpenAICompatibleClient | None,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> str:
         if not client:
             raise WritingPipelineError("draft", "写作模型未配置，无法起草正文。")
@@ -691,6 +997,7 @@ class WritingAgentService:
                         "role": "user",
                         "content": (
                             f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
@@ -715,7 +1022,7 @@ class WritingAgentService:
             raise WritingPipelineError("draft", "首稿生成失败：模型返回为空。")
         if _contains_banned_meta(candidate):
             raise WritingPipelineError("draft", "首稿含有元分析提示词，已拒绝交付。")
-        return _light_trim_to_word_count(candidate, state.target_word_count)
+        return _fit_word_count(candidate, state.target_word_count, analysis_bundle, state.topic, state.extra_requirements)
 
     def _run_holistic_critics_v2(
         self,
@@ -726,6 +1033,8 @@ class WritingAgentService:
         prototype_selection: dict[str, Any],
         blueprint: dict[str, Any],
         config,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         critics = ("formal_fidelity", "worldview_translation", "syntheticness")
         client = self._build_client(config)
@@ -742,6 +1051,7 @@ class WritingAgentService:
                     topic_adapter,
                     prototype_selection,
                     blueprint,
+                    evidence_plan,
                     client,
                 )
             )
@@ -756,6 +1066,7 @@ class WritingAgentService:
         topic_adapter: dict[str, Any],
         prototype_selection: dict[str, Any],
         blueprint: dict[str, Any],
+        evidence_plan: dict[str, Any] | None,
         client: OpenAICompatibleClient | None,
     ) -> dict[str, Any]:
         if not client:
@@ -779,6 +1090,7 @@ class WritingAgentService:
                             f"critic focus：{spec['focus']}\n\n"
                             f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
                             f"author_model slice JSON:\n{json.dumps(_critic_packet_v2(analysis_bundle, critic_key), ensure_ascii=False, indent=2)}\n\n"
@@ -816,6 +1128,8 @@ class WritingAgentService:
         blueprint: dict[str, Any],
         critics: list[dict[str, Any]],
         client: OpenAICompatibleClient | None,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> str:
         if not client:
             raise WritingPipelineError("redraft", "写作模型未配置，无法整篇重写。")
@@ -837,6 +1151,7 @@ class WritingAgentService:
                         "role": "user",
                         "content": (
                             f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
@@ -869,6 +1184,8 @@ class WritingAgentService:
         blueprint: dict[str, Any],
         critics: list[dict[str, Any]],
         client: OpenAICompatibleClient | None,
+        *,
+        evidence_plan: dict[str, Any] | None = None,
     ) -> str:
         if not client:
             raise WritingPipelineError("line_edit", "写作模型未配置，无法局部修订。")
@@ -890,6 +1207,7 @@ class WritingAgentService:
                         "content": (
                             f"Writing request:\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
                             f"Current draft:\n{draft}\n\n"
+                            f"evidence_plan JSON:\n{json.dumps(_compact_evidence_plan_for_prompt_v2(evidence_plan or {}), ensure_ascii=False, indent=2)}\n\n"
                             f"topic_adapter JSON:\n{json.dumps(topic_adapter, ensure_ascii=False, indent=2)}\n\n"
                             f"prototype_selection JSON:\n{json.dumps(_compact_prototype_selection_for_draft_v2(prototype_selection), ensure_ascii=False, indent=2)}\n\n"
                             f"blueprint JSON:\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
@@ -910,7 +1228,7 @@ class WritingAgentService:
             raise WritingPipelineError("line_edit", "局部修订失败：模型返回为空。")
         if _contains_banned_meta(candidate):
             raise WritingPipelineError("line_edit", "修订稿含有元分析提示词，已拒绝交付。")
-        return _light_trim_to_word_count(candidate, state.target_word_count)
+        return _fit_word_count(candidate, state.target_word_count, analysis_bundle, state.topic, state.extra_requirements)
 
     def _translate_topic(
         self,
@@ -2744,6 +3062,54 @@ def _build_generation_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[str,
     }
 
 
+def _build_evidence_planner_context_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
+    return {
+        "analysis_run": {
+            "run_id": bundle.run_id,
+            "version_label": bundle.version_label,
+            "target_role": bundle.target_role,
+            "analysis_context": bundle.analysis_context,
+        },
+        "author_model": {
+            "views": dict(bundle.author_model.get("views") or {}),
+            "topic_translation_map": list(bundle.author_model.get("topic_translation_map") or [])[:6],
+            "prototype_families": list(bundle.author_model.get("prototype_families") or [])[:6],
+            "anti_patterns": list(bundle.author_model.get("anti_patterns") or [])[:6],
+        },
+        "prototype_documents": [
+            {
+                "document_id": str(item.get("document_id") or ""),
+                "title": str(item.get("title") or "").strip(),
+                "prototype_family": str(item.get("prototype_family") or "").strip(),
+                "length_band": str(item.get("length_band") or "").strip(),
+                "surface_form": str(item.get("surface_form") or "").strip(),
+                "motif_tags": list(item.get("motif_tags") or [])[:4],
+                "windows": {
+                    "opening": _trim_text((item.get("windows") or {}).get("opening"), 180),
+                    "pivot": _trim_text((item.get("windows") or {}).get("pivot"), 180),
+                    "closing": _trim_text((item.get("windows") or {}).get("closing"), 180),
+                },
+            }
+            for item in (bundle.prototype_index.get("documents") or [])[:6]
+        ],
+        "source_anchors": [
+            {
+                "id": str(item.get("id") or ""),
+                "source": str(item.get("source") or ""),
+                "facet_key": str(item.get("facet_key") or ""),
+                "title": str(item.get("title") or "").strip(),
+                "role": str(item.get("role") or ""),
+                "document_id": str(item.get("document_id") or ""),
+                "quote": _trim_text(item.get("quote"), 220),
+                "note": _trim_text(item.get("note"), 100),
+            }
+            for item in bundle.source_anchors[:12]
+        ],
+        "source_anchor_count": len(bundle.source_anchors),
+        "prototype_document_count": int(bundle.prototype_index.get("document_count") or 0),
+    }
+
+
 def _build_topic_adapter_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
     packet = bundle.generation_packet
     return {
@@ -2752,6 +3118,7 @@ def _build_topic_adapter_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[s
         "anti_patterns": (packet.get("author_model") or {}).get("anti_patterns") or [],
         "prototype_families": (packet.get("prototype_index") or {}).get("prototype_families") or [],
         "source_anchors": packet.get("source_anchors") or [],
+        "evidence_plan": packet.get("evidence_plan") or {},
     }
 
 
@@ -2765,10 +3132,660 @@ def _build_drafting_packet_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, A
             "prototype_families": (packet.get("prototype_index") or {}).get("prototype_families") or [],
         },
         "source_anchors": packet.get("source_anchors") or [],
+        "evidence_plan": packet.get("evidence_plan") or {},
     }
 
 
-def _normalize_topic_adapter_payload_v2(payload: dict[str, Any], bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
+def _build_evidence_planner_messages_v2(
+    state: WritingStreamState,
+    bundle: StoneWritingAnalysisBundle,
+) -> list[dict[str, str]]:
+    context = _build_evidence_planner_context_v2(bundle)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 Stone v2 写作链路里的 evidence planner。\n"
+                "你只能围绕当前写作任务做证据检索、片段选择和计划归纳，不要写正文。\n"
+                "你可以自主调用工具去读取 source anchors、stone profiles 和 prototype documents 的更细切片。\n"
+                "先检索，再归纳；先找原文片段，再决定开头、压力、转折和收口。\n"
+                "只返回 JSON，不要输出解释。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"写作任务：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
+                f"Stone v2 基线：\n{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
+                "请返回 JSON，字段如下：\n"
+                "{\n"
+                '  "author_angle": "作者会从什么角度切入",\n'
+                '  "entry_scene": "最适合的起笔场景或动作",\n'
+                '  "felt_cost": "题目背后的代价",\n'
+                '  "judgment_target": "作者会在判断谁/什么",\n'
+                '  "value_lens": "代价|资格|体面|生存|虚假",\n'
+                '  "desired_judgment": "厌恶|怜悯|自损|讥讽|悬置",\n'
+                '  "desired_distance": "贴脸|回收|旁观|宣判",\n'
+                '  "motif_path": ["建议使用的意象"],\n'
+                '  "forbidden_drift": ["不要写偏成什么"],\n'
+                '  "prototype_family_hints": ["优先命中的 family key 或 label"],\n'
+                '  "search_terms": ["建议继续检索的关键词"],\n'
+                '  "anchor_ids": ["可参考的 source anchor id"],\n'
+                '  "evidence_windows": [{"anchor_id":"source anchor id","quote":"原文片段","reason":"为什么有用"}],\n'
+                '  "plan_steps": ["按先后顺序的写作动作"],\n'
+                '  "coverage_gaps": ["还缺什么证据"]\n'
+                "}"
+            ),
+        },
+    ]
+
+
+def _compact_evidence_plan_for_prompt_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "author_angle": str(payload.get("author_angle") or "").strip(),
+        "entry_scene": str(payload.get("entry_scene") or "").strip(),
+        "felt_cost": str(payload.get("felt_cost") or "").strip(),
+        "judgment_target": str(payload.get("judgment_target") or "").strip(),
+        "value_lens": str(payload.get("value_lens") or "").strip(),
+        "desired_judgment": str(payload.get("desired_judgment") or "").strip(),
+        "desired_distance": str(payload.get("desired_distance") or "").strip(),
+        "motif_path": _normalize_string_list(payload.get("motif_path"), limit=6),
+        "forbidden_drift": _normalize_string_list(payload.get("forbidden_drift"), limit=8),
+        "prototype_family_hints": _normalize_string_list(payload.get("prototype_family_hints"), limit=6),
+        "search_terms": _normalize_string_list(payload.get("search_terms"), limit=8),
+        "anchor_ids": _normalize_string_list(payload.get("anchor_ids"), limit=8),
+        "evidence_windows": [
+            {
+                "anchor_id": str(item.get("anchor_id") or "").strip(),
+                "quote": _trim_text(item.get("quote"), 180),
+                "reason": _trim_text(item.get("reason"), 100),
+            }
+            for item in (payload.get("evidence_windows") or [])[:6]
+            if isinstance(item, dict)
+        ],
+        "plan_steps": _normalize_string_list(payload.get("plan_steps"), limit=6),
+        "coverage_gaps": _normalize_string_list(payload.get("coverage_gaps"), limit=6),
+    }
+
+
+def _search_source_anchors_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    query_terms = _normalize_search_terms_v2(args.get("query"))
+    source = normalize_whitespace(str(args.get("source") or ""))
+    facet_key = normalize_whitespace(str(args.get("facet_key") or ""))
+    role = normalize_whitespace(str(args.get("role") or ""))
+    document_id = str(args.get("document_id") or "").strip()
+    limit = _clamp_int(args.get("limit"), default=5, minimum=1, maximum=8)
+    matched: list[dict[str, Any]] = []
+    for anchor in bundle.source_anchors:
+        if source and normalize_whitespace(str(anchor.get("source") or "")) != source:
+            continue
+        if facet_key and normalize_whitespace(str(anchor.get("facet_key") or "")) != facet_key:
+            continue
+        if role and normalize_whitespace(str(anchor.get("role") or "")) != role:
+            continue
+        if document_id and str(anchor.get("document_id") or "").strip() != document_id:
+            continue
+        haystack = _anchor_search_haystack_v2(anchor)
+        if query_terms and not _matches_search_terms_v2(haystack, query_terms):
+            continue
+        matched.append(_compact_anchor_payload_v2(anchor))
+        if len(matched) >= limit:
+            break
+    return (
+        {
+            "query": normalize_whitespace(str(args.get("query") or "")),
+            "returned": len(matched),
+            "matches": matched,
+        },
+        {
+            "anchor_ids": {str(item.get("id") or "").strip() for item in matched if str(item.get("id") or "").strip()},
+            "document_ids": {
+                str(item.get("document_id") or "").strip()
+                for item in matched
+                if str(item.get("document_id") or "").strip()
+            },
+        },
+    )
+
+
+def _read_source_anchor_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    anchor_id = str(args.get("anchor_id") or "").strip()
+    anchor = _anchor_lookup_v2(bundle).get(anchor_id)
+    if not anchor:
+        return {"error": f"未找到 source anchor: {anchor_id}"}, {"anchor_ids": set(), "document_ids": set()}
+    document_id = str(anchor.get("document_id") or "").strip()
+    related = [
+        _compact_anchor_payload_v2(item)
+        for item in bundle.source_anchors
+        if str(item.get("document_id") or "").strip() == document_id and str(item.get("id") or "").strip() != anchor_id
+    ][:4]
+    return (
+        {
+            "anchor": _compact_anchor_payload_v2(anchor, limit=320),
+            "related_anchors": related,
+        },
+        {
+            "anchor_ids": {anchor_id, *(str(item.get("id") or "").strip() for item in related if str(item.get("id") or "").strip())},
+            "document_ids": {document_id} if document_id else set(),
+        },
+    )
+
+
+def _search_stone_profiles_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    query_terms = _normalize_search_terms_v2(args.get("query"))
+    content_type = normalize_whitespace(str(args.get("content_type") or ""))
+    length_band = normalize_whitespace(str(args.get("length_band") or ""))
+    emotion_label = normalize_whitespace(str(args.get("emotion_label") or ""))
+    limit = _clamp_int(args.get("limit"), default=4, minimum=1, maximum=6)
+    matched: list[dict[str, Any]] = []
+    document_ids: set[str] = set()
+    anchor_ids: set[str] = set()
+    for profile in bundle.stone_profiles:
+        expanded = _expand_profile_for_tool_v2(profile)
+        if content_type and normalize_whitespace(str(expanded.get("content_type") or "")) != content_type:
+            continue
+        if length_band and normalize_whitespace(str(expanded.get("length_label") or "")) != length_band:
+            continue
+        if emotion_label and emotion_label not in normalize_whitespace(str(expanded.get("emotion_label") or "")).lower():
+            continue
+        haystack = _profile_search_haystack_v2(profile, expanded)
+        if query_terms and not _matches_search_terms_v2(haystack, query_terms):
+            continue
+        matched.append(_compact_profile_payload_v2(profile, expanded))
+        document_id = str(profile.get("document_id") or "").strip()
+        if document_id:
+            document_ids.add(document_id)
+            anchor_ids.update(_anchor_ids_for_document_v2(bundle, document_id))
+        if len(matched) >= limit:
+            break
+    return (
+        {
+            "query": normalize_whitespace(str(args.get("query") or "")),
+            "returned": len(matched),
+            "matches": matched,
+        },
+        {
+            "anchor_ids": anchor_ids,
+            "document_ids": document_ids,
+        },
+    )
+
+
+def _read_stone_profile_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    document_id = str(args.get("document_id") or "").strip()
+    profile = next((item for item in bundle.stone_profiles if str(item.get("document_id") or "").strip() == document_id), None)
+    if not profile:
+        return {"error": f"未找到 stone profile: {document_id}"}, {"anchor_ids": set(), "document_ids": set()}
+    expanded = _expand_profile_for_tool_v2(profile)
+    anchor_ids = _anchor_ids_for_document_v2(bundle, document_id)
+    return (
+        {
+            "profile": {
+                **_compact_profile_payload_v2(profile, expanded, preview=False),
+                "voice_mask": dict(profile.get("voice_mask") or {}),
+                "stance_vector": dict(profile.get("stance_vector") or {}),
+                "syntax_signature": dict(profile.get("syntax_signature") or {}),
+                "segment_map": list(profile.get("segment_map") or [])[:4],
+                "opening_move": str(profile.get("opening_move") or "").strip(),
+                "turning_move": str(profile.get("turning_move") or "").strip(),
+                "closure_move": str(profile.get("closure_move") or "").strip(),
+                "anti_patterns": list(profile.get("anti_patterns") or [])[:6],
+                "source_anchors": [
+                    _compact_anchor_payload_v2(item)
+                    for item in bundle.source_anchors
+                    if str(item.get("document_id") or "").strip() == document_id
+                ][:6],
+            }
+        },
+        {
+            "anchor_ids": anchor_ids,
+            "document_ids": {document_id},
+        },
+    )
+
+
+def _list_prototype_families_v2(
+    bundle: StoneWritingAnalysisBundle,
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    families = [
+        {
+            "family_key": str(item.get("family_key") or "").strip(),
+            "label": str(item.get("label") or item.get("family_key") or "").strip(),
+            "member_count": int(item.get("member_count") or 0),
+            "motif_tags": list(item.get("motif_tags") or [])[:4],
+            "sample_titles": list(item.get("sample_titles") or [])[:3],
+        }
+        for item in (bundle.prototype_index.get("prototype_families") or [])[:12]
+        if isinstance(item, dict)
+    ]
+    return {
+        "family_count": len(families),
+        "families": families,
+    }, {"anchor_ids": set(), "document_ids": set()}
+
+
+def _search_prototype_documents_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    query_terms = _normalize_search_terms_v2(args.get("query"))
+    family_key = normalize_whitespace(str(args.get("family_key") or ""))
+    length_band = normalize_whitespace(str(args.get("length_band") or ""))
+    surface_form = normalize_whitespace(str(args.get("surface_form") or ""))
+    limit = _clamp_int(args.get("limit"), default=4, minimum=1, maximum=6)
+    matched: list[dict[str, Any]] = []
+    document_ids: set[str] = set()
+    anchor_ids: set[str] = set()
+    for item in bundle.prototype_index.get("documents") or []:
+        if family_key and family_key not in normalize_whitespace(str(item.get("prototype_family") or "")).lower():
+            continue
+        if length_band and normalize_whitespace(str(item.get("length_band") or "")) != length_band:
+            continue
+        if surface_form and normalize_whitespace(str(item.get("surface_form") or "")) != surface_form:
+            continue
+        haystack = _prototype_document_search_haystack_v2(item)
+        if query_terms and not _matches_search_terms_v2(haystack, query_terms):
+            continue
+        matched.append(_compact_prototype_document_payload_v2(item))
+        document_id = str(item.get("document_id") or "").strip()
+        if document_id:
+            document_ids.add(document_id)
+            anchor_ids.update(_anchor_ids_for_document_v2(bundle, document_id))
+        if len(matched) >= limit:
+            break
+    return (
+        {
+            "query": normalize_whitespace(str(args.get("query") or "")),
+            "returned": len(matched),
+            "matches": matched,
+        },
+        {
+            "anchor_ids": anchor_ids,
+            "document_ids": document_ids,
+        },
+    )
+
+
+def _read_prototype_document_v2(
+    bundle: StoneWritingAnalysisBundle,
+    args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, set[str]]]:
+    document_id = str(args.get("document_id") or "").strip()
+    item = next(
+        (
+            document
+            for document in (bundle.prototype_index.get("documents") or [])
+            if str(document.get("document_id") or "").strip() == document_id
+        ),
+        None,
+    )
+    if not item:
+        return {"error": f"未找到 prototype document: {document_id}"}, {"anchor_ids": set(), "document_ids": set()}
+    anchor_ids = _anchor_ids_for_document_v2(bundle, document_id)
+    return (
+        {
+            "document": {
+                **_compact_prototype_document_payload_v2(item, preview=False),
+                "retrieval_facets": dict(item.get("retrieval_facets") or {}),
+                "voice_mask": dict(item.get("voice_mask") or {}),
+                "stance_vector": dict(item.get("stance_vector") or {}),
+                "anchor_spans": dict(item.get("anchor_spans") or {}),
+                "source_anchors": [
+                    _compact_anchor_payload_v2(anchor)
+                    for anchor in bundle.source_anchors
+                    if str(anchor.get("document_id") or "").strip() == document_id
+                ][:6],
+            }
+        },
+        {
+            "anchor_ids": anchor_ids,
+            "document_ids": {document_id},
+        },
+    )
+
+
+def _normalize_evidence_plan_payload_v2(
+    payload: dict[str, Any],
+    bundle: StoneWritingAnalysisBundle,
+    *,
+    query_trace: list[dict[str, Any]],
+    queried_anchor_ids: list[str],
+    queried_document_ids: list[str],
+) -> dict[str, Any]:
+    anchor_lookup = _anchor_lookup_v2(bundle)
+    valid_anchor_ids = set(anchor_lookup)
+    anchor_ids = _unique_preserve_order(
+        [
+            *_normalize_string_list(payload.get("anchor_ids"), limit=8),
+            *[
+                str(item.get("anchor_id") or "").strip()
+                for item in (payload.get("evidence_windows") or [])
+                if isinstance(item, dict)
+            ],
+            *[anchor_id for anchor_id in queried_anchor_ids if anchor_id in valid_anchor_ids],
+        ]
+    )
+    anchor_ids = [anchor_id for anchor_id in anchor_ids if anchor_id in valid_anchor_ids][:8]
+    if not anchor_ids:
+        anchor_ids = _available_anchor_ids(bundle)[:4]
+    evidence_windows = _normalize_evidence_windows_v2(
+        payload.get("evidence_windows"),
+        anchor_lookup=anchor_lookup,
+        fallback_anchor_ids=anchor_ids,
+    )
+    family_hints = _normalize_string_list(payload.get("prototype_family_hints"), limit=6)
+    if not family_hints:
+        family_hints = _prototype_family_hints_from_documents_v2(bundle, queried_document_ids)
+    if not family_hints:
+        family_hints = [
+            str(item.get("family_key") or item.get("label") or "").strip()
+            for item in (bundle.prototype_index.get("prototype_families") or [])[:3]
+            if str(item.get("family_key") or item.get("label") or "").strip()
+        ]
+    return {
+        "author_angle": str(payload.get("author_angle") or "").strip() or "先找作者最会落地的动作，再把代价慢慢显出来。",
+        "entry_scene": str(payload.get("entry_scene") or "").strip() or "从一个物件、动作或狭窄场景切入。",
+        "felt_cost": str(payload.get("felt_cost") or "").strip() or "先让代价出现，再让判断自己浮出来。",
+        "judgment_target": str(payload.get("judgment_target") or "").strip() or "关系处境",
+        "value_lens": str(payload.get("value_lens") or "").strip() or "代价",
+        "desired_judgment": str(payload.get("desired_judgment") or "").strip() or "悬置",
+        "desired_distance": str(payload.get("desired_distance") or "").strip() or "贴脸",
+        "motif_path": _normalize_string_list(payload.get("motif_path"), limit=6),
+        "forbidden_drift": _normalize_string_list(payload.get("forbidden_drift"), limit=8)
+        or ["不要写成分析说明", "不要写成诊断或自助建议"],
+        "prototype_family_hints": family_hints[:6],
+        "search_terms": _normalize_string_list(payload.get("search_terms"), limit=8),
+        "anchor_ids": anchor_ids,
+        "evidence_windows": evidence_windows[:6],
+        "plan_steps": _normalize_string_list(payload.get("plan_steps"), limit=8)
+        or ["先找起笔动作", "再沿代价推进", "最后回收到残响里"],
+        "coverage_gaps": _normalize_string_list(payload.get("coverage_gaps"), limit=6),
+        "query_trace": list(query_trace or [])[:8],
+        "queried_anchor_ids": [anchor_id for anchor_id in queried_anchor_ids if anchor_id in valid_anchor_ids][:8],
+        "queried_document_ids": _unique_preserve_order(queried_document_ids)[:8],
+    }
+
+
+def _render_evidence_plan_v2(payload: dict[str, Any]) -> str:
+    lines = [
+        f"切入角度：{payload.get('author_angle') or ''}",
+        f"起笔场景：{payload.get('entry_scene') or ''}",
+        f"代价焦点：{payload.get('felt_cost') or ''}",
+        f"目标 family：{', '.join(payload.get('prototype_family_hints') or [])}",
+        "",
+        "检索词：",
+        *[f"- {item}" for item in (payload.get("search_terms") or [])[:6]],
+        "",
+        "证据片段：",
+    ]
+    evidence_windows = list(payload.get("evidence_windows") or [])[:4]
+    if evidence_windows:
+        for item in evidence_windows:
+            lines.append(
+                f"- {item.get('anchor_id') or ''} | {item.get('quote') or ''}"
+            )
+            if item.get("reason"):
+                lines.append(f"  {item.get('reason')}")
+    else:
+        lines.append("- 暂无明确片段，使用默认 anchors 兜底。")
+    lines.extend(
+        [
+            "",
+            "写作步骤：",
+            *[f"- {item}" for item in (payload.get("plan_steps") or [])[:6]],
+        ]
+    )
+    if payload.get("coverage_gaps"):
+        lines.extend(["", "待补证据：", *[f"- {item}" for item in (payload.get("coverage_gaps") or [])[:4]]])
+    return "\n".join(lines).strip()
+
+
+def _anchor_lookup_v2(bundle: StoneWritingAnalysisBundle) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("id") or "").strip(): item
+        for item in bundle.source_anchors
+        if str(item.get("id") or "").strip()
+    }
+
+
+def _anchor_ids_for_document_v2(bundle: StoneWritingAnalysisBundle, document_id: str) -> set[str]:
+    return {
+        str(item.get("id") or "").strip()
+        for item in bundle.source_anchors
+        if str(item.get("document_id") or "").strip() == document_id and str(item.get("id") or "").strip()
+    }
+
+
+def _compact_anchor_payload_v2(anchor: dict[str, Any], *, limit: int = 220) -> dict[str, Any]:
+    return {
+        "id": str(anchor.get("id") or "").strip(),
+        "source": str(anchor.get("source") or "").strip(),
+        "title": str(anchor.get("title") or "").strip(),
+        "role": str(anchor.get("role") or "").strip(),
+        "document_id": str(anchor.get("document_id") or "").strip(),
+        "quote": _trim_text(anchor.get("quote"), limit),
+        "note": _trim_text(anchor.get("note"), 120),
+    }
+
+
+def _anchor_search_haystack_v2(anchor: dict[str, Any]) -> str:
+    return normalize_whitespace(
+        " ".join(
+            [
+                str(anchor.get("id") or ""),
+                str(anchor.get("source") or ""),
+                str(anchor.get("title") or ""),
+                str(anchor.get("role") or ""),
+                str(anchor.get("document_id") or ""),
+                str(anchor.get("quote") or ""),
+                str(anchor.get("note") or ""),
+                str(anchor.get("facet_key") or ""),
+            ]
+        )
+    ).lower()
+
+
+def _expand_profile_for_tool_v2(profile: dict[str, Any]) -> dict[str, Any]:
+    return expand_stone_profile_v2_for_analysis(
+        profile,
+        article_text=str(profile.get("article_text") or profile.get("source_text") or profile.get("raw_text") or ""),
+        title=str(profile.get("title") or "").strip() or None,
+    )
+
+
+def _compact_profile_payload_v2(
+    profile: dict[str, Any],
+    expanded: dict[str, Any],
+    *,
+    preview: bool = True,
+) -> dict[str, Any]:
+    return {
+        "document_id": str(profile.get("document_id") or "").strip(),
+        "title": str(profile.get("title") or "").strip() or "（未命名）",
+        "content_summary": _trim_text(expanded.get("content_summary"), 160 if preview else 320),
+        "content_type": str(expanded.get("content_type") or "").strip(),
+        "length_label": str(expanded.get("length_label") or "").strip(),
+        "emotion_label": str(expanded.get("emotion_label") or "").strip(),
+        "prototype_family": str(profile.get("prototype_family") or "").strip(),
+        "motif_tags": list(profile.get("motif_tags") or [])[:4],
+        "selected_passages": [
+            _trim_text(item, 140 if preview else 260)
+            for item in (expanded.get("selected_passages") or [])[:3]
+        ],
+    }
+
+
+def _profile_search_haystack_v2(profile: dict[str, Any], expanded: dict[str, Any]) -> str:
+    return normalize_whitespace(
+        " ".join(
+            [
+                str(profile.get("document_id") or ""),
+                str(profile.get("title") or ""),
+                str(expanded.get("content_summary") or ""),
+                str(expanded.get("content_type") or ""),
+                str(expanded.get("length_label") or ""),
+                str(expanded.get("emotion_label") or ""),
+                str(profile.get("opening_move") or ""),
+                str(profile.get("turning_move") or ""),
+                str(profile.get("closure_move") or ""),
+                str(profile.get("prototype_family") or ""),
+                " ".join(profile.get("motif_tags") or []),
+                " ".join(profile.get("lexicon_markers") or []),
+                " ".join(profile.get("segment_map") or []),
+                " ".join(expanded.get("selected_passages") or []),
+                str(expanded.get("tone") or ""),
+                str(expanded.get("structure_template") or ""),
+            ]
+        )
+    ).lower()
+
+
+def _compact_prototype_document_payload_v2(
+    item: dict[str, Any],
+    *,
+    preview: bool = True,
+) -> dict[str, Any]:
+    windows = dict(item.get("windows") or {})
+    return {
+        "document_id": str(item.get("document_id") or "").strip(),
+        "title": str(item.get("title") or "").strip() or "（未命名）",
+        "prototype_family": str(item.get("prototype_family") or "").strip(),
+        "length_band": str(item.get("length_band") or "").strip(),
+        "surface_form": str(item.get("surface_form") or "").strip(),
+        "motif_tags": list(item.get("motif_tags") or [])[:4],
+        "retrieval_terms": list(item.get("retrieval_terms") or [])[:8],
+        "exemplar_text": _trim_text(item.get("exemplar_text"), 180 if preview else 420),
+        "windows": {
+            "opening": _trim_text(windows.get("opening"), 140 if preview else 260),
+            "pivot": _trim_text(windows.get("pivot"), 140 if preview else 260),
+            "closing": _trim_text(windows.get("closing"), 140 if preview else 260),
+            "signature_line": [_trim_text(value, 120 if preview else 220) for value in (windows.get("signature_line") or [])[:3]],
+        },
+    }
+
+
+def _prototype_document_search_haystack_v2(item: dict[str, Any]) -> str:
+    windows = dict(item.get("windows") or {})
+    return normalize_whitespace(
+        " ".join(
+            [
+                str(item.get("document_id") or ""),
+                str(item.get("title") or ""),
+                str(item.get("prototype_family") or ""),
+                str(item.get("length_band") or ""),
+                str(item.get("surface_form") or ""),
+                " ".join(item.get("motif_tags") or []),
+                " ".join(item.get("retrieval_terms") or []),
+                str(item.get("exemplar_text") or ""),
+                str(windows.get("opening") or ""),
+                str(windows.get("pivot") or ""),
+                str(windows.get("closing") or ""),
+                " ".join(windows.get("signature_line") or []),
+            ]
+        )
+    ).lower()
+
+
+def _normalize_evidence_windows_v2(
+    value: Any,
+    *,
+    anchor_lookup: dict[str, dict[str, Any]],
+    fallback_anchor_ids: list[str],
+) -> list[dict[str, Any]]:
+    windows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value or []:
+        if not isinstance(item, dict):
+            continue
+        anchor_id = str(item.get("anchor_id") or "").strip()
+        if anchor_id not in anchor_lookup or anchor_id in seen:
+            continue
+        anchor = anchor_lookup[anchor_id]
+        seen.add(anchor_id)
+        windows.append(
+            {
+                "anchor_id": anchor_id,
+                "document_id": str(anchor.get("document_id") or "").strip(),
+                "title": str(anchor.get("title") or "").strip(),
+                "role": str(anchor.get("role") or "").strip(),
+                "quote": _trim_text(item.get("quote") or anchor.get("quote"), 220),
+                "reason": _trim_text(item.get("reason") or anchor.get("note") or f"可用于{anchor.get('role') or '正文'}位置。", 120),
+            }
+        )
+        if len(windows) >= 6:
+            return windows
+    for anchor_id in fallback_anchor_ids:
+        if anchor_id not in anchor_lookup or anchor_id in seen:
+            continue
+        anchor = anchor_lookup[anchor_id]
+        windows.append(
+            {
+                "anchor_id": anchor_id,
+                "document_id": str(anchor.get("document_id") or "").strip(),
+                "title": str(anchor.get("title") or "").strip(),
+                "role": str(anchor.get("role") or "").strip(),
+                "quote": _trim_text(anchor.get("quote"), 220),
+                "reason": _trim_text(anchor.get("note") or f"可作为{anchor.get('role') or '正文'}的落点。", 120),
+            }
+        )
+        seen.add(anchor_id)
+        if len(windows) >= 6:
+            break
+    return windows
+
+
+def _prototype_family_hints_from_documents_v2(
+    bundle: StoneWritingAnalysisBundle,
+    document_ids: list[str],
+) -> list[str]:
+    documents = {
+        str(item.get("document_id") or "").strip(): item
+        for item in (bundle.prototype_index.get("documents") or [])
+        if str(item.get("document_id") or "").strip()
+    }
+    hints: list[str] = []
+    for document_id in document_ids:
+        item = documents.get(str(document_id or "").strip())
+        if not item:
+            continue
+        family = str(item.get("prototype_family") or "").strip()
+        if family:
+            hints.append(family)
+    return _unique_preserve_order(hints)[:6]
+
+
+def _normalize_search_terms_v2(value: Any) -> list[str]:
+    text = normalize_whitespace(str(value or "")).lower()
+    if not text:
+        return []
+    raw_terms = re.findall(r"[a-z0-9]{2,}|[\u4e00-\u9fff]{2,}", text)
+    return _unique_preserve_order(raw_terms)[:8]
+
+
+def _matches_search_terms_v2(haystack: str, query_terms: list[str]) -> bool:
+    if not query_terms:
+        return True
+    return all(term in haystack for term in query_terms)
+
+
+def _normalize_topic_adapter_payload_v2(
+    payload: dict[str, Any],
+    bundle: StoneWritingAnalysisBundle,
+    *,
+    evidence_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     available_anchor_ids = _available_anchor_ids(bundle)
     anchor_ids = [
         anchor_id
@@ -2779,6 +3796,8 @@ def _normalize_topic_adapter_payload_v2(payload: dict[str, Any], bundle: StoneWr
         anchor_ids = available_anchor_ids[:4]
     family_hints = _normalize_string_list(payload.get("prototype_family_hints"), limit=6)
     if not family_hints:
+        family_hints = _normalize_string_list((evidence_plan or {}).get("prototype_family_hints"), limit=6)
+    if not family_hints:
         family_hints = [
             str(item.get("family_key") or item.get("label") or "").strip()
             for item in (bundle.author_model.get("prototype_families") or [])[:3]
@@ -2787,6 +3806,7 @@ def _normalize_topic_adapter_payload_v2(payload: dict[str, Any], bundle: StoneWr
     forbidden = _unique_preserve_order(
         [
             *_normalize_string_list(payload.get("forbidden_drift"), limit=8),
+            *_normalize_string_list((evidence_plan or {}).get("forbidden_drift"), limit=8),
             *((bundle.author_model.get("anti_patterns") or [])[:4]),
             "不要写成诊断、DSM、病理标签或心理解释报告。",
             "不要把题目直接贴在作者文风外面。",
@@ -2813,11 +3833,31 @@ def _select_prototypes_for_topic_v2(
     topic_adapter: dict[str, Any],
     *,
     target_word_count: int,
+    evidence_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     desired_length_band = _default_length_band_from_target_v2(target_word_count)
+    family_hints = _unique_preserve_order(
+        [
+            *_normalize_string_list(topic_adapter.get("prototype_family_hints"), limit=6),
+            *_normalize_string_list((evidence_plan or {}).get("prototype_family_hints"), limit=6),
+        ]
+    )
+    combined_adapter = dict(topic_adapter)
+    combined_adapter["prototype_family_hints"] = family_hints
+    if evidence_plan:
+        combined_adapter["motif_path"] = _unique_preserve_order(
+            [
+                *_normalize_string_list(topic_adapter.get("motif_path"), limit=6),
+                *_normalize_string_list(evidence_plan.get("motif_path"), limit=6),
+            ]
+        )[:6]
     scored: list[dict[str, Any]] = []
     for item in bundle.prototype_index.get("documents") or []:
-        total, breakdown, reasons = _score_prototype_entry_v2(item, topic_adapter, desired_length_band=desired_length_band)
+        total, breakdown, reasons = _score_prototype_entry_v2(
+            item,
+            combined_adapter,
+            desired_length_band=desired_length_band,
+        )
         scored.append(
             {
                 "document_id": item.get("document_id"),
@@ -3191,7 +4231,13 @@ def _render_critic_message_v2(critic: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
-def _resolve_critic_action_v2(critics: list[dict[str, Any]]) -> str:
+def _resolve_critic_action_v2(
+    critics: list[dict[str, Any]],
+    *,
+    draft_text: str,
+    topic: str,
+    target_word_count: int,
+) -> str:
     verdicts = [str(item.get("verdict") or "approve") for item in critics]
     scores = [_clamp_score(item.get("score"), default=0.0) for item in critics]
     if any(verdict == "redraft" for verdict in verdicts):
@@ -3201,6 +4247,9 @@ def _resolve_critic_action_v2(critics: list[dict[str, Any]]) -> str:
     if any(verdict == "line_edit" for verdict in verdicts):
         return "line_edit"
     if any(score < 0.72 for score in scores):
+        return "line_edit"
+    task_assessment = _assess_task_compliance_v2(draft_text, topic, target_word_count)
+    if not task_assessment["length_ok"] or not task_assessment["topic_visible"]:
         return "line_edit"
     return "approve"
 
@@ -3213,29 +4262,91 @@ def _build_final_assessment_v2(
     *,
     revision_action: str,
 ) -> dict[str, Any]:
-    word_count = estimate_word_count(final_text)
-    target = max(100, int(target_word_count or 0))
-    lower = int(target * 0.88)
-    upper = int(target * 1.08)
+    task_assessment = _assess_task_compliance_v2(final_text, topic, target_word_count)
     remaining_risks = _unique_preserve_order(
         [risk for critic in critics for risk in (critic.get("risks") or [])]
     )[:4]
-    if not lower <= word_count <= upper:
+    if not task_assessment["length_ok"]:
         remaining_risks.append("字数仍需人工复核。")
-    if topic and topic not in final_text:
+    if topic and not task_assessment["topic_visible"]:
         remaining_risks.append("主题词在正文里的显性可见度偏低。")
     return {
         "critic_pass_count": sum(1 for critic in critics if critic.get("pass")),
         "critic_total": len(critics),
-        "length_ok": lower <= word_count <= upper,
-        "topic_visible": bool(topic and topic in final_text),
+        "length_ok": task_assessment["length_ok"],
+        "topic_visible": task_assessment["topic_visible"],
+        "matched_topic_terms": task_assessment["matched_terms"],
         "revision_action": revision_action,
         "remaining_risks": remaining_risks[:4],
     }
 
 
+def _assess_task_compliance_v2(final_text: str, topic: str, target_word_count: int) -> dict[str, Any]:
+    word_count = estimate_word_count(final_text)
+    target = max(100, int(target_word_count or 0))
+    lower = int(target * 0.88)
+    upper = int(target * 1.08)
+    topic_visible, matched_terms = _topic_visible_v2(topic, final_text)
+    return {
+        "word_count": word_count,
+        "target_word_count": target,
+        "length_ok": lower <= word_count <= upper,
+        "topic_visible": topic_visible,
+        "matched_terms": matched_terms[:6],
+    }
+
+
+def _topic_visible_v2(topic: str, final_text: str) -> tuple[bool, list[str]]:
+    normalized_topic = normalize_whitespace(topic).lower()
+    normalized_text = normalize_whitespace(final_text).lower()
+    if not normalized_topic:
+        return True, []
+    if normalized_topic in normalized_text:
+        return True, [normalized_topic]
+    keywords = _extract_topic_keywords_v2(normalized_topic)
+    matched = [term for term in keywords if term and term in normalized_text]
+    if not matched:
+        return False, []
+    if any(len(term) >= 4 for term in matched):
+        return True, matched
+    return len(matched) >= min(2, max(1, len(keywords))), matched
+
+
+def _extract_topic_keywords_v2(topic: str) -> list[str]:
+    stop_terms = {
+        "一篇",
+        "文章",
+        "故事",
+        "一下",
+        "这个",
+        "那个",
+        "今天",
+        "晚上",
+        "今晚",
+        "现在",
+        "什么",
+        "为什么",
+        "怎么",
+        "自己",
+        "我的",
+    }
+    candidates: list[str] = []
+    for token in re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", topic):
+        if token in stop_terms:
+            continue
+        candidates.append(token)
+        if re.fullmatch(r"[\u4e00-\u9fff]{4,}", token):
+            for size in (4, 3, 2):
+                for index in range(0, len(token) - size + 1):
+                    piece = token[index:index + size]
+                    if piece not in stop_terms:
+                        candidates.append(piece)
+    return _unique_preserve_order(sorted(candidates, key=len, reverse=True))[:10]
+
+
 def _collect_trace_anchor_ids_v2(
     bundle: StoneWritingAnalysisBundle,
+    evidence_plan: dict[str, Any],
     topic_adapter: dict[str, Any],
     prototype_selection: dict[str, Any],
     blueprint: dict[str, Any],
@@ -3243,6 +4354,7 @@ def _collect_trace_anchor_ids_v2(
 ) -> list[str]:
     values: list[str] = []
     values.extend(_available_anchor_ids(bundle)[:12])
+    values.extend(evidence_plan.get("anchor_ids") or [])
     values.extend(topic_adapter.get("anchor_ids") or [])
     values.extend(prototype_selection.get("anchor_ids") or [])
     values.extend(blueprint.get("anchor_ids") or [])
@@ -3253,6 +4365,7 @@ def _collect_trace_anchor_ids_v2(
 
 def _build_trace_blocks_v2(
     analysis_bundle: StoneWritingAnalysisBundle,
+    evidence_plan: dict[str, Any],
     topic_adapter: dict[str, Any],
     prototype_selection: dict[str, Any],
     blueprint: dict[str, Any],
@@ -3265,6 +4378,13 @@ def _build_trace_blocks_v2(
             "stage": "generation_packet",
             "label": f"Stone v2 baseline ready ({analysis_bundle.version_label})",
             "baseline": analysis_bundle.generation_packet.get("baseline", {}),
+        },
+        {
+            "type": "stage",
+            "stage": "evidence_plan",
+            "label": "Evidence plan completed",
+            "anchor_ids": evidence_plan.get("anchor_ids") or [],
+            "search_terms": evidence_plan.get("search_terms") or [],
         },
         {
             "type": "stage",

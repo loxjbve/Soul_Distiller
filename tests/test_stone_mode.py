@@ -242,6 +242,65 @@ def _build_mock_article(topic: str, target_word_count: int) -> str:
 
 
 def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_stage: str | None = None) -> None:
+    def fake_tool_round(self, messages, tools, **kwargs):
+        del self, tools, kwargs
+        system_text = str(messages[0].get("content") or "")
+        user_text = str(messages[1].get("content") or "") if len(messages) > 1 else ""
+        if "evidence planner" not in system_text:
+            raise AssertionError(f"unexpected tool round stage: {system_text}")
+        if capture is not None:
+            capture.setdefault("tool_rounds", []).append({"stage": "evidence_plan", "system": system_text, "user": user_text})
+        if fail_stage == "evidence_plan":
+            raise RuntimeError("evidence_plan failed")
+
+        if not any(str(message.get("role") or "") == "tool" for message in messages):
+            arguments = {"query": "站台 玻璃 代价", "role": "opening", "limit": 2}
+            return ToolRoundResult(
+                content="",
+                model="demo-model",
+                usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+                tool_calls=[
+                    LLMToolCall(
+                        id="call-evidence-1",
+                        name="search_source_anchors",
+                        arguments_json=json.dumps(arguments, ensure_ascii=False),
+                        arguments=arguments,
+                    )
+                ],
+            )
+
+        anchor_ids = _extract_anchor_ids(json.dumps(messages, ensure_ascii=False))
+        primary_anchor = anchor_ids[0] if anchor_ids else "prototype:seed:opening"
+        payload = {
+            "author_angle": "先把动作和空气写实，再让代价自己浮出来",
+            "entry_scene": "雨夜站台，玻璃反光",
+            "felt_cost": "关系迟迟不说破的代价",
+            "judgment_target": "关系处境",
+            "value_lens": "代价",
+            "desired_judgment": "悬置",
+            "desired_distance": "回收",
+            "motif_path": ["站台", "玻璃", "灯影"],
+            "forbidden_drift": ["不要写成诊断报告", "不要写成写作说明"],
+            "prototype_family_hints": ["scene_vignette"],
+            "search_terms": ["站台", "玻璃", "代价"],
+            "anchor_ids": anchor_ids[:4] or [primary_anchor],
+            "evidence_windows": [
+                {
+                    "anchor_id": primary_anchor,
+                    "quote": "雨夜站台边那点风，不响，却一直贴着人。",
+                    "reason": "适合拿来做压低声调的起笔。",
+                }
+            ],
+            "plan_steps": ["先让场景落地", "再把关系压力显出来", "最后回收成余味"],
+            "coverage_gaps": [],
+        }
+        return ToolRoundResult(
+            content=json.dumps(payload, ensure_ascii=False),
+            model="demo-model",
+            usage={"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+            tool_calls=[],
+        )
+
     def fake_chat_completion_result(self, messages, **kwargs):
         del self, kwargs
         system_text = str(messages[0].get("content") or "")
@@ -356,6 +415,7 @@ def _install_writing_mocks(monkeypatch, *, capture: dict | None = None, fail_sta
             request_payload={"messages": messages},
         )
 
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
     monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
 
 
@@ -1553,21 +1613,23 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     )
     stage_events = [payload for name, payload in events if name == "stage"]
     done_events = [payload for name, payload in events if name == "done"]
-    assert [payload["message_kind"] for payload in stage_events[:3]] == [
+    assert [payload["message_kind"] for payload in stage_events[:4]] == [
+        "evidence_plan",
         "topic_adapter",
         "prototype_selector",
         "blueprint",
     ]
-    assert stage_events[3]["message_kind"] == "draft"
-    assert [payload["message_kind"] for payload in stage_events[4:-1]] == ["critic"] * 3
-    assert all(payload["actor_role"] == "critic" for payload in stage_events[4:-1])
+    assert stage_events[4]["message_kind"] == "draft"
+    assert [payload["message_kind"] for payload in stage_events[5:-1]] == ["critic"] * 3
+    assert all(payload["actor_role"] == "critic" for payload in stage_events[5:-1])
     assert done_events[-1]["message_kind"] == "final"
     assert done_events[-1]["actor_role"] == "writer"
 
     detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
-    assert detail_payload["timeline_turn_count"] == 9
+    assert detail_payload["timeline_turn_count"] == 10
     assert detail_payload["turns"][0]["role"] == "user"
-    assert [turn["message_kind"] for turn in detail_payload["turns"][1:4]] == [
+    assert [turn["message_kind"] for turn in detail_payload["turns"][1:5]] == [
+        "evidence_plan",
         "topic_adapter",
         "prototype_selector",
         "blueprint",
@@ -1582,6 +1644,7 @@ def test_stone_writing_workspace_uses_latest_analysis_even_if_writing_guide_exis
     assert latest_turn["trace"]["degraded_mode"] is False
     assert latest_turn["trace"]["generation_packet"]["baseline"]["author_model_ready"] is True
     assert latest_turn["trace"]["generation_packet"]["baseline"]["prototype_index_ready"] is True
+    assert latest_turn["trace"]["evidence_plan"]["evidence_windows"]
     assert latest_turn["trace"]["topic_adapter"]["anchor_ids"]
     assert latest_turn["trace"]["prototype_selection"]["selected_documents"]
     assert latest_turn["trace"]["blueprint"]["anchor_ids"]
@@ -1649,7 +1712,8 @@ def test_stone_writing_message_parser_accepts_natural_language_payload(client, a
         client,
         f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{message_payload['stream_id']}",
     )
-    assert [payload["message_kind"] for name, payload in events if name == "stage"][:3] == [
+    assert [payload["message_kind"] for name, payload in events if name == "stage"][:4] == [
+        "evidence_plan",
         "topic_adapter",
         "prototype_selector",
         "blueprint",
