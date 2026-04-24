@@ -4,7 +4,7 @@
 {% block title %}{{ channel_title }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424a">
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424b">
 {% endblock %}
 
 {% block content %}
@@ -75,5 +75,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}"></script>
+<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260424b"></script>
 {% endblock %}

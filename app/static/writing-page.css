@@ -509,6 +509,23 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
     font-size: 0.86rem;
 }
 
+.page-writing .group-message__meta-state,
+.page-writing .group-message__meta-live {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.45rem;
+    padding: 0 0.55rem;
+    border-radius: 999px;
+    border: 1px solid rgba(126, 221, 255, 0.18);
+    background: rgba(12, 24, 44, 0.72);
+}
+
+.page-writing .group-message__meta-live {
+    border-color: rgba(255, 208, 102, 0.3);
+    color: #ffe1a0;
+    box-shadow: 0 0 0 1px rgba(255, 208, 102, 0.08) inset;
+}
+
 .page-writing .group-message__bubble {
     padding: 0.95rem 1rem;
     border: 1px solid rgba(126, 221, 255, 0.16);
@@ -518,6 +535,16 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
         rgba(10, 19, 36, 0.86);
     color: #dcecf8;
     box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
+}
+
+.page-writing .group-message.is-streaming .group-message__bubble {
+    border-color: rgba(255, 208, 102, 0.32);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 208, 102, 0.12) inset;
+}
+
+.page-writing .group-message__bubble--plain {
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 .page-writing .group-message--user .group-message__bubble {

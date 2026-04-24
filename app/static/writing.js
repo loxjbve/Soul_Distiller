@@ -162,6 +162,14 @@ if (shell) {
             if (elements.messageInput) {
                 elements.messageInput.value = "";
             }
+            syncSessionSummary({
+                id: state.currentSessionId,
+                title: state.currentSession?.title,
+                created_at: state.currentSession?.created_at,
+                last_active_at: new Date().toISOString(),
+                timeline_turn_count: state.currentSession?.turns?.length || 1,
+            });
+            renderSessions();
             openStream(payload.stream_id);
         } catch (error) {
             appendLocalError(error.message);
@@ -190,35 +198,46 @@ if (shell) {
             }
         });
 
+        source.addEventListener("stream_update", (event) => {
+            const payload = safeParseJson(event.data, {});
+            upsertTurn(normalizeStreamTurn(payload));
+        });
+
         source.addEventListener("stage", (event) => {
             const payload = safeParseJson(event.data, {});
-            appendTurn(normalizeStreamTurn(payload));
+            upsertTurn(normalizeStreamTurn(payload));
         });
 
-        source.addEventListener("done", async (event) => {
+        source.addEventListener("done", (event) => {
             const payload = safeParseJson(event.data, {});
-            appendTurn(normalizeStreamTurn(payload));
-            closeStream();
-            await loadSession(state.currentSessionId);
+            upsertTurn(normalizeStreamTurn(payload));
+            syncSessionSummary({
+                id: state.currentSessionId,
+                title: state.currentSession?.title,
+                created_at: state.currentSession?.created_at,
+                last_active_at: payload.created_at || new Date().toISOString(),
+                timeline_turn_count: state.currentSession?.turns?.length || 0,
+            });
+            renderSessions();
+            restoreComposer();
         });
 
-        source.addEventListener("error", async (event) => {
+        source.addEventListener("error", (event) => {
             if (!event.data) {
                 return;
             }
             const payload = safeParseJson(event.data, {});
-            closeStream();
             appendLocalError(payload.message || ui.execution_failed || "写作失败");
-            await loadSession(state.currentSessionId);
+            restoreComposer();
         });
 
-        source.onerror = async () => {
+        source.onerror = () => {
             if (state.eventSource !== source) {
                 return;
             }
             closeStream();
             appendLocalError(ui.connection_interrupted || "连接中断");
-            await loadSession(state.currentSessionId);
+            restoreComposer();
         };
     }
 
@@ -320,7 +339,8 @@ if (shell) {
         const row = document.createElement("article");
         const role = turn.role === "user" ? "user" : "assistant";
         const kind = turn.message_kind || "update";
-        row.className = `group-message group-message--${role} group-message--${kind}`;
+        const liveStateClass = turn.stream_state === "streaming" ? " is-streaming" : "";
+        row.className = `group-message group-message--${role} group-message--${kind}${liveStateClass}`;
 
         const avatar = document.createElement("div");
         avatar.className = "group-message__avatar";
@@ -335,12 +355,15 @@ if (shell) {
         meta.innerHTML = `
             <strong>${escapeHtml(resolveActorName(turn))}</strong>
             <span>${escapeHtml(formatMessageTime(turn.created_at))}</span>
+            ${turn.label ? `<span class="group-message__meta-state">${escapeHtml(turn.label)}</span>` : ""}
+            ${turn.stream_state === "streaming" ? `<span class="group-message__meta-live">${escapeHtml(ui.streaming || "流式输出中")}</span>` : ""}
         `;
         inner.appendChild(meta);
 
         const bubble = document.createElement("div");
         bubble.className = "group-message__bubble";
-        if (turn.role === "user") {
+        if (turn.role === "user" || turn.render_mode === "plain") {
+            bubble.classList.add("group-message__bubble--plain");
             bubble.textContent = turn.content || "";
         } else {
             renderMarkdownInto(bubble, turn.content || "");
@@ -362,7 +385,7 @@ if (shell) {
         return row;
     }
 
-    function appendTurn(turn) {
+    function upsertTurn(turn) {
         if (!state.currentSession) {
             state.currentSession = { turns: [] };
         }
@@ -370,14 +393,34 @@ if (shell) {
             state.currentSession.turns = [];
         }
         const shouldStick = shouldAutoScroll(elements.liveFeed || elements.chatList);
-        state.currentSession.turns.push(turn);
-        if (typeof state.currentSession.timeline_turn_count === "number") {
+        let inserted = false;
+        if (turn.stream_key) {
+            const index = state.currentSession.turns.findIndex((item) => item.stream_key && item.stream_key === turn.stream_key);
+            if (index >= 0) {
+                state.currentSession.turns[index] = {
+                    ...state.currentSession.turns[index],
+                    ...turn,
+                    trace: turn.trace || state.currentSession.turns[index].trace || {},
+                };
+            } else {
+                state.currentSession.turns.push(turn);
+                inserted = true;
+            }
+        } else {
+            state.currentSession.turns.push(turn);
+            inserted = true;
+        }
+        if (inserted && typeof state.currentSession.timeline_turn_count === "number") {
             state.currentSession.timeline_turn_count += 1;
         }
         renderChat();
         if (shouldStick) {
             scrollToBottom();
         }
+    }
+
+    function appendTurn(turn) {
+        upsertTurn(turn);
     }
 
     function appendLocalError(message) {
@@ -389,6 +432,8 @@ if (shell) {
             actor_name: ui.agent_label || "写作 Agent",
             actor_role: "writer",
             message_kind: "error",
+            label: ui.execution_failed || "写作失败",
+            render_mode: "plain",
             trace: { debug: { message } },
             created_at: new Date().toISOString(),
         });
@@ -396,13 +441,17 @@ if (shell) {
 
     function normalizeStreamTurn(payload) {
         return {
-            id: `${payload.actor_id || "assistant"}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            id: payload.stream_key || `${payload.actor_id || "assistant"}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             role: "assistant",
             content: payload.body || "",
             actor_id: payload.actor_id || "assistant",
             actor_name: payload.actor_name || ui.agent_label || "写作 Agent",
             actor_role: payload.actor_role || "assistant",
             message_kind: payload.message_kind || "update",
+            label: payload.label || "",
+            stream_key: payload.stream_key || "",
+            stream_state: payload.stream_state || "complete",
+            render_mode: payload.render_mode || "markdown",
             trace: {
                 debug: payload.detail || {},
             },

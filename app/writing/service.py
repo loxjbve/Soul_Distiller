@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections import Counter
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -281,12 +282,33 @@ class WritingAgentService:
                 "baseline_components": analysis_bundle.generation_packet.get("baseline", {}),
             },
         )
+        self._emit_live_writer_message(
+            state,
+            message_kind="generation_packet",
+            label="Stone 基线已载入",
+            body=(
+                f"已载入 Stone v2 基线：{analysis_bundle.version_label}\n"
+                f"profiles {len(analysis_bundle.stone_profiles)} + author_model + prototype_index"
+            ),
+            detail=analysis_bundle.generation_packet.get("baseline", {}),
+            stage="generation_packet",
+            stream_key=self._stream_key(state, "generation_packet"),
+            stream_state="complete",
+        )
 
         config = repository.get_service_config(session, "chat_service")
         client = self._build_client(config)
         if not client:
             raise WritingPipelineError("generation_packet", "写作模型未配置，不能生成可交付正文。")
 
+        self._emit_live_writer_message(
+            state,
+            message_kind="evidence_plan",
+            label="证据规划进行中",
+            body="正在检索 source anchors、prototype documents 和 stone profiles，准备起笔证据...",
+            stage="evidence_plan",
+            stream_key=self._stream_key(state, "evidence_plan"),
+        )
         evidence_plan = self._plan_evidence_v2(state, analysis_bundle, client)
         analysis_bundle.generation_packet["evidence_plan"] = evidence_plan
         evidence_payload = _build_writer_message_payload(
@@ -295,9 +317,18 @@ class WritingAgentService:
             body=_render_evidence_plan_v2(evidence_plan),
             detail=evidence_plan,
             stage="evidence_plan",
+            stream_key=self._stream_key(state, "evidence_plan"),
         )
         self._emit(state, "stage", evidence_payload)
 
+        self._emit_live_writer_message(
+            state,
+            message_kind="topic_adapter",
+            label="题目适配进行中",
+            body="正在把题目翻进作者的切口、代价和叙述距离...",
+            stage="topic_adapter",
+            stream_key=self._stream_key(state, "topic_adapter"),
+        )
         topic_adapter = self._adapt_topic_v2(state, analysis_bundle, client, evidence_plan=evidence_plan)
         topic_payload = _build_writer_message_payload(
             message_kind="topic_adapter",
@@ -305,9 +336,18 @@ class WritingAgentService:
             body=_render_topic_adapter_v2(topic_adapter),
             detail=topic_adapter,
             stage="topic_adapter",
+            stream_key=self._stream_key(state, "topic_adapter"),
         )
         self._emit(state, "stage", topic_payload)
 
+        self._emit_live_writer_message(
+            state,
+            message_kind="prototype_selector",
+            label="原型检索进行中",
+            body="正在按 family、motif、length 和 stance 匹配最贴近的原型文档...",
+            stage="prototype_selector",
+            stream_key=self._stream_key(state, "prototype_selector"),
+        )
         prototype_selection = self._select_prototypes_v2(
             state,
             analysis_bundle,
@@ -320,9 +360,18 @@ class WritingAgentService:
             body=_render_prototype_selection_v2(prototype_selection),
             detail=prototype_selection,
             stage="prototype_selector",
+            stream_key=self._stream_key(state, "prototype_selector"),
         )
         self._emit(state, "stage", prototype_payload)
 
+        self._emit_live_writer_message(
+            state,
+            message_kind="blueprint",
+            label="写作蓝图进行中",
+            body="正在把证据压成可执行的开头、推进、转折和收口...",
+            stage="blueprint",
+            stream_key=self._stream_key(state, "blueprint"),
+        )
         blueprint = self._compose_blueprint_v2(
             state,
             analysis_bundle,
@@ -337,9 +386,18 @@ class WritingAgentService:
             body=_render_blueprint_v2(blueprint),
             detail=blueprint,
             stage="blueprint",
+            stream_key=self._stream_key(state, "blueprint"),
         )
         self._emit(state, "stage", blueprint_payload)
 
+        self._emit_live_writer_message(
+            state,
+            message_kind="draft",
+            label="首稿生成中",
+            body="正在起草正文...",
+            stage="draft",
+            stream_key=self._stream_key(state, "draft"),
+        )
         initial_draft = self._generate_initial_draft_v2(
             state,
             analysis_bundle,
@@ -355,6 +413,7 @@ class WritingAgentService:
             body=initial_draft,
             detail={"word_count": estimate_word_count(initial_draft), "blueprint": blueprint},
             stage="draft",
+            stream_key=self._stream_key(state, "draft"),
         )
         self._emit(state, "stage", draft_payload)
 
@@ -370,7 +429,10 @@ class WritingAgentService:
         )
         critic_messages: list[dict[str, Any]] = []
         for critic in critics:
-            critic_payload = _build_critic_message_payload_v2(critic)
+            critic_payload = _build_critic_message_payload_v2(
+                critic,
+                stream_key=self._stream_key(state, "critic", suffix=str(critic.get("critic_key") or "critic")),
+            )
             critic_messages.append(critic_payload)
             self._emit(state, "stage", critic_payload)
 
@@ -383,6 +445,14 @@ class WritingAgentService:
         revision_payload = None
         final_text = initial_draft
         if revision_action == "redraft":
+            self._emit_live_writer_message(
+                state,
+                message_kind="redraft",
+                label="整篇重写进行中",
+                body="critic 判定需要整篇重写，正在基于蓝图重写正文...",
+                stage="redraft",
+                stream_key=self._stream_key(state, "redraft"),
+            )
             final_text = self._redraft_from_critics_v2(
                 state,
                 analysis_bundle,
@@ -399,8 +469,17 @@ class WritingAgentService:
                 body=final_text,
                 detail={"word_count": estimate_word_count(final_text), "reason": "critic_redraft"},
                 stage="redraft",
+                stream_key=self._stream_key(state, "redraft"),
             )
         elif revision_action == "line_edit":
+            self._emit_live_writer_message(
+                state,
+                message_kind="line_edit",
+                label="局部修订进行中",
+                body="正在按 critic 指令做局部修订...",
+                stage="line_edit",
+                stream_key=self._stream_key(state, "line_edit"),
+            )
             final_text = self._line_edit_from_critics_v2(
                 state,
                 analysis_bundle,
@@ -418,6 +497,7 @@ class WritingAgentService:
                 body=final_text,
                 detail={"word_count": estimate_word_count(final_text), "reason": "critic_line_edit"},
                 stage="line_edit",
+                stream_key=self._stream_key(state, "line_edit"),
             )
         if revision_payload:
             self._emit(state, "stage", revision_payload)
@@ -438,6 +518,7 @@ class WritingAgentService:
                 "final_assessment": final_assessment,
             },
             stage="final",
+            stream_key=self._stream_key(state, "final"),
         )
         self._emit(state, "stage", final_payload)
 
@@ -518,6 +599,137 @@ class WritingAgentService:
             return OpenAICompatibleClient(config, log_path=str(self.config.llm_log_path))
         except Exception:
             return None
+
+    def _stream_key(self, state: WritingStreamState, message_kind: str, *, suffix: str | None = None) -> str:
+        key = f"{state.id}:{message_kind}"
+        if suffix:
+            key = f"{key}:{suffix}"
+        return key
+
+    def _emit_live_writer_message(
+        self,
+        state: WritingStreamState,
+        *,
+        message_kind: str,
+        label: str,
+        body: str,
+        stage: str,
+        stream_key: str,
+        detail: dict[str, Any] | None = None,
+        stream_state: str = "streaming",
+        render_mode: str = "plain",
+    ) -> None:
+        self._emit(
+            state,
+            "stream_update",
+            _build_writer_message_payload(
+                message_kind=message_kind,
+                label=label,
+                body=body,
+                detail=detail,
+                stage=stage,
+                stream_key=stream_key,
+                stream_state=stream_state,
+                render_mode=render_mode,
+            ),
+        )
+
+    def _emit_live_critic_message(
+        self,
+        state: WritingStreamState,
+        *,
+        critic_key: str,
+        label: str,
+        body: str,
+        stream_state: str = "streaming",
+        render_mode: str = "plain",
+    ) -> None:
+        self._emit(
+            state,
+            "stream_update",
+            {
+                "stage": "critic",
+                "label": label,
+                "actor_id": f"critic-{critic_key}",
+                "actor_name": label,
+                "actor_role": "critic",
+                "message_kind": "critic",
+                "body": body,
+                "detail": {},
+                "created_at": _iso_now(),
+                "stream_key": self._stream_key(state, "critic", suffix=critic_key),
+                "stream_state": stream_state,
+                "render_mode": render_mode,
+            },
+        )
+
+    def _make_stage_stream_handler(
+        self,
+        state: WritingStreamState,
+        *,
+        message_kind: str,
+        label: str,
+        stage: str,
+        stream_key: str,
+        actor_name: str = WRITER_ACTOR_NAME,
+        actor_id: str | None = None,
+        actor_role: str = "writer",
+        render_mode: str = "plain",
+    ):
+        buffer: list[str] = []
+        emitted_length = 0
+        last_emit_at = 0.0
+
+        def flush(*, force: bool = False) -> None:
+            nonlocal emitted_length, last_emit_at
+            text = "".join(buffer)
+            if not text:
+                return
+            if not force:
+                delta_size = len(text) - emitted_length
+                tail = text[-1:]
+                if delta_size < 48 and tail not in {"\n", "。", "！", "？", "}", "]"}:
+                    return
+            self._emit(
+                state,
+                "stream_update",
+                {
+                    "stage": stage,
+                    "label": label,
+                    "actor_id": actor_id or f"writer-{message_kind}",
+                    "actor_name": actor_name,
+                    "actor_role": actor_role,
+                    "message_kind": message_kind,
+                    "body": text,
+                    "detail": {},
+                    "created_at": _iso_now(),
+                    "stream_key": stream_key,
+                    "stream_state": "streaming",
+                    "render_mode": render_mode,
+                },
+            )
+            emitted_length = len(text)
+            last_emit_at = time.monotonic()
+
+        def handler(delta: str) -> None:
+            nonlocal last_emit_at
+            if not delta:
+                return
+            buffer.append(delta)
+            now = time.monotonic()
+            text = "".join(buffer)
+            if (
+                len(text) - emitted_length >= 96
+                or now - last_emit_at >= 0.18
+                or text.endswith(("\n", "。", "！", "？", "}", "]"))
+            ):
+                flush()
+
+        def finalize() -> str:
+            flush(force=True)
+            return "".join(buffer)
+
+        return handler, finalize
 
     def _resolve_analysis_bundle(self, session, project_id: str) -> StoneWritingAnalysisBundle:
         project = repository.get_project(session, project_id)
@@ -627,8 +839,18 @@ class WritingAgentService:
         queried_document_ids: set[str] = set()
         model_name = client.config.model
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        progress_lines = ["正在规划证据..."]
 
         for iteration in range(1, 6):
+            progress_lines.append(f"第 {iteration} 轮检索：准备调用 evidence planner。")
+            self._emit_live_writer_message(
+                state,
+                message_kind="evidence_plan",
+                label="证据规划进行中",
+                body="\n".join(progress_lines[-8:]),
+                stage="evidence_plan",
+                stream_key=self._stream_key(state, "evidence_plan"),
+            )
             round_result = client.tool_round(
                 messages,
                 self._evidence_tool_schemas_v2(),
@@ -641,6 +863,16 @@ class WritingAgentService:
             for key in usage:
                 usage[key] += int(round_result.usage.get(key, 0) or 0)
             if not round_result.tool_calls:
+                if round_result.content:
+                    progress_lines.append("证据规划器已返回归纳结果，正在整理。")
+                    self._emit_live_writer_message(
+                        state,
+                        message_kind="evidence_plan",
+                        label="证据规划进行中",
+                        body="\n".join(progress_lines[-8:]),
+                        stage="evidence_plan",
+                        stream_key=self._stream_key(state, "evidence_plan"),
+                    )
                 return {
                     "content": round_result.content,
                     "usage": usage,
@@ -666,6 +898,9 @@ class WritingAgentService:
                 }
             )
             for call in round_result.tool_calls:
+                progress_lines.append(
+                    f"调用工具：{call.name} {json.dumps(call.arguments, ensure_ascii=False)}"
+                )
                 output, state_delta = self._execute_evidence_tool_v2(
                     call.name,
                     call.arguments,
@@ -681,6 +916,17 @@ class WritingAgentService:
                         "document_ids": sorted(state_delta.get("document_ids", set())),
                         "result_preview": _trim_text(output, 420),
                     }
+                )
+                preview = tool_trace[-1]["result_preview"]
+                if preview:
+                    progress_lines.append(f"结果预览：{preview}")
+                self._emit_live_writer_message(
+                    state,
+                    message_kind="evidence_plan",
+                    label="证据规划进行中",
+                    body="\n".join(progress_lines[-10:]),
+                    stage="evidence_plan",
+                    stream_key=self._stream_key(state, "evidence_plan"),
                 )
                 messages.append(
                     {
@@ -843,6 +1089,13 @@ class WritingAgentService:
     ) -> dict[str, Any]:
         if not client:
             raise WritingPipelineError("topic_adapter", "写作模型未配置，无法适配题目。")
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="topic_adapter",
+            label="题目适配进行中",
+            stage="topic_adapter",
+            stream_key=self._stream_key(state, "topic_adapter"),
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -881,9 +1134,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.25,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("topic_adapter", f"题目适配失败：{exc}") from exc
+        finalize_stream()
         payload = parse_json_response(response.content, fallback=True)
         adapted = _normalize_topic_adapter_payload_v2(payload, analysis_bundle, evidence_plan=evidence_plan)
         if not adapted["anchor_ids"]:
@@ -920,6 +1175,13 @@ class WritingAgentService:
     ) -> dict[str, Any]:
         if not client:
             raise WritingPipelineError("blueprint", "写作模型未配置，无法生成蓝图。")
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="blueprint",
+            label="写作蓝图进行中",
+            stage="blueprint",
+            stream_key=self._stream_key(state, "blueprint"),
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -960,9 +1222,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.25,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("blueprint", f"蓝图生成失败：{exc}") from exc
+        finalize_stream()
         payload = parse_json_response(response.content, fallback=True)
         blueprint = _normalize_blueprint_payload_v2(payload, analysis_bundle, state.target_word_count)
         if not blueprint["anchor_ids"]:
@@ -982,6 +1246,13 @@ class WritingAgentService:
     ) -> str:
         if not client:
             raise WritingPipelineError("draft", "写作模型未配置，无法起草正文。")
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="draft",
+            label="首稿生成中",
+            stage="draft",
+            stream_key=self._stream_key(state, "draft"),
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -1019,9 +1290,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.45,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("draft", f"首稿生成失败：{exc}") from exc
+        finalize_stream()
         candidate = _clean_model_text(response.content)
         if not candidate:
             raise WritingPipelineError("draft", "首稿生成失败：模型返回为空。")
@@ -1077,6 +1350,22 @@ class WritingAgentService:
         if not client:
             raise WritingPipelineError("critic", "写作模型未配置，无法执行 critic。")
         spec = _critic_spec_v2(critic_key)
+        self._emit_live_critic_message(
+            state,
+            critic_key=critic_key,
+            label=spec["label"],
+            body=f"正在执行 {spec['label']} critic...",
+        )
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="critic",
+            label=spec["label"],
+            stage="critic",
+            stream_key=self._stream_key(state, "critic", suffix=critic_key),
+            actor_name=spec["label"],
+            actor_id=f"critic-{critic_key}",
+            actor_role="critic",
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -1118,9 +1407,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.15,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("critic", f"{spec['label']} critic 失败：{exc}") from exc
+        finalize_stream()
         payload = parse_json_response(response.content, fallback=True)
         return _normalize_critic_payload_v2(payload, critic_key, analysis_bundle)
 
@@ -1138,6 +1429,13 @@ class WritingAgentService:
     ) -> str:
         if not client:
             raise WritingPipelineError("redraft", "写作模型未配置，无法整篇重写。")
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="redraft",
+            label="整篇重写进行中",
+            stage="redraft",
+            stream_key=self._stream_key(state, "redraft"),
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -1169,9 +1467,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.42,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("redraft", f"整篇重写失败：{exc}") from exc
+        finalize_stream()
         candidate = _clean_model_text(response.content)
         if not candidate:
             raise WritingPipelineError("redraft", "整篇重写失败：模型返回为空。")
@@ -1194,6 +1494,13 @@ class WritingAgentService:
     ) -> str:
         if not client:
             raise WritingPipelineError("line_edit", "写作模型未配置，无法局部修订。")
+        stream_handler, finalize_stream = self._make_stage_stream_handler(
+            state,
+            message_kind="line_edit",
+            label="局部修订进行中",
+            stage="line_edit",
+            stream_key=self._stream_key(state, "line_edit"),
+        )
         try:
             response = client.chat_completion_result(
                 [
@@ -1225,9 +1532,11 @@ class WritingAgentService:
                 model=client.config.model,
                 temperature=0.32,
                 max_tokens=None,
+                stream_handler=stream_handler,
             )
         except Exception as exc:
             raise WritingPipelineError("line_edit", f"局部修订失败：{exc}") from exc
+        finalize_stream()
         candidate = _clean_model_text(response.content)
         if not candidate:
             raise WritingPipelineError("line_edit", "局部修订失败：模型返回为空。")
@@ -2145,6 +2454,9 @@ def _build_writer_message_payload(
     body: str,
     detail: dict[str, Any] | None = None,
     stage: str = "writer",
+    stream_key: str | None = None,
+    stream_state: str = "complete",
+    render_mode: str = "markdown",
 ) -> dict[str, Any]:
     return {
         "stage": stage,
@@ -2156,6 +2468,9 @@ def _build_writer_message_payload(
         "body": body,
         "detail": detail or {},
         "created_at": _iso_now(),
+        "stream_key": stream_key,
+        "stream_state": stream_state,
+        "render_mode": render_mode,
     }
 
 
@@ -4391,7 +4706,13 @@ def _normalize_critic_payload_v2(
     }
 
 
-def _build_critic_message_payload_v2(critic: dict[str, Any]) -> dict[str, Any]:
+def _build_critic_message_payload_v2(
+    critic: dict[str, Any],
+    *,
+    stream_key: str | None = None,
+    stream_state: str = "complete",
+    render_mode: str = "markdown",
+) -> dict[str, Any]:
     key = str(critic.get("critic_key") or "critic").strip() or "critic"
     label = str(critic.get("critic_label") or key).strip() or key
     return {
@@ -4404,6 +4725,9 @@ def _build_critic_message_payload_v2(critic: dict[str, Any]) -> dict[str, Any]:
         "body": _render_critic_message_v2(critic),
         "detail": critic,
         "created_at": _iso_now(),
+        "stream_key": stream_key,
+        "stream_state": stream_state,
+        "render_mode": render_mode,
     }
 
 
