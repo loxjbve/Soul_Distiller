@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import mimetypes
@@ -18,9 +18,10 @@ from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.db import Database
+from app.service.common.agent_handler import AgentHandler
 from app.service.common.llm.client import LLMError, OpenAICompatibleClient
 from app.models import ChatTurn, DocumentRecord
-from app.service.common.tools.workspace import build_tool_schemas
+from app.service.common.tools import WorkspaceToolContext, build_tool_schemas, execute_workspace_tool
 from app.runtime_limits import background_task_slot
 from app.schemas import LLMToolCall, ServiceConfig
 from app.storage import repository
@@ -238,9 +239,9 @@ class PreprocessAgentService:
             "status",
             {
                 "label": (
-                    f"已读取 {len(resolved_mentions)} 个文件"
+                    f"已读取 {len(resolved_mentions)} 个文档"
                     if resolved_mentions
-                    else "未指定文件，整个项目工作区可用"
+                    else "未指定文档，整个项目工作区可用"
                 )
             },
         )
@@ -248,9 +249,9 @@ class PreprocessAgentService:
             {
                 "type": "status",
                 "label": (
-                    f"已读取 {len(resolved_mentions)} 个文件"
+                    f"已读取 {len(resolved_mentions)} 个文档"
                     if resolved_mentions
-                    else "未指定文件，整个项目工作区可用"
+                    else "未指定文档，整个项目工作区可用"
                 ),
             }
         )
@@ -275,98 +276,37 @@ class PreprocessAgentService:
             return
 
         client = OpenAICompatibleClient(config, log_path=str(self.config.llm_log_path))
+        handler = AgentHandler(
+            client,
+            progress_sink=lambda event_type, payload: self._emit(state, event_type, payload),
+        )
         messages = self._build_messages(turns[:-1], state.message, project.name, mentions.documents)
-        usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        provider_response_id: str | None = None
-        artifact_ids: list[str] = []
-        assistant_text = ""
+        try:
+            result = handler.run_tool_loop(
+                messages,
+                build_tool_schemas("workspace"),
+                tool_executor=lambda tool_call: self._execute_tool(
+                    session,
+                    project_id=state.project_id,
+                    session_id=state.session_id,
+                    tool_call=tool_call,
+                    embedding_config=embedding_config,
+                ),
+                model=config.model,
+                temperature=0.2,
+                max_tokens=1400,
+                max_rounds=MAX_TOOL_STEPS,
+                agent_name="preprocess_agent",
+                stage="preprocess",
+                request_key_factory=lambda index: f"preprocess-round-{index}",
+                label_factory=lambda index: f"推理中 step {index}",
+                extra={"project_id": state.project_id, "session_id": state.session_id},
+            )
+        except Exception as exc:
+            raise ValueError(f"Native tool request failed: {exc}") from exc
 
-        for step_index in range(MAX_TOOL_STEPS):
-            self._ensure_stream_active(state)
-            self._emit(state, "status", {"label": f"推理中 · step {step_index + 1}"})
-            blocks.append({"type": "status", "label": f"推理中 · step {step_index + 1}"})
-            try:
-                result = client.tool_round(messages, build_tool_schemas(), model=config.model, temperature=0.2, max_tokens=1400)
-            except Exception as exc:
-                raise ValueError(f"Native tool request failed: {exc}") from exc
-            provider_response_id = result.provider_response_id or provider_response_id
-            for key in usage_totals:
-                usage_totals[key] += int(result.usage.get(key, 0))
-
-            if result.tool_calls:
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": result.content,
-                        "tool_calls": [
-                            {
-                                "id": call.id,
-                                "name": call.name,
-                                "arguments_json": call.arguments_json,
-                            }
-                            for call in result.tool_calls
-                        ],
-                    }
-                )
-                for tool_call in result.tool_calls:
-                    blocks.append(
-                        {
-                            "type": "tool_call",
-                            "name": tool_call.name,
-                            "arguments": tool_call.arguments,
-                        }
-                    )
-                    self._emit(
-                        state,
-                        "tool_call",
-                        {
-                            "name": tool_call.name,
-                            "arguments": tool_call.arguments,
-                        },
-                    )
-                    tool_result = self._execute_tool(
-                        session,
-                        project_id=state.project_id,
-                        session_id=state.session_id,
-                        tool_call=tool_call,
-                        embedding_config=embedding_config,
-                    )
-                    tool_payload = json.dumps(tool_result, ensure_ascii=False, indent=2)
-                    messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "name": tool_call.name,
-                            "content": tool_payload,
-                        }
-                    )
-                    blocks.append(
-                        {
-                            "type": "tool_result",
-                            "name": tool_call.name,
-                            "output": tool_result,
-                        }
-                    )
-                    self._emit(
-                        state,
-                        "tool_result",
-                        {
-                            "name": tool_call.name,
-                            "output": tool_result,
-                        },
-                    )
-                    for artifact in tool_result.get("artifacts", []):
-                        artifact_id = artifact.get("id")
-                        if artifact_id:
-                            artifact_ids.append(artifact_id)
-                        blocks.append({"type": "artifact", **artifact})
-                continue
-            assistant_text = (result.content or "").strip() or "已完成预分析。"
-            break
-        else:
-            assistant_text = "本轮工具调用达到上限，请缩小范围或指定更明确的文件。"
-
-        self._ensure_stream_active(state)
+        assistant_text = (result.content or "").strip() or "已完成预处理。"
+        blocks.extend(result.blocks)
         assistant_turn = repository.add_chat_turn(
             session,
             session_id=state.session_id,
@@ -376,18 +316,17 @@ class PreprocessAgentService:
                 "kind": "preprocess_agent",
                 "blocks": blocks,
                 "resolved_mentions": resolved_mentions,
-                "usage": usage_totals,
+                "usage": result.usage,
                 "llm": {
                     "provider_kind": config.provider_kind,
                     "api_mode": config.api_mode,
                     "model": config.model or client.resolve_model(),
                 },
-                "provider_response_id": provider_response_id,
+                "provider_response_id": result.provider_response_id,
             },
         )
-        repository.attach_artifacts_to_turn(session, artifact_ids, turn_id=assistant_turn.id)
+        repository.attach_artifacts_to_turn(session, list(result.artifacts or []), turn_id=assistant_turn.id)
         self._stream_assistant(state, assistant_text, assistant_turn.id)
-
     @staticmethod
     def _ensure_stream_active(state: StreamState) -> None:
         if state.cancelled.is_set():
@@ -481,103 +420,17 @@ class PreprocessAgentService:
         tool_call: LLMToolCall,
         embedding_config: ServiceConfig | None,
     ) -> dict[str, Any]:
-        name = tool_call.name
-        args = tool_call.arguments
-        if name == "list_project_documents":
-            query = str(args.get("query") or "").strip()
-            limit = max(1, min(int(args.get("limit", 12)), 50))
-            documents = repository.search_project_documents(session, project_id, query, limit=limit) if query else repository.list_project_documents(session, project_id)[:limit]
-            return {
-                "documents": [
-                    {
-                        "document_id": document.id,
-                        "filename": document.filename,
-                        "title": document.title or document.filename,
-                        "source_type": document.source_type,
-                        "language": document.language,
-                        "char_count": len(document.clean_text or ""),
-                    }
-                    for document in documents
-                ]
-            }
-        if name == "read_project_documents":
-            document_ids = [str(item) for item in args.get("document_ids", [])]
-            max_chars = max(200, min(int(args.get("max_chars_per_doc", 4000)), 12000))
-            include_metadata = bool(args.get("include_metadata", True))
-            documents = repository.list_project_documents_by_ids(session, project_id, document_ids)
-            return {
-                "documents": [
-                    {
-                        "document_id": document.id,
-                        "filename": document.filename,
-                        "title": document.title or document.filename,
-                        "truncated": len(document.clean_text or "") > max_chars,
-                        "content": (document.clean_text or "")[:max_chars],
-                        "metadata": (
-                            {
-                                "source_type": document.source_type,
-                                "language": document.language,
-                                "user_note": (document.metadata_json or {}).get("user_note"),
-                            }
-                            if include_metadata
-                            else None
-                        ),
-                    }
-                    for document in documents
-                ]
-            }
-        if name == "search_project_documents":
-            query = str(args.get("query") or "").strip()
-            if not query:
-                return {"hits": []}
-            allowed_ids = {str(item) for item in args.get("document_ids", []) if str(item).strip()}
-            limit = max(1, min(int(args.get("limit", 6)), 20))
-            hits, retrieval_mode, retrieval_trace = self.retrieval.search(
-                session,
-                project_id=project_id,
-                query=query,
-                embedding_config=embedding_config,
-                llm_config=self.config,
-                log_path=str(self.config.llm_log_path),
-                limit=max(limit * 3, 8),
-            )
-            filtered_hits = [hit for hit in hits if not allowed_ids or hit.document_id in allowed_ids][:limit]
-            return {
-                "retrieval_mode": retrieval_mode,
-                "retrieval_trace": retrieval_trace,
-                "hits": [
-                    {
-                        "chunk_id": hit.chunk_id,
-                        "anchor_chunk_id": hit.anchor_chunk_id or hit.chunk_id,
-                        "anchor_chunk_index": hit.anchor_chunk_index,
-                        "document_id": hit.document_id,
-                        "filename": hit.filename,
-                        "snippet": hit.content[:900],
-                        "score": hit.score,
-                        "page_number": hit.page_number,
-                        "context_span": dict(hit.context_span or {}),
-                    }
-                    for hit in filtered_hits
-                ],
-            }
-        if name == "run_python_transform":
-            return self._run_python_transform(session, project_id=project_id, session_id=session_id, args=args)
-        if name == "list_session_artifacts":
-            limit = max(1, min(int(args.get("limit", 20)), 50))
-            artifacts = repository.list_session_artifacts(session, session_id, limit=limit)
-            return {
-                "artifacts": [
-                    {
-                        "id": artifact.id,
-                        "filename": artifact.filename,
-                        "summary": artifact.summary,
-                        "created_at": artifact.created_at.isoformat(),
-                    }
-                    for artifact in artifacts
-                ]
-            }
-        return {"error": f"Unknown tool: {name}"}
-
+        context = WorkspaceToolContext(
+            session=session,
+            project_id=project_id,
+            session_id=session_id,
+            retrieval=self.retrieval,
+            output_dir=self.config.output_dir,
+            llm_log_path=str(self.config.llm_log_path) if getattr(self.config, "llm_log_path", None) else None,
+            embedding_config=embedding_config,
+            llm_config=repository.get_service_config(session, "chat_service"),
+        )
+        return execute_workspace_tool(context, tool_call.name, tool_call.arguments)
     def _run_python_transform(
         self,
         session: Session,
@@ -795,3 +648,5 @@ def _chunk_text(text: str, size: int = 120) -> list[str]:
 
 def _format_sse(event_type: str, payload: dict[str, Any]) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+

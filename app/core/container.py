@@ -14,22 +14,18 @@ from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
 from app.service import AppServices, ServiceRegistry
 from app.service.common.jobs.analysis_runner import AnalysisTaskRunner
-from app.service.common.pipeline.analysis_runtime import AnalysisEngine
-from app.service.common.pipeline.asset_runtime import AssetSynthesizer
-from app.service.common.pipeline.ingest import DocumentIngestService
-from app.service.common.pipeline.ingest_task import IngestTaskManager
-from app.service.common.pipeline.project_deletion import ProjectDeletionManager
-from app.service.common.pipeline.preprocess_runtime import PreprocessAgentService
-from app.service.common.pipeline.rechunk import RechunkTaskManager
-from app.service.common.pipeline.stone_assets_runtime import StoneV3BaselineSynthesizer
-from app.service.common.pipeline.stone_preprocess_runtime import StonePreprocessStreamHub, StonePreprocessWorker
-from app.service.common.pipeline.stone_writing_runtime import WritingAgentService
-from app.service.common.pipeline.telegram_runtime import TelegramPreprocessManager
+from app.service.common.pipeline import AnalysisEngine, AssetSynthesizer
 from app.service.common.streaming.analysis import AnalysisStreamHub
+from app.service.common.pipeline_support.ingest import DocumentIngestService
+from app.service.common.pipeline_support.ingest_task import IngestTaskManager
+from app.service.common.pipeline_support.project_deletion import ProjectDeletionManager
+from app.service.common.pipeline_support.rechunk import RechunkTaskManager
 from app.service.group import GroupModePipeline
 from app.service.single import SingleModePipeline
 from app.service.stone import StoneModePipeline
+from app.service.stone.pipeline import StonePreprocessStreamHub, StonePreprocessWorker, StoneV3BaselineSynthesizer, WritingAgentService
 from app.service.telegram import TelegramModePipeline
+from app.service.telegram.pipeline import TelegramPreprocessManager
 from app.storage import repository
 
 
@@ -107,7 +103,6 @@ class AppContainer:
         )
         asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
         stone_v3_synthesizer = StoneV3BaselineSynthesizer(log_path=str(config.llm_log_path))
-        preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
         writing_service = WritingAgentService(database, config, max_workers=4)
         telegram_preprocess_manager = TelegramPreprocessManager(
             database,
@@ -122,13 +117,11 @@ class AppContainer:
         )
 
         single_pipeline = SingleModePipeline(
-            preprocess_service=preprocess_service,
             analysis_engine=analysis_engine,
             analysis_runner=analysis_runner,
             asset_synthesizer=asset_synthesizer,
         )
         group_pipeline = GroupModePipeline(
-            preprocess_service=preprocess_service,
             analysis_engine=analysis_engine,
             analysis_runner=analysis_runner,
             asset_synthesizer=asset_synthesizer,
@@ -152,6 +145,7 @@ class AppContainer:
             telegram=telegram_pipeline,
             stone=stone_pipeline,
         )
+        analysis_engine.set_mode_pipeline_resolver(service_registry.for_mode)
         project_deletion_manager = ProjectDeletionManager(
             db=database,
             config=config,

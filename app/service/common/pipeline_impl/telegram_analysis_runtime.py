@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from collections.abc import Callable
@@ -9,8 +9,10 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.service.common.agent_handler import AgentHandler
 from app.service.common.facets import FacetDefinition
 from app.service.common.llm.client import LLMError, OpenAICompatibleClient, parse_json_response
+from app.service.common.tools import build_tool_schemas
 from app.models import Project, TelegramMessage, TelegramParticipant
 from app.schemas import ServiceConfig
 from app.storage import repository
@@ -285,13 +287,6 @@ class TelegramAnalysisAgent:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        usage = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "cache_creation_tokens": 0,
-            "cache_read_tokens": 0,
-        }
         tool_trace: list[dict[str, Any]] = []
         used_topic_ids: set[str] = set()
         used_week_keys: set[str] = set()
@@ -300,138 +295,83 @@ class TelegramAnalysisAgent:
         model_name = self.llm_config.model if self.llm_config else None
         has_topic_overview = False
 
-        for iteration in range(1, TELEGRAM_TOOL_LOOP_MAX_STEPS + 1):
-            request_key = f"{facet.key}-round-{iteration}"
-            self._trace(
-                "llm_request_started",
-                agent="telegram_facet_agent",
-                facet_key=facet.key,
-                round_index=iteration,
-                request_key=request_key,
-                request_kind="tool_round",
-                label=f"{facet.label} round {iteration}",
-                tool_names=[tool["function"]["name"] for tool in self._tool_schemas()],
-            )
-            round_result = self.client.tool_round(
-                messages,
-                self._tool_schemas(),
-                model=self.llm_config.model if self.llm_config else None,
-                temperature=0.2,
-                max_tokens=1200,
-            )
-            model_name = round_result.model or model_name
-            for key in usage:
-                usage[key] += int(round_result.usage.get(key, 0) or 0)
-            self._trace(
-                "llm_request_completed",
-                agent="telegram_facet_agent",
-                facet_key=facet.key,
-                round_index=iteration,
-                request_key=request_key,
-                request_kind="tool_round",
-                label=f"{facet.label} round {iteration}",
-                usage=round_result.usage,
-                response_text_preview=self._preview(round_result.content),
-                tool_calls=[
-                    {"name": call.name, "arguments": call.arguments}
-                    for call in round_result.tool_calls
-                ],
-            )
-            if not round_result.tool_calls:
-                return {
-                    "content": round_result.content,
-                    "usage": usage,
-                    "tool_trace": tool_trace,
-                    "used_topic_ids": used_topic_ids,
-                    "used_week_keys": used_week_keys,
-                    "queried_message_ids": queried_message_ids,
-                    "fallback_fewshots": fallback_fewshots,
-                    "iterations": iteration,
-                    "model": model_name,
-                }
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": round_result.content,
-                    "tool_calls": [
-                        {
-                            "id": call.id,
-                            "name": call.name,
-                            "arguments_json": call.arguments_json,
-                        }
-                        for call in round_result.tool_calls
-                    ],
-                }
-            )
-            for call in round_result.tool_calls:
-                self._trace(
-                    "tool_call",
-                    agent="telegram_facet_agent",
-                    facet_key=facet.key,
-                    round_index=iteration,
-                    request_key=request_key,
-                    tool_name=call.name,
-                    arguments_preview=self._preview(call.arguments),
+        def _execute_with_guard(call):
+            nonlocal has_topic_overview
+            raw_evidence_tools = {
+                "query_telegram_messages",
+                "lookup_messages",
+                "query_message_context",
+                "query_reply_chain",
+                "analyze_database",
+            }
+            if call.name in raw_evidence_tools and not has_topic_overview:
+                return (
+                    {
+                        "ok": False,
+                        "error": "请先调用 list_related_topics，先查看目标用户相关的话题概览，再决定是否读取原始消息证据。",
+                        "lint": ["先调用 list_related_topics，再继续读取原始消息。"],
+                    },
+                    {},
                 )
-                raw_evidence_tools = {
-                    "query_telegram_messages",
-                    "lookup_messages",
-                    "query_message_context",
-                    "query_reply_chain",
-                    "analyze_database",
-                }
-                if call.name in raw_evidence_tools and not has_topic_overview:
-                    output = {
-                        "error": "请先调用 list_related_topics，先查看目标用户相关的话题概要，再决定是否读取原始消息证据。"
-                    }
-                    state = {}
-                else:
-                    output, state = self._execute_tool(call.name, call.arguments, target_user, preprocess_run_id)
-                if call.name == "list_related_topics" and not output.get("error"):
-                    has_topic_overview = True
-                used_topic_ids.update(state.get("topic_ids", []))
-                used_week_keys.update(state.get("week_keys", []))
-                queried_message_ids.update(state.get("message_ids", []))
-                for key in usage:
-                    usage[key] += int((state.get("usage") or {}).get(key, 0) or 0)
-                if state.get("messages"):
-                    fallback_fewshots = self._messages_to_fewshots(
-                        state.get("messages", []),
-                        participant_id=str(target_user.get("participant_id") or "").strip() or None,
-                    )[:8]
-                tool_entry = {
-                    "tool": call.name,
-                    "arguments": call.arguments,
-                    "topic_ids": sorted(state.get("topic_ids", [])),
-                    "week_keys": sorted(state.get("week_keys", [])),
-                    "message_ids": sorted(state.get("message_ids", []))[:32],
+            output, state = self._execute_tool(call.name, call.arguments, target_user, preprocess_run_id)
+            if call.name == "list_related_topics" and not output.get("error"):
+                has_topic_overview = True
+            return output, state
+
+        handler = AgentHandler(
+            self.client,
+            progress_sink=lambda kind, payload: self._trace(kind, **payload),
+        )
+        result = handler.run_tool_loop(
+            messages,
+            build_tool_schemas("telegram_analysis"),
+            tool_executor=_execute_with_guard,
+            model=self.llm_config.model if self.llm_config else None,
+            temperature=0.2,
+            max_tokens=1200,
+            max_rounds=TELEGRAM_TOOL_LOOP_MAX_STEPS,
+            agent_name="telegram_facet_agent",
+            stage="telegram_facet",
+            request_key_factory=lambda iteration: f"{facet.key}-round-{iteration}",
+            label_factory=lambda iteration: f"{facet.label} round {iteration}",
+            extra={"facet_key": facet.key},
+        )
+        model_name = result.model or model_name
+        for item in result.tool_results:
+            output = dict(item.get("output") or {})
+            state = dict(item.get("meta") or {})
+            used_topic_ids.update(str(value) for value in state.get("topic_ids", []) if str(value).strip())
+            used_week_keys.update(str(value) for value in state.get("week_keys", []) if str(value).strip())
+            queried_message_ids.update(int(value) for value in state.get("message_ids", []) if str(value).strip().isdigit())
+            if state.get("messages"):
+                fallback_fewshots = self._messages_to_fewshots(
+                    state.get("messages", []),
+                    participant_id=str(target_user.get("participant_id") or "").strip() or None,
+                )[:8]
+            tool_trace.append(
+                {
+                    "tool": item.get("name"),
+                    "arguments": item.get("arguments") or {},
+                    "topic_ids": sorted(str(value) for value in state.get("topic_ids", []) if str(value).strip()),
+                    "week_keys": sorted(str(value) for value in state.get("week_keys", []) if str(value).strip()),
+                    "message_ids": sorted(int(value) for value in state.get("message_ids", []) if str(value).strip().isdigit())[:32],
                     "result_preview": self._preview(output),
                 }
-                tool_trace.append(
-                    tool_entry
-                )
-                self._trace(
-                    "tool_result",
-                    agent="telegram_facet_agent",
-                    facet_key=facet.key,
-                    round_index=iteration,
-                    request_key=request_key,
-                    tool_name=call.name,
-                    topic_ids=tool_entry["topic_ids"],
-                    week_keys=tool_entry["week_keys"],
-                    message_ids=tool_entry["message_ids"],
-                    output_preview=tool_entry["result_preview"],
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                        "content": json.dumps(output, ensure_ascii=False),
-                    }
-                )
-        raise LLMError("Telegram analysis exceeded the maximum tool iterations.")
+            )
+            if item.get("name") == "list_related_topics" and not output.get("error"):
+                has_topic_overview = True
 
+        return {
+            "content": result.content,
+            "usage": result.usage,
+            "tool_trace": tool_trace,
+            "used_topic_ids": used_topic_ids,
+            "used_week_keys": used_week_keys,
+            "queried_message_ids": queried_message_ids,
+            "fallback_fewshots": fallback_fewshots,
+            "iterations": result.rounds,
+            "model": model_name,
+        }
     def _execute_tool(
         self,
         name: str,
@@ -1881,3 +1821,4 @@ class TelegramAnalysisAgent:
                 },
             },
         ]
+

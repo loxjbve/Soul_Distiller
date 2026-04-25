@@ -1,15 +1,14 @@
-"""单人模式总流程编排。
+"""单人模式总编排入口。
 
-这个文件只保留单人模式的编排入口：预处理会话、十维分析、资产生成、试聊。
-底层 LLM、tool loop、SSE、具体 tool 实现都应继续留在 common。
+这个文件现在只负责单人模式的分析、资产生成和试聊编排。
+单人/群聊的预处理 agent 已经移除，相关能力会在 common base 里直接视为不支持。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from app.service.common.pipeline.mode import BaseModePipeline
-from app.service.common.pipeline.playground_runtime import playground_chat
+from app.service.common.pipeline import BaseModePipeline, playground_chat
 
 
 class SingleModePipeline(BaseModePipeline):
@@ -18,37 +17,13 @@ class SingleModePipeline(BaseModePipeline):
     def __init__(
         self,
         *,
-        preprocess_service: Any,
         analysis_engine: Any,
         analysis_runner: Any,
         asset_synthesizer: Any,
     ) -> None:
-        self.preprocess_service = preprocess_service
         self.analysis_engine = analysis_engine
         self.analysis_runner = analysis_runner
         self.asset_synthesizer = asset_synthesizer
-
-    def set_run_inline(self, enabled: bool) -> None:
-        self.preprocess_service.run_inline = enabled
-
-    def shutdown(self) -> None:
-        self.preprocess_service.shutdown()
-
-    def cancel_project(self, project_id: str) -> bool:
-        self.preprocess_service.cancel_project(project_id)
-        return self.preprocess_service.has_project_activity(project_id) is False
-
-    def has_project_activity(self, project_id: str) -> bool:
-        return self.preprocess_service.has_project_activity(project_id)
-
-    def list_mentions(self, session: Any, project_id: str, query: str, *, limit: int = 8) -> list[dict[str, Any]]:
-        return self.preprocess_service.list_mentions(session, project_id, query, limit=limit)
-
-    def start_preprocess_session_stream(self, *, project_id: str, session_id: str, message: str) -> dict[str, str]:
-        return self.preprocess_service.start_stream(project_id=project_id, session_id=session_id, message=message)
-
-    def stream_preprocess_session_events(self, stream_id: str):
-        return self.preprocess_service.stream_events(stream_id)
 
     def create_analysis_run(
         self,

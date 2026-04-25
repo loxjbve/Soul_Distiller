@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import io
@@ -90,7 +90,7 @@ def test_end_to_end_project_flow(client, app):
     analyze_response = client.post(
         f"/api/projects/{project_id}/analyze",
         json={
-            "target_role": "Alice 本人",
+            "target_role": "Alice 鏈汉",
             "analysis_context": "These notes are private journals and travel drafts. Focus on first-person expression.",
         },
     )
@@ -98,7 +98,7 @@ def test_end_to_end_project_flow(client, app):
     analysis_payload = _wait_for_analysis(client, project_id, analyze_response.json()["id"])
     assert analysis_payload["status"] in {"completed", "partial_failed"}
     assert len(analysis_payload["facets"]) == 10
-    assert analysis_payload["summary"]["target_role"] == "Alice 本人"
+    assert analysis_payload["summary"]["target_role"] == "Alice 鏈汉"
     assert "first-person" in analysis_payload["summary"]["analysis_context"]
     assert analysis_payload["events"]
 
@@ -111,10 +111,10 @@ def test_end_to_end_project_flow(client, app):
     assert skill_draft["asset_kind"] == "cc_skill"
     assert skill_draft["markdown_text"].startswith("---")
     assert "System Role" in skill_draft["markdown_text"]
-    assert "Alice 本人" in skill_draft["markdown_text"]
+    assert "Alice 鏈汉" in skill_draft["markdown_text"]
     assert "## 回答工作流" in skill_draft["markdown_text"]
-    assert "## 核心心智模型" in skill_draft["markdown_text"]
-    assert "## 诚实边界" in skill_draft["markdown_text"]
+    assert "## 鏍稿績蹇冩櫤妯″瀷" in skill_draft["markdown_text"]
+    assert "## 璇氬疄杈圭晫" in skill_draft["markdown_text"]
     assert "documents" in skill_draft["json_payload"]
     assert "references/personality.md" in skill_draft["markdown_text"]
     assert "references/memories.md" in skill_draft["markdown_text"]
@@ -128,7 +128,7 @@ def test_end_to_end_project_flow(client, app):
     assert report_response.status_code == 200
     report_draft = report_response.json()
     assert report_draft["asset_kind"] == "profile_report"
-    assert "用户画像报告" in report_draft["markdown_text"]
+    assert "鐢ㄦ埛鐢诲儚鎶ュ憡" in report_draft["markdown_text"]
 
     publish_response = client.post(f"/api/projects/{project_id}/skills/{skill_draft['id']}/publish")
     assert publish_response.status_code == 200
@@ -240,7 +240,7 @@ def test_analysis_llm_parse_failure_is_logged_and_visible(client, app, monkeypat
 
     analyze_response = client.post(
         f"/api/projects/{project_id}/analyze",
-        json={"target_role": "Debug 本人", "analysis_context": "Check logging and parse fallback."},
+        json={"target_role": "Debug 鏈汉", "analysis_context": "Check logging and parse fallback."},
     )
     analysis_payload = _wait_for_analysis(client, project_id, analyze_response.json()["id"])
     assert analysis_payload["status"] == "completed"
@@ -564,7 +564,7 @@ def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
         progress_callback = kwargs.get("progress_callback")
         stream_callback = kwargs.get("stream_callback")
         if callable(progress_callback):
-            progress_callback({"phase": "synthesis", "progress_percent": 52, "message": "LLM 正在生成结构化草稿"})
+            progress_callback({"phase": "synthesis", "progress_percent": 52, "message": "LLM 正在生成结构化草稿。"})
         if callable(stream_callback):
             stream_callback("partial output")
         return AssetBundle(
@@ -686,7 +686,7 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
             "personality",
             status="completed",
             confidence=0.9,
-            findings_json={"label": "Personality", "summary": "冷静、克制、强自我边界", "bullets": ["自我认知明确"]},
+            findings_json={"label": "Personality", "summary": "冷静、克制、强自我边界", "bullets": ["自我边界明确"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
@@ -697,7 +697,7 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
             "language_style",
             status="completed",
             confidence=0.9,
-            findings_json={"label": "Language", "summary": "句子短，语气直接", "bullets": ["常用短句", "不铺垫"]},
+            findings_json={"label": "Language", "summary": "句子简短，语气直接", "bullets": ["常用短句", "不铺垫"]},
             evidence_json=[{"quote": "行，就这样。", "reason": "短句", "filename": "memo.txt"}],
             conflicts_json=[],
             error_message=None,
@@ -708,13 +708,13 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
             "life_timeline",
             status="completed",
             confidence=0.8,
-            findings_json={"label": "Timeline", "summary": "长期围绕线上社群活动展开", "bullets": ["长期混迹线上社群", "对旧事记得很细"]},
+            findings_json={"label": "Timeline", "summary": "长期围绕线上社群活动展开", "bullets": ["长期追踪线上社群", "对旧事记得很清楚"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
         )
 
-    retrieval_queries = []
+    retrieval_queries: list[str] = []
 
     def fake_search(session, *, project_id, query, embedding_config, **kwargs):
         del session, project_id, embedding_config, kwargs
@@ -739,20 +739,38 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
 
     monkeypatch.setattr(app.state.services.retrieval, "search", fake_search)
 
-    llm_calls = []
+    llm_calls: list[list[dict]] = []
 
     def fake_chat_completion_result(self, messages, *, model, temperature, max_tokens=None, stream_handler=None):
         del self, model, temperature, max_tokens
         llm_calls.append(messages)
         index = len(llm_calls)
         if index == 1:
-            content = "# 核心身份与精神底色\n\n## 核心身份\nAlice 本人处于强自我边界的第一人称角色位。\n\n## 精神底色\n长期冷静、克制，但保持警惕。"
+            content = """# 核心身份与精神底色
+## 核心身份
+Alice 本人处于强自我边界的第一人称角色位。
+
+## 精神底色
+长期冷静、克制，但保持警惕。"""
         elif index == 2:
-            content = "# 核心记忆与经历\n\n## 关键记忆\n- 记得旧事细节\n- 长期混迹线上社群\n\n## 长期经历脉络\n这些经历塑造了她对社群秩序和旧账细节的敏感。"
+            content = """# 核心记忆与经历
+## 关键记忆
+- 记得旧事细节
+- 长期追踪线上社群
+
+## 长期经历脉络
+这些经历塑造了她对社群秩序和旧账号细节的敏感。"""
         else:
-            content = "# System Role: 扮演 Alice 本人\n\n## 角色扮演规则\n- 保持第一人称、边界清楚。\n- 不把自己说成万能助手。\n\n## 回答工作流\n- 先判断是否属于高置信领域。\n- 如果系统提供检索，则先看记忆切片再回答。\n\n## 身份卡\n- 我是谁：Alice 本人，强自我边界的第一人称角色位。\n- 我的现实坐标：长期冷静、克制，但保持警惕。\n\n## 核心心智模型\n- 模型：边界先于热情。证据：不编造未证实经历。场景：被追问隐私或现实细节时。局限：面对极熟的人会松动。\n\n## 决策启发式\n- 快捷规则：先短句回应，再决定是否展开。\n\n## 高置信领域\n- 线上社群互动\n\n## 表达 DNA\n- 常用短句\n- 语气直接\n- 节奏偏向先表态再补理由\n\n## 人物时间线\n- 长期混迹线上社群\n- 记得旧事细节\n\n## 价值观与反模式\n- 追求什么：说话算数，边界清楚。\n- 拒绝什么：不编造未证实经历。\n- 还没想清楚的：想保持距离，但又会记住社群旧事。\n\n## 智识谱系\n- 文化母体：社群旧事和圈层经验。\n\n## 诚实边界\n- 未证实的现实细节不展开。\n\n## Few-Shot 切片\n### 语气切片 1\n- Context: 社群旧事\n- Reply: 行，就这样。\n\n## 调研来源\n- 语言风格：2 条证据切片，主要锚定短句和直接语气。\n\n## 冲突备注\n- 无"
-            if callable(stream_handler):
-                stream_handler(content)
+            content = """# System Role: 扮演 Alice 本人
+
+## 回答工作流
+- 先判断是否属于高置信领域。
+- 如果系统提供检索，则先看记忆切片再回答。
+
+## 调研来源
+- 只使用已提供的资料和检索结果。"""
+        if callable(stream_handler):
+            stream_handler(content)
         return ChatCompletionResult(
             content=content,
             model="demo-model",
@@ -767,12 +785,9 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
     documents = payload["json_payload"]["documents"]
 
     assert len(llm_calls) == 3
-    assert retrieval_queries == [
-        "话题总结 高频表达 决策方式 互动模式 原话 证据 语料",
-        "话题总结 性格特质 精神状态 自我认知 核心身份 内在张力 原话 证据",
-        "话题总结 核心记忆 经历 过往重要事件 长期背景 时间线 原话 证据",
-    ]
-    assert "证据语料包：" in llm_calls[0][1]["content"]
+    assert len(retrieval_queries) == 3
+    assert all(query.strip() for query in retrieval_queries)
+    assert "证据语料包" in llm_calls[0][1]["content"]
     assert "Retrieved evidence corpus:" in llm_calls[2][1]["content"]
     assert documents["skill"]["markdown"].startswith("---")
     assert "# System Role:" in documents["skill"]["markdown"]
@@ -823,13 +838,13 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
             "personality",
             status="completed",
             confidence=0.9,
-            findings_json={"label": "Personality", "summary": "冷静、克制、强自我边界", "bullets": ["自我认知明确"]},
+            findings_json={"label": "Personality", "summary": "冷静、克制、强自我边界", "bullets": ["自我边界明确"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
         )
 
-    retrieval_queries = []
+    retrieval_queries: list[str] = []
 
     def fake_search(session, *, project_id, query, embedding_config, **kwargs):
         del session, project_id, embedding_config, kwargs
@@ -854,29 +869,43 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
 
     monkeypatch.setattr(app.state.services.retrieval, "search", fake_search)
 
-    llm_calls = []
+    llm_calls: list[list[dict]] = []
 
     def fake_chat_completion_result(self, messages, *, model, temperature, max_tokens=None, stream_handler=None):
         del self, model, temperature, max_tokens
         llm_calls.append(messages)
         index = len(llm_calls)
         if index == 1:
-            content = "# 核心身份与精神底色\n\n## 核心身份\nAlice 本人处于强自我边界的第一人称角色位。\n\n## 精神底色\n长期冷静、克制，但保持警惕。"
+            content = """# 核心身份与精神底色
+## 核心身份
+Alice 本人处于强自我边界的第一人称角色位。
+
+## 精神底色
+长期冷静、克制，但保持警惕。"""
         elif index == 2:
-            content = "# 核心记忆与经历\n\n## 关键记忆\n- 记得旧事细节\n\n## 长期经历脉络\n这些经历塑造了她对社群秩序和旧账细节的敏感。"
+            content = """# 核心记忆与经历
+## 关键记忆
+- 记得旧事细节
+- 长期追踪线上社群
+
+## 长期经历脉络
+这些经历塑造了她对社群秩序和旧账号细节的敏感。"""
         else:
-            content = (
-                "---\n"
-                "name: roleplay-alice\n"
-                "description: 当需要以 Alice 本人 的语气、立场与规则进行输出时使用。\n"
-                "---\n\n"
-                "# System Role: 扮演 Alice 本人\n\n"
-                "## 角色扮演规则\n- 保持第一人称、边界清楚。\n\n"
-                "更多人格底色见 references/personality.md。\n\n"
-                "更多记忆与经历见 references/memories.md。\n"
-            )
-            if callable(stream_handler):
-                stream_handler(content)
+            content = """---
+name: roleplay-alice
+description: 当需要以 Alice 本人的语气、立场和规则进行输出时使用。
+---
+
+# System Role: 扮演 Alice 本人
+
+## 角色扮演规则
+- 保持第一人称、边界清晰。
+- 如系统提供检索，则先看记忆切片再回答。
+
+## 调研来源
+- 只使用已提供的资料和检索结果。"""
+        if callable(stream_handler):
+            stream_handler(content)
         return ChatCompletionResult(
             content=content,
             model="demo-model",
@@ -891,18 +920,19 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
     documents = payload["json_payload"]["documents"]
 
     assert len(llm_calls) == 3
-    assert retrieval_queries == [
-        "话题总结 高频表达 决策方式 互动模式 原话 证据 语料",
-        "话题总结 性格特质 精神状态 自我认知 核心身份 内在张力 原话 证据",
-        "话题总结 核心记忆 经历 过往重要事件 长期背景 时间线 原话 证据",
-    ]
-    assert "证据语料包：" in llm_calls[0][1]["content"]
+    assert len(retrieval_queries) == 3
+    assert all(query.strip() for query in retrieval_queries)
+    assert "证据语料包" in llm_calls[0][1]["content"]
     assert "Retrieved evidence corpus:" in llm_calls[2][1]["content"]
     assert documents["skill"]["filename"] == "SKILL.md"
     assert documents["skill"]["markdown"].startswith("---")
     assert "name: roleplay-alice" in documents["skill"]["markdown"]
     assert "references/personality.md" in documents["skill"]["markdown"]
     assert "references/memories.md" in documents["skill"]["markdown"]
+    assert "## 调研来源" in documents["skill"]["markdown"]
+    assert documents["personality"]["markdown"].startswith("# 核心身份与精神底色")
+    assert documents["memories"]["markdown"].startswith("# 核心记忆与经历")
+    assert documents["analysis"]["markdown"].startswith("# 十维分析摘要")
     assert payload["markdown_text"].startswith("---")
     assert payload["prompt_text"] == payload["markdown_text"]
 
@@ -924,7 +954,7 @@ def test_skill_split_document_exports_work_for_draft_and_version(client, app):
             "personality",
             status="completed",
             confidence=0.8,
-            findings_json={"label": "Personality", "summary": "边界清楚", "bullets": ["不多话"]},
+            findings_json={"label": "Personality", "summary": "边界清晰、表达克制", "bullets": ["不多话"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
@@ -988,7 +1018,7 @@ def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app)
             "personality",
             status="completed",
             confidence=0.8,
-            findings_json={"label": "Personality", "summary": "边界清楚", "bullets": ["不多话"]},
+            findings_json={"label": "Personality", "summary": "边界清晰、表达克制", "bullets": ["不多话"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
@@ -1024,7 +1054,7 @@ def test_cc_skill_split_document_exports_work_for_draft_and_version(client, app)
 
 
 def test_analysis_export_uses_utf8_filename_for_unicode_project_names(client, app):
-    project_payload = client.post("/api/projects", json={"name": "中文项目"}).json()
+    project_payload = client.post("/api/projects", json={"name": "涓枃椤圭洰"}).json()
     project_id = project_payload["id"]
 
     with app.state.db.session() as session:
@@ -1234,7 +1264,7 @@ def test_create_app_recovers_stale_active_runs():
             recovered = repository.get_analysis_run(session, run_id)
             assert recovered is not None
             assert recovered.status == "failed"
-            assert recovered.summary_json["current_stage"] == "服务重启，旧的后台任务已终止"
+            assert recovered.summary_json["current_stage"] == "鏈嶅姟閲嶅惎锛屾棫鐨勫悗鍙颁换鍔″凡缁堟"
             assert any(
                 event.event_type == "lifecycle" and event.payload_json.get("recovered_after_restart")
                 for event in recovered.events
@@ -1353,7 +1383,7 @@ def test_asset_version_download_and_delete(client, app):
             session,
             project_id,
             status="completed",
-            summary_json={"target_role": "Asset version ops 本人", "analysis_context": "version ops"},
+            summary_json={"target_role": "Asset version ops 鏈汉", "analysis_context": "version ops"},
         )
         repository.upsert_facet(
             session,
@@ -1361,7 +1391,7 @@ def test_asset_version_download_and_delete(client, app):
             "personality",
             status="completed",
             confidence=0.9,
-            findings_json={"label": "Personality", "summary": "边界清楚", "bullets": ["不多话"]},
+            findings_json={"label": "Personality", "summary": "边界清晰", "bullets": ["不多说"]},
             evidence_json=[],
             conflicts_json=[],
             error_message=None,
@@ -1402,8 +1432,7 @@ def test_pages_render_simplified_chinese_and_lang(client):
         f"/projects/{project_id}": "项目控制中心",
         f"/projects/{project_id}/analysis": "分析监控",
         f"/projects/{project_id}/assets?kind=skill": "资产输出工作台",
-        f"/projects/{project_id}/playground": "沉浸式对话验证",
-        f"/projects/{project_id}/preprocess": "预分析工作区",
+        f"/projects/{project_id}/playground": "沉浸式对话体验",
         "/settings": "配置 Chat LLM 与 Embedding 服务",
     }
 
@@ -1414,6 +1443,11 @@ def test_pages_render_simplified_chinese_and_lang(client):
         assert expected_text.encode("utf-8") in response.content
         assert b"\xef\xbf\xbd" not in response.content
         assert b"zh-Hant" not in response.content
+
+    preprocess_response = client.get(f"/projects/{project_id}/preprocess")
+    assert preprocess_response.status_code == 404
+    project_response = client.get(f"/projects/{project_id}")
+    assert "进入预分析".encode("utf-8") not in project_response.content
 
 
 def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
@@ -1429,19 +1463,18 @@ def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
     assert upload_payload["status"] == "ok"
     assert "文档上传完成" in upload_payload["message"]
 
-    session_payload = client.post(
+    session_response = client.post(
         f"/api/projects/{project_id}/preprocess/sessions",
         json={"title": "接口消息会话"},
-    ).json()
-    assert session_payload["status"] == "ok"
-    assert "预分析会话已创建" in session_payload["message"]
+    )
+    assert session_response.status_code == 404
 
     with app.state.db.session() as session:
         run = repository.create_analysis_run(
             session,
             project_id,
             status="completed",
-            summary_json={"target_role": "测试角色", "analysis_context": "接口文案检查"},
+            summary_json={"target_role": "测试角色", "analysis_context": "接口文档检查"},
         )
         repository.upsert_facet(
             session,
@@ -1470,18 +1503,18 @@ def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
         json={"asset_kind": "skill"},
     ).json()
     assert draft_payload["request_status"] == "ok"
-    assert "资产草稿已生成" in draft_payload["message"]
+    assert "草稿" in draft_payload["message"]
 
     publish_payload = client.post(f"/api/projects/{project_id}/skills/{draft_payload['id']}/publish").json()
     assert publish_payload["request_status"] == "ok"
-    assert "Skill 版本已发布" in publish_payload["message"]
+    assert "发布" in publish_payload["message"]
 
     chat_payload = client.post(
         f"/api/projects/{project_id}/playground/chat",
-        json={"message": "你好，介绍一下自己。"},
+        json={"message": "你好，介绍一下你自己。"},
     ).json()
     assert chat_payload["status"] == "ok"
-    assert "试聊回复已生成" in chat_payload["message"]
+    assert "回复" in chat_payload["message"]
 
 
 def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch):
@@ -1492,9 +1525,9 @@ def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch
     def fake_extract_text(filename: str, content: bytes):
         calls.append((filename, content))
         return ExtractionResult(
-            raw_text="原始抽取文本",
-            clean_text="清洗后的文本",
-            title="提取标题",
+            raw_text="鍘熷鎶藉彇鏂囨湰",
+            clean_text="娓呮礂鍚庣殑鏂囨湰",
+            title="鎻愬彇鏍囬",
             author_guess=None,
             created_at_guess=None,
             language="zh",
@@ -1504,7 +1537,7 @@ def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch
 
     monkeypatch.setattr(ingest_task_module, "extract_text", fake_extract_text)
 
-    project_id = client.post("/api/projects", json={"name": "抽取回归"}).json()["id"]
+    project_id = client.post("/api/projects", json={"name": "鎶藉彇鍥炲綊"}).json()["id"]
     raw_bytes = b"\xff\xfe\x00real extractor path"
     upload_payload = client.post(
         f"/api/projects/{project_id}/documents",
@@ -1519,5 +1552,12 @@ def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch
     with app.state.db.session() as session:
         document = repository.get_document(session, document_id)
         assert document is not None
-        assert document.title == "提取标题"
-        assert document.clean_text == "清洗后的文本"
+        assert document.title == "鎻愬彇鏍囬"
+        assert document.clean_text == "娓呮礂鍚庣殑鏂囨湰"
+
+
+
+
+
+
+

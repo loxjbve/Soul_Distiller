@@ -4,12 +4,12 @@ import io
 import json
 
 from app.service.common.llm.client import OpenAICompatibleClient
-from app.service.common.tools.workspace import build_tool_schemas
-from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
+from app.service.common.tools import build_tool_schemas
+from app.schemas import ServiceConfig
 
 
-def _create_project_with_doc(client):
-    project = client.post("/api/projects", json={"name": "Workspace"}).json()
+def _create_project_with_doc(client, *, mode: str = "group"):
+    project = client.post("/api/projects", json={"name": "Workspace", "mode": mode}).json()
     project_id = project["id"]
     upload = client.post(
         f"/api/projects/{project_id}/documents",
@@ -19,139 +19,31 @@ def _create_project_with_doc(client):
     return project_id, document_id
 
 
-def test_preprocess_session_crud_and_fallback_stream(client):
-    project_id, _ = _create_project_with_doc(client)
+def test_preprocess_routes_are_disabled_for_single_and_group_projects(client):
+    for mode in ("single", "group"):
+        project_id, _ = _create_project_with_doc(client, mode=mode)
 
-    session_payload = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions",
-        json={"title": "Workspace Session"},
-    ).json()
-    session_id = session_payload["id"]
+        page_response = client.get(f"/projects/{project_id}/preprocess")
+        assert page_response.status_code == 404
 
-    message_payload = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions/{session_id}/messages",
-        json={"message": '@memo.txt summarize the file'},
-    ).json()
-    stream_id = message_payload["stream_id"]
-
-    stream_response = client.get(
-        f"/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}"
-    )
-    body = stream_response.text
-    assert stream_response.status_code == 200
-    assert "event: status" in body
-    assert "event: assistant_done" in body
-
-    session_detail = client.get(f"/api/projects/{project_id}/preprocess/sessions/{session_id}").json()
-    assert session_detail["turns"][-1]["role"] == "assistant"
-    assert session_detail["turns"][-1]["trace"]["resolved_mentions"][0]["filename"] == "memo.txt"
+        session_response = client.post(
+            f"/api/projects/{project_id}/preprocess/sessions",
+            json={"title": "Workspace Session"},
+        )
+        assert session_response.status_code == 404
 
 
-def test_preprocess_handles_ambiguous_mentions(client):
-    project = client.post("/api/projects", json={"name": "Ambiguous"}).json()
-    project_id = project["id"]
+def test_document_mentions_search_still_works_without_preprocess_agent(client):
+    project_id, _ = _create_project_with_doc(client, mode="group")
     client.post(
         f"/api/projects/{project_id}/documents",
-        files=[
-            ("files", ("memo-one.txt", io.BytesIO(b"first"), "text/plain")),
-            ("files", ("memo-two.txt", io.BytesIO(b"second"), "text/plain")),
-        ],
-    )
-    session_id = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions",
-        json={"title": "Ambiguous Session"},
-    ).json()["id"]
-
-    stream_id = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions/{session_id}/messages",
-        json={"message": "@memo summarize"},
-    ).json()["stream_id"]
-    client.get(f"/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
-
-    session_detail = client.get(f"/api/projects/{project_id}/preprocess/sessions/{session_id}").json()
-    assert "多个文件" in session_detail["turns"][-1]["content"]
-
-
-def test_preprocess_tool_loop_can_generate_artifact(client, app, monkeypatch):
-    project_id, document_id = _create_project_with_doc(client)
-    client.post(
-        "/settings/chat",
-        data={
-            "provider_kind": "openai",
-            "api_key": "sk-test",
-            "model": "gpt-4.1-mini",
-            "api_mode": "responses",
-        },
-        follow_redirects=False,
+        files={"files": ("guide.txt", io.BytesIO(b"A second memo about travel and tea."), "text/plain")},
     )
 
-    rounds = [
-        ToolRoundResult(
-            content="",
-            model="gpt-4.1-mini",
-            usage={"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
-            tool_calls=[
-                LLMToolCall(
-                    id="tool-1",
-                    name="run_python_transform",
-                    arguments_json=json.dumps(
-                        {
-                            "intent": "Write summary file",
-                            "python_code": (
-                                "from pathlib import Path\n"
-                                "out = Path('outputs') / 'summary.txt'\n"
-                                "out.write_text('summary artifact', encoding='utf-8')\n"
-                            ),
-                            "input_document_ids": [document_id],
-                            "expected_output_files": ["summary.txt"],
-                        }
-                    ),
-                    arguments={
-                        "intent": "Write summary file",
-                        "python_code": (
-                            "from pathlib import Path\n"
-                            "out = Path('outputs') / 'summary.txt'\n"
-                            "out.write_text('summary artifact', encoding='utf-8')\n"
-                        ),
-                        "input_document_ids": [document_id],
-                        "expected_output_files": ["summary.txt"],
-                    },
-                )
-            ],
-            provider_response_id="resp_1",
-        ),
-        ToolRoundResult(
-            content="Created `summary.txt` for the session.",
-            model="gpt-4.1-mini",
-            usage={"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
-            tool_calls=[],
-            provider_response_id="resp_2",
-        ),
-    ]
-
-    def fake_tool_round(self, messages, tools, **kwargs):
-        return rounds.pop(0)
-
-    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
-
-    session_id = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions",
-        json={"title": "Artifact Session"},
-    ).json()["id"]
-    stream_id = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions/{session_id}/messages",
-        json={"message": '@memo.txt make a summary artifact'},
-    ).json()["stream_id"]
-    response = client.get(f"/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
-    assert "event: tool_call" in response.text
-    assert "event: tool_result" in response.text
-
-    detail = client.get(f"/api/projects/{project_id}/preprocess/sessions/{session_id}").json()
-    assert detail["artifacts"]
-    artifact = detail["artifacts"][0]
-    download = client.get(artifact["download_url"])
-    assert download.status_code == 200
-    assert b"summary artifact" in download.content
+    response = client.get(f"/api/projects/{project_id}/documents/mentions", params={"q": "memo"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert any(item["filename"] == "memo.txt" for item in payload["items"])
 
 
 def test_tool_round_uses_responses_payload(monkeypatch):

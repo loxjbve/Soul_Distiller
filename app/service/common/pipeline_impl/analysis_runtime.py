@@ -6,7 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import asdict
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.service.common.subagents.facet_runtime import analyze_facet_with_llm
 from app.db import Database
@@ -14,9 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.service.common.facets import ALL_FACETS, FACETS, FacetDefinition, get_facet_definition, get_facet_prompt_profile, get_facets_for_mode
-from app.service.common.pipeline.stone_analysis_runtime import StoneAnalysisAgent
 from app.service.common.streaming.analysis import AnalysisStreamHub
-from app.service.common.pipeline.telegram_analysis_runtime import TelegramAnalysisAgent
 from app.service.common.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode
 from app.models import (
     AnalysisFacet,
@@ -42,6 +40,10 @@ from app.schemas import (
 )
 from app.storage import repository
 from app.utils.text import top_terms
+
+if TYPE_CHECKING:
+    from app.service.common.pipeline.stone_analysis_runtime import StoneAnalysisAgent
+    from app.service.common.pipeline.telegram_analysis_runtime import TelegramAnalysisAgent
 
 FACET_EVIDENCE_LIMIT = 20
 FACET_BULLET_LIMIT = 8
@@ -300,6 +302,7 @@ class AnalysisEngine:
         facet_max_workers: int = DEFAULT_ANALYSIS_CONCURRENCY,
         stream_hub: AnalysisStreamHub | None = None,
         cancel_checker: Callable[[str, str], bool] | None = None,
+        mode_pipeline_resolver: Callable[[str | None], Any] | None = None,
     ) -> None:
         self.retrieval = retrieval or RetrievalService()
         self.db = db
@@ -308,9 +311,18 @@ class AnalysisEngine:
         self.facet_max_workers = _normalize_concurrency(facet_max_workers)
         self.stream_hub = stream_hub
         self.cancel_checker = cancel_checker
+        self.mode_pipeline_resolver = mode_pipeline_resolver
 
     def set_cancel_checker(self, cancel_checker: Callable[[str, str], bool] | None) -> None:
         self.cancel_checker = cancel_checker
+
+    def set_mode_pipeline_resolver(self, resolver: Callable[[str | None], Any] | None) -> None:
+        self.mode_pipeline_resolver = resolver
+
+    def _resolve_mode_pipeline(self, mode: str | None) -> Any | None:
+        if self.mode_pipeline_resolver is None:
+            return None
+        return self.mode_pipeline_resolver(mode)
 
     def create_run(
         self,
@@ -722,10 +734,14 @@ class AnalysisEngine:
         session: Session,
         project: Project,
         chat_config: ServiceConfig | None,
-    ) -> TelegramAnalysisAgent:
+    ) -> Any:
         source_project_id = repository.get_target_project_id(session, project.id)
         source_project = repository.get_project(session, source_project_id) or project
-        return TelegramAnalysisAgent(
+        mode_pipeline = self._resolve_mode_pipeline(project.mode)
+        agent_cls = getattr(mode_pipeline, "analysis_agent_class", None) if mode_pipeline else None
+        if agent_cls is None:
+            from app.service.telegram.pipeline import TelegramAnalysisAgent as agent_cls
+        return agent_cls(
             session,
             source_project,
             llm_config=chat_config,
@@ -1212,7 +1228,11 @@ class AnalysisEngine:
             run,
             facet_def,
         )
-        agent = StoneAnalysisAgent(
+        mode_pipeline = self._resolve_mode_pipeline(project.mode)
+        agent_cls = getattr(mode_pipeline, "analysis_agent_class", None) if mode_pipeline else None
+        if agent_cls is None:
+            from app.service.stone.pipeline import StoneAnalysisAgent as agent_cls
+        agent = agent_cls(
             session,
             project,
             llm_config=chat_config,

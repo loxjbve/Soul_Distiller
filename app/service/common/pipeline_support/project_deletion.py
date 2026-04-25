@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -31,8 +31,10 @@ from app.models import (
 from app.service.common.pipeline.ingest_task import IngestTaskManager
 from app.service.common.pipeline.rechunk import RechunkTaskManager
 from app.retrieval.vector_store import VectorStoreManager
-from app.service import ServiceRegistry
 from app.storage import repository
+
+if TYPE_CHECKING:
+    from app.service import ServiceRegistry
 
 logger = logging.getLogger(__name__)
 

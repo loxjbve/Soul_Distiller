@@ -33,7 +33,9 @@
                     <a class="primary-button" href="/projects/{{ project.id }}/writing">写作台</a>
                 {% else %}
                     <a class="ghost-button" href="/projects/{{ project.id }}/playground">{{ ui.common.open_playground }}</a>
-                    <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+                    {% if project.mode == 'telegram' %}
+                        <a class="ghost-button" href="/projects/{{ preprocess_project_id }}/preprocess">{{ ui.common.open_preprocess }}</a>
+                    {% endif %}
                 {% endif %}
                 <button type="button" class="ghost-button" data-modal-open="edit-project-modal">{{ ui.common.edit }}</button>
             </div>

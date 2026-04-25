@@ -8,12 +8,31 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.service.common.pipeline.mode import BaseModePipeline
-from app.service.common.pipeline.playground_runtime import playground_chat
+from app.service.common.pipeline import BaseModePipeline, playground_chat
+from app.service.common.pipeline.telegram_analysis_runtime import TelegramAnalysisAgent as _TelegramAnalysisAgent
+from app.service.common.pipeline.telegram_runtime import (
+    TelegramPreprocessManager as _TelegramPreprocessManager,
+    TelegramPreprocessWorker as _TelegramPreprocessWorker,
+)
+
+
+class TelegramPreprocessWorker(_TelegramPreprocessWorker):
+    pass
+
+
+class TelegramPreprocessManager(_TelegramPreprocessManager):
+    pass
+
+
+class TelegramAnalysisAgent(_TelegramAnalysisAgent):
+    pass
 
 
 class TelegramModePipeline(BaseModePipeline):
     mode = "telegram"
+    preprocess_worker_class = TelegramPreprocessWorker
+    preprocess_manager_class = TelegramPreprocessManager
+    analysis_agent_class = TelegramAnalysisAgent
 
     def __init__(
         self,

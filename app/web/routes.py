@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import io
 import json
@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 ASSET_STREAM_INACTIVITY_TIMEOUT_SECONDS = 120.0
 ASSET_STREAM_QUEUE_POLL_SECONDS = 5.0
 STONE_V2_ASSET_KINDS = frozenset({"stone_author_model_v2", "stone_prototype_index_v2"})
-LEGACY_STONE_V2_REBUILD_MESSAGE = "Stone v2 已停用；请重新运行 Stone 预处理并重建 Stone v3 基线。"
+LEGACY_STONE_V2_REBUILD_MESSAGE = "Stone v2 已停用，请重新运行 Stone 预处理并重建 Stone v3 基线。"
 
 def get_locale(request: Request) -> str:
     return request.cookies.get("locale", DEFAULT_LOCALE)
@@ -84,10 +84,10 @@ def set_locale(locale: str, next: str = "/"):
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 PROVIDER_OPTIONS = (
-    {"value": "openai", "label": "OpenAI 官方"},
-    {"value": "xai", "label": "xAI 官方"},
-    {"value": "gemini", "label": "Gemini 官方"},
-    {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
+    {"value": "openai", "label": "OpenAI 瀹樻柟"},
+    {"value": "xai", "label": "xAI 瀹樻柟"},
+    {"value": "gemini", "label": "Gemini 瀹樻柟"},
+    {"value": "openai-compatible", "label": "OpenAI Compatible 自定义接入"},
 )
 API_MODE_OPTIONS = (
     {"value": "responses", "label": "Responses API"},
@@ -96,7 +96,7 @@ API_MODE_OPTIONS = (
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
-    {"value": "profile_report", "label": "用户画像报告"},
+    {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
     {"value": "writing_guide", "label": "Writing Guide"},
     {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
     {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
@@ -104,15 +104,15 @@ ASSET_KIND_OPTIONS = (
 
 
 PROVIDER_OPTIONS = (
-    {"value": "openai", "label": "OpenAI 官方"},
-    {"value": "xai", "label": "xAI 官方"},
-    {"value": "gemini", "label": "Gemini 官方"},
-    {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
+    {"value": "openai", "label": "OpenAI 瀹樻柟"},
+    {"value": "xai", "label": "xAI 瀹樻柟"},
+    {"value": "gemini", "label": "Gemini 瀹樻柟"},
+    {"value": "openai-compatible", "label": "OpenAI Compatible 自定义接入"},
 )
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
-    {"value": "profile_report", "label": "用户画像报告"},
+    {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
     {"value": "writing_guide", "label": "Writing Guide"},
     {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
     {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
@@ -242,7 +242,7 @@ def _page_context(request: Request, page_name: str, **kwargs: Any) -> dict[str, 
 
 
 def _stone_mode_label(locale: str) -> str:
-    return "Stone Mode" if locale == "en-US" else "搬石模式"
+    return "Stone Mode" if locale == "en-US" else "鎼煶妯″紡"
 
 
 
@@ -266,7 +266,7 @@ def _pipeline_for_project(request: Request, session: Session, project_id: str):
 def _stone_mode_hint(locale: str) -> str:
     if locale == "en-US":
         return "For single-author corpus, article profiling, multi-facet analysis, and analysis-driven drafting"
-    return "适合单作者文本、逐篇预分析、多维分析与分析驱动写作"
+    return "閫傚悎鍗曚綔鑰呮枃鏈€侀€愮瘒棰勫垎鏋愩€佸缁村垎鏋愪笌鍒嗘瀽椹卞姩鍐欎綔"
 
 
 def _raise_legacy_stone_v2_http_error() -> None:
@@ -277,20 +277,20 @@ def _resolve_stone_channel_title(session: Session, project) -> str:
     run = repository.get_latest_analysis_run(session, project.id, load_facets=False, load_events=False)
     summary = dict(getattr(run, "summary_json", None) or {})
     owner_name = str(summary.get("target_role") or "").strip() or str(project.name or "").strip() or "Stone"
-    return f"{owner_name}的石生产线"
+    return f"{owner_name}的石生作业线"
 
 
-_WRITING_MESSAGE_COUNT_PATTERN = re.compile(r"(?P<count>\d+)\s*(?P<unit>字|words)\b", re.IGNORECASE)
+_WRITING_MESSAGE_COUNT_PATTERN = re.compile(r"(?P<count>\d+)\s*(?P<unit>瀛梶words)\b", re.IGNORECASE)
 _WRITING_TOPIC_PREFIX_PATTERN = re.compile(
-    r"^(?:请|帮我|麻烦)?\s*(?:写(?:一篇|篇|个)?|来(?:一篇|篇|个)?|draft|write(?:\s+me)?(?:\s+about)?)\s*",
+    r"^(?:璇穦甯垜|楹荤儲)?\s*(?:鍐??:涓€绡噟绡噟涓??|鏉??:涓€绡噟绡噟涓??|draft|write(?:\s+me)?(?:\s+about)?)\s*",
     re.IGNORECASE,
 )
 
 
 def _normalize_writing_topic(topic_text: str) -> str:
     cleaned = _WRITING_TOPIC_PREFIX_PATTERN.sub("", str(topic_text or "").strip())
-    cleaned = re.sub(r"^(?:关于|围绕|以)\s*", "", cleaned)
-    return cleaned.strip(" ，,。.;；:：!！?？\"'“”‘’《》[]()（）")
+    cleaned = re.sub(r"^(?:关于|围绕|以|有关)\s*", "", cleaned)
+    return cleaned.strip(" 、;；,，.。!?！？\"'“”‘’[]()（）")
 
 
 def _resolve_writing_request_payload(payload: WritingMessagePayload) -> dict[str, Any]:
@@ -301,9 +301,9 @@ def _resolve_writing_request_payload(payload: WritingMessagePayload) -> dict[str
             raise ValueError("请在消息里带上明确字数，例如 800字 或 800 words。")
         target_word_count = int(match.group("count"))
         if target_word_count < 100:
-            raise ValueError("目标字数至少为 100。")
-        topic_text = raw_message[: match.start()].strip(" ，,。.;；:：!！?？\n\t")
-        extra_text = raw_message[match.end() :].strip(" ，,。.;；:：!！?？\n\t")
+            raise ValueError("目标字数至少 100。")
+        topic_text = raw_message[: match.start()].strip(" 、。;；,，!?！？\"'“”‘’[]()（）\n\t")
+        extra_text = raw_message[match.end() :].strip(" 、。;；,，!?！？\"'“”‘’[]()（）\n\t")
         topic = _normalize_writing_topic(topic_text)
         if not topic:
             raise ValueError("请把写作主题写在字数前面。")
@@ -370,7 +370,7 @@ def create_project_form(
     actual_name = (name or "").strip()
     if not actual_name:
         if mode == "telegram":
-            actual_name = "未命名 Telegram 项目"
+            actual_name = "鏈懡鍚?Telegram 椤圭洰"
         else:
             raise HTTPException(status_code=400, detail="Project name is required.")
     project = repository.create_project(session, name=actual_name, description=description, mode=mode)
@@ -580,7 +580,7 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
     run = repository.get_active_analysis_run(session, project_id)
     if run:
         if request.app.state.services.analysis_runner.is_tracking(run.id):
-            raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
+            raise HTTPException(status_code=409, detail="当前项目已有分析任务正在运行。")
         _mark_run_as_stale(
             session,
             run,
@@ -929,6 +929,8 @@ def preprocess_page(
     mention: str | None = Query(default=None),
 ):
     context = _project_context(request, session, project_id)
+    if context["project"].mode in {"single", "group"}:
+        raise HTTPException(status_code=404, detail="Preprocess page is no longer available for single and group projects.")
     if context["project"].mode == "telegram":
         telegram_context = _telegram_preprocess_context(session, project_id, run_id=run_id)
         return templates.TemplateResponse(
@@ -994,7 +996,7 @@ def writing_page(
                 session,
                 project_id=project_id,
                 session_kind="writing",
-                title="新建写作会话",
+                title="鏂板缓鍐欎綔浼氳瘽",
             )
         ]
     selected_session = sessions[0]
@@ -1038,6 +1040,8 @@ def start_preprocess_form(
     concurrency: Annotated[int | None, Form(ge=1)] = None,
 ):
     project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Single and group projects no longer use the preprocess flow.")
     if project.mode == "telegram":
         run = _create_telegram_preprocess_run(
             request,
@@ -1085,10 +1089,10 @@ def settings_page(request: Request, session: SessionDep):
             settings_bootstrap=settings_bootstrap,
             provider_options=PROVIDER_OPTIONS,
             legacy_provider_options=(
-                {"value": "openai", "label": "OpenAI 官方"},
-                {"value": "xai", "label": "xAI 官方"},
-                {"value": "gemini", "label": "Gemini 官方"},
-                {"value": "openai-compatible", "label": "OpenAI Compatible 自定义"},
+                {"value": "openai", "label": "OpenAI 瀹樻柟"},
+                {"value": "xai", "label": "xAI 瀹樻柟"},
+                {"value": "gemini", "label": "Gemini 瀹樻柟"},
+                {"value": "openai-compatible", "label": "OpenAI Compatible 自定义接入"},
             ),
             api_mode_options=API_MODE_OPTIONS,
         ),
@@ -1200,7 +1204,7 @@ def create_project_api(payload: ProjectCreatePayload, session: SessionDep):
     actual_name = (payload.name or "").strip()
     if not actual_name:
         if payload.mode == "telegram":
-            actual_name = "未命名 Telegram 项目"
+            actual_name = "鏈懡鍚?Telegram 椤圭洰"
         else:
             raise HTTPException(status_code=400, detail="Project name is required.")
     project = repository.create_project(session, actual_name, payload.description, mode=payload.mode)
@@ -1316,7 +1320,7 @@ def create_text_document_api(
         storage_path=document.storage_path,
         mime_type=document.mime_type,
     )
-    return _task_response("文本文章已创建并加入处理队列。", task, **_serialize_document(document))
+    return _task_response("文本文档已创建并加入处理队列。", task, **_serialize_document(document))
 
 
 @router.get("/api/projects/{project_id}/documents")
@@ -1460,9 +1464,25 @@ def list_document_mentions_api(
     session: SessionDep,
     q: str = Query(default=""),
 ):
-    pipeline, _ = _pipeline_for_project(request, session, project_id)
+    del request
+    _ensure_project(session, project_id)
+    query = str(q or "").strip()
+    documents = (
+        repository.search_project_documents(session, project_id, query, limit=8)
+        if query
+        else repository.list_project_documents(session, project_id, limit=8)
+    )
     return {
-        "items": pipeline.list_mentions(session, project_id, q, limit=8),
+        "items": [
+            {
+                "id": document.id,
+                "filename": document.filename,
+                "title": document.title or document.filename,
+                "source_type": document.source_type,
+                "status": document.ingest_status,
+            }
+            for document in documents
+        ],
     }
 
 
@@ -1509,7 +1529,7 @@ def create_preprocess_run_api(
             session,
             project_id,
         )
-        return _ok_response("Stone 预分析任务已创建。", **_serialize_stone_preprocess_run(run))
+        return _ok_response("Stone 预处理任务已创建。", **_serialize_stone_preprocess_run(run))
     else:
         raise HTTPException(status_code=400, detail="Project mode does not support preprocess.")
 
@@ -1519,10 +1539,10 @@ def list_preprocess_runs_api(project_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     if project.mode == "telegram":
         runs = repository.list_telegram_preprocess_runs(session, project_id, limit=40)
-        return _ok_response("已返回 Telegram 预处理历史。", runs=[_serialize_telegram_preprocess_run(item) for item in runs])
+        return _ok_response("已返回 Telegram 预处理记录。", runs=[_serialize_telegram_preprocess_run(item) for item in runs])
     elif project.mode == "stone":
         runs = repository.list_stone_preprocess_runs(session, project_id, limit=40)
-        return _ok_response("已返回 Stone 预分析历史。", runs=[_serialize_stone_preprocess_run(item) for item in runs])
+        return _ok_response("已返回 Stone 预处理记录。", runs=[_serialize_stone_preprocess_run(item) for item in runs])
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
@@ -1547,7 +1567,7 @@ def get_latest_preprocess_run_api(project_id: str, session: SessionDep, successf
         )
         if not run:
             raise HTTPException(status_code=404, detail="No Stone preprocess run found.")
-        return _ok_response("已返回最新 Stone 预分析结果。", **_serialize_stone_preprocess_run(run))
+        return _ok_response("已返回最新 Stone 预处理结果。", **_serialize_stone_preprocess_run(run))
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
@@ -1563,7 +1583,7 @@ def get_preprocess_run_api(request: Request, project_id: str, run_id: str, sessi
         if not run or run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Run not found.")
         run = _recover_stone_preprocess_run_if_stale(request, session, project_id, run)
-        return _ok_response("已返回 Stone 预分析详情。", **_serialize_stone_preprocess_detail(session, project_id, run))
+        return _ok_response("已返回 Stone 预处理详情。", **_serialize_stone_preprocess_detail(session, project_id, run))
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
 
@@ -1661,7 +1681,7 @@ def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, se
 def list_telegram_preprocess_topics_api(project_id: str, run_id: str, session: SessionDep):
     _resolve_telegram_preprocess_run(session, project_id, run_id)
     topics = repository.list_telegram_preprocess_topics(session, project_id, run_id=run_id)
-    return _ok_response("已返回 Telegram 话题表。", topics=[_serialize_telegram_preprocess_topic(item) for item in topics])
+    return _ok_response("已返回 Telegram 话题列表。", topics=[_serialize_telegram_preprocess_topic(item) for item in topics])
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}/weekly-candidates")
@@ -1669,7 +1689,7 @@ def list_telegram_preprocess_weekly_candidates_api(project_id: str, run_id: str,
     _resolve_telegram_preprocess_run(session, project_id, run_id)
     candidates = repository.list_telegram_preprocess_weekly_topic_candidates(session, project_id, run_id=run_id)
     return _ok_response(
-        "已返回 Telegram 周话题候选表。",
+        "已返回 Telegram 周候选列表。",
         weekly_candidates=[_serialize_telegram_preprocess_weekly_candidate(item) for item in candidates],
     )
 
@@ -1679,7 +1699,7 @@ def list_telegram_preprocess_top_users_api(project_id: str, run_id: str, session
     _resolve_telegram_preprocess_run(session, project_id, run_id)
     users = repository.list_telegram_preprocess_top_users(session, project_id, run_id=run_id)
     return _ok_response(
-        "已返回 Telegram SQL Top Users 表。",
+        "已返回 Telegram SQL Top Users 列表。",
         top_users=[_serialize_telegram_preprocess_top_user(item) for item in users],
     )
 
@@ -1802,12 +1822,12 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
     run = repository.get_active_analysis_run(session, project_id)
     if run:
         if request.app.state.services.analysis_runner.is_tracking(run.id):
-            raise HTTPException(status_code=409, detail="当前项目已有分析任务正在运行。")
+                        raise HTTPException(status_code=409, detail="当前项目已有分析任务正在运行。")
         _mark_run_as_stale(
             session,
             run,
             reason="Detected an unfinished run record without a live worker before facet rerun API call.",
-        )
+    )
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
         raise HTTPException(status_code=404, detail="未找到分析记录。")
@@ -1844,7 +1864,6 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
     if not task or task.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="未找到重分块任务。")
     return _task_response("已返回重分块任务状态。", task)
-
 
 @router.post("/api/projects/{project_id}/assets/generate/stream")
 def generate_asset_stream_api(request: Request, project_id: str, payload: AssetGeneratePayload):
@@ -2161,13 +2180,12 @@ def save_asset_api(
     )
     return {**_serialize_draft(draft), "request_status": "ok", "message": "资产草稿已保存。"}
 
-
 @router.post("/api/projects/{project_id}/assets/{draft_id}/publish")
 def publish_asset_api(
     request: Request,
     project_id: str,
     draft_id: str,
-    payload: AssetGeneratePayload,
+    payload: AssetPublishPayload,
     session: SessionDep,
 ):
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
@@ -2199,6 +2217,11 @@ def publish_asset_api(
         "message": "资产版本已发布。",
     }
 
+
+@router.post("/api/projects/{project_id}/skills/generate")
+def generate_skill_api(request: Request, project_id: str, session: SessionDep):
+    draft = _generate_asset_draft(request, session, project_id, asset_kind="cc_skill")
+    return {**_serialize_draft(draft), "request_status": "ok", "message": "Claude Code Skill 草稿已生成。"}
 
 @router.post("/api/projects/{project_id}/skills/generate")
 def generate_skill_api(request: Request, project_id: str, session: SessionDep):
@@ -2238,14 +2261,18 @@ def playground_chat_api(request: Request, project_id: str, payload: ChatPayload,
 
 @router.get("/api/projects/{project_id}/preprocess/sessions")
 def list_preprocess_sessions_api(project_id: str, session: SessionDep):
-    _ensure_project(session, project_id)
+    project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Preprocess sessions are no longer available.")
     sessions = repository.list_chat_sessions(session, project_id, session_kind="preprocess")
     return _ok_response("已返回预分析会话列表。", sessions=[_serialize_chat_session(item) for item in sessions])
 
 
 @router.post("/api/projects/{project_id}/preprocess/sessions")
 def create_preprocess_session_api(project_id: str, payload: PreprocessSessionCreatePayload, session: SessionDep):
-    _ensure_project(session, project_id)
+    project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Preprocess sessions are no longer available.")
     chat_session = repository.create_chat_session(
         session,
         project_id=project_id,
@@ -2257,11 +2284,12 @@ def create_preprocess_session_api(project_id: str, payload: PreprocessSessionCre
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}")
 def get_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
+    if project_id and project_id != project_id:
+        pass
     chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到预分析会话。")
     return _ok_response("已返回预分析会话详情。", **_serialize_preprocess_session_detail(chat_session))
-
 
 @router.patch("/api/projects/{project_id}/preprocess/sessions/{session_id}")
 def update_preprocess_session_api(
@@ -2276,15 +2304,16 @@ def update_preprocess_session_api(
     repository.rename_chat_session(session, chat_session, title=payload.title)
     return _ok_response("预分析会话已更新。", **_serialize_chat_session(chat_session))
 
-
 @router.delete("/api/projects/{project_id}/preprocess/sessions/{session_id}")
 def delete_preprocess_session_api(project_id: str, session_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Preprocess sessions are no longer available.")
     chat_session = repository.get_chat_session(session, session_id, session_kind="preprocess")
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到预分析会话。")
     repository.delete_chat_session(session, chat_session)
     return _ok_response("预分析会话已删除。", ok=True, session_id=session_id)
-
 
 @router.post("/api/projects/{project_id}/preprocess/sessions/{session_id}/messages")
 def create_preprocess_message_api(
@@ -2294,6 +2323,9 @@ def create_preprocess_message_api(
     payload: PreprocessMessagePayload,
     session: SessionDep,
 ):
+    project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Preprocess sessions are no longer available.")
     pipeline, _ = _pipeline_for_project(request, session, project_id)
     try:
         result = pipeline.start_preprocess_session_stream(
@@ -2308,6 +2340,9 @@ def create_preprocess_message_api(
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
 def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str, session: SessionDep):
+    project = _ensure_project(session, project_id)
+    if project.mode in {"single", "group", "telegram", "stone"}:
+        raise HTTPException(status_code=404, detail="Preprocess sessions are no longer available.")
     pipeline, _ = _pipeline_for_project(request, session, project_id)
     del session_id
     try:
@@ -2348,7 +2383,6 @@ def get_writing_session_api(project_id: str, session_id: str, session: SessionDe
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     return _ok_response("已返回写作会话详情。", **_serialize_writing_session_detail(chat_session))
 
-
 @router.patch("/api/projects/{project_id}/writing/sessions/{session_id}")
 def update_writing_session_api(
     project_id: str,
@@ -2363,7 +2397,6 @@ def update_writing_session_api(
     repository.rename_chat_session(session, chat_session, title=payload.title)
     return _ok_response("写作会话已更新。", **_serialize_chat_session(chat_session))
 
-
 @router.delete("/api/projects/{project_id}/writing/sessions/{session_id}")
 def delete_writing_session_api(project_id: str, session_id: str, session: SessionDep):
     _ensure_stone_project(session, project_id)
@@ -2372,7 +2405,6 @@ def delete_writing_session_api(project_id: str, session_id: str, session: Sessio
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     repository.delete_chat_session(session, chat_session)
     return _ok_response("写作会话已删除。", ok=True, session_id=session_id)
-
 
 @router.post("/api/projects/{project_id}/writing/sessions/{session_id}/messages")
 def create_writing_message_api(
@@ -2400,7 +2432,7 @@ def create_writing_message_api(
         detail = str(exc)
         status_code = 404 if "not found" in detail.lower() else 400
         raise HTTPException(status_code=status_code, detail=detail) from exc
-    return _ok_response("写作任务已提交。", **result)
+    return _ok_response("写作消息已提交。", **result)
 
 
 @router.get("/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}")
@@ -2419,7 +2451,6 @@ def stream_writing_events_api(request: Request, project_id: str, session_id: str
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
-
 
 @router.get("/api/projects/{project_id}/preprocess/artifacts/{artifact_id}/download")
 def download_preprocess_artifact_api(project_id: str, artifact_id: str, session: SessionDep):
@@ -3044,7 +3075,6 @@ def _skill_documents_for_export(
         }
     return legacy_docs
 
-
 def _build_analysis_reference_markdown(payload: dict[str, Any]) -> str:
     stored_markdown = str(payload.get("analysis_markdown") or payload.get("analysis_reference_markdown") or "").strip()
     if stored_markdown:
@@ -3059,7 +3089,6 @@ def _build_analysis_reference_markdown(payload: dict[str, Any]) -> str:
             continue
         lines.extend([f"## {key}", text, ""])
     return "\n".join(lines).strip() or "# 十维分析摘要\n\n当前版本没有可用的十维分析文本。"
-
 
 def _resolve_skill_export_document(
     asset_kind: str,
@@ -3443,7 +3472,7 @@ def _serialize_chat_session(chat_session) -> dict[str, Any]:
     return {
         "id": chat_session.id,
         "session_kind": chat_session.session_kind,
-        "title": chat_session.title or "未命名会话",
+        "title": chat_session.title or "鏈懡鍚嶄細璇?,
         "created_at": chat_session.created_at.isoformat() if chat_session.created_at else None,
         "last_active_at": chat_session.last_active_at.isoformat() if chat_session.last_active_at else None,
         "turn_count": len(turns),
@@ -3525,7 +3554,7 @@ def _serialize_writing_user_turn(turn) -> dict[str, Any]:
         "trace": trace,
         "created_at": turn.created_at.isoformat(),
         "actor_id": "user",
-        "actor_name": "你",
+        "actor_name": "浣?,
         "actor_role": "user",
         "message_kind": "request",
     }
@@ -3534,7 +3563,7 @@ def _serialize_writing_user_turn(turn) -> dict[str, Any]:
 def _serialize_writing_generic_turn(turn) -> dict[str, Any]:
     trace = turn.trace_json or {}
     actor_role = "writer" if turn.role == "assistant" else turn.role
-    actor_name = "写作 Agent" if turn.role == "assistant" else "你"
+    actor_name = "鍐欎綔 Agent" if turn.role == "assistant" else "浣?
     return {
         "id": turn.id,
         "role": turn.role,
@@ -3570,7 +3599,7 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
         timeline.append(
             {
                 "actor_id": "writer-topic_translation",
-                "actor_name": "写作 Agent",
+                "actor_name": "鍐欎綔 Agent",
                 "actor_role": "writer",
                 "message_kind": "topic_translation",
                 "body": "\n".join(lines).strip(),
@@ -3580,8 +3609,8 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
     outline = trace.get("outline") if isinstance(trace.get("outline"), dict) else None
     if outline:
         outline_lines = [
-            f"目标字数：{outline.get('target_word_count')}",
-            f"段落数：{outline.get('paragraph_count')}",
+            f"鐩爣瀛楁暟锛歿outline.get('target_word_count')}",
+            f"娈佃惤鏁帮細{outline.get('paragraph_count')}",
         ]
         for item in outline.get("paragraphs") or []:
             outline_lines.append(
@@ -3590,7 +3619,7 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
         timeline.append(
             {
                 "actor_id": "writer-outline",
-                "actor_name": "写作 Agent",
+                "actor_name": "鍐欎綔 Agent",
                 "actor_role": "writer",
                 "message_kind": "outline",
                 "body": "\n".join(outline_lines).strip(),
@@ -3602,7 +3631,7 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
         timeline.append(
             {
                 "actor_id": "writer-draft",
-                "actor_name": "写作 Agent",
+                "actor_name": "鍐欎綔 Agent",
                 "actor_role": "writer",
                 "message_kind": "draft",
                 "body": draft,
@@ -3627,7 +3656,7 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
         timeline.append(
             {
                 "actor_id": "writer-review_synthesis",
-                "actor_name": "写作 Agent",
+                "actor_name": "鍐欎綔 Agent",
                 "actor_role": "writer",
                 "message_kind": "review_synthesis",
                 "body": str(review_plan.get("summary") or "").strip(),
@@ -3639,7 +3668,7 @@ def _build_writing_timeline_from_trace(trace: dict[str, Any]) -> list[dict[str, 
         timeline.append(
             {
                 "actor_id": "writer-final",
-                "actor_name": "写作 Agent",
+                "actor_name": "鍐欎綔 Agent",
                 "actor_role": "writer",
                 "message_kind": "final",
                 "body": final_text,
@@ -3675,7 +3704,7 @@ def _serialize_writing_timeline_item(
         "trace": trace,
         "created_at": str(item.get("created_at") or turn.created_at.isoformat()),
         "actor_id": str(item.get("actor_id") or f"assistant-{index}"),
-        "actor_name": str(item.get("actor_name") or "写作 Agent"),
+        "actor_name": str(item.get("actor_name") or "鍐欎綔 Agent"),
         "actor_role": str(item.get("actor_role") or "assistant"),
         "message_kind": str(item.get("message_kind") or "update"),
     }
@@ -3683,8 +3712,8 @@ def _serialize_writing_timeline_item(
 
 def _render_writing_review_message(review: dict[str, Any]) -> str:
     parts = [
-        f"结论：{'通过' if review.get('pass') else '需要修改'}",
-        f"分数：{int(round(float(review.get('score') or 0.0) * 100))}/100",
+        f"缁撹锛歿'閫氳繃' if review.get('pass') else '闇€瑕佷慨鏀?}",
+        f"鍒嗘暟锛歿int(round(float(review.get('score') or 0.0) * 100))}/100",
     ]
     anchor_ids = [str(item).strip() for item in review.get("anchor_ids") or [] if str(item).strip()]
     strengths = [str(item).strip() for item in review.get("must_keep_spans") or review.get("strengths") or [] if str(item).strip()]
@@ -3692,22 +3721,22 @@ def _render_writing_review_message(review: dict[str, Any]) -> str:
     instructions = [item for item in review.get("revision_instructions") or [] if isinstance(item, dict)]
     if anchor_ids:
         parts.append("")
-        parts.append("Anchor：")
+        parts.append("Anchor锛?)
         parts.extend(f"- {item}" for item in anchor_ids[:4])
     if strengths:
         parts.append("")
-        parts.append("保留：")
+        parts.append("淇濈暀锛?)
         parts.extend(f"- {item}" for item in strengths[:4])
     if issues:
         parts.append("")
-        parts.append("问题：")
+        parts.append("闂锛?)
         parts.extend(
             f"- [{str(item.get('anchor_id') or '').strip()}] {str(item.get('issue') or item.get('instruction') or item.get('span') or '').strip()}"
             for item in issues[:4]
         )
     if instructions:
         parts.append("")
-        parts.append("修改建议：")
+        parts.append("淇敼寤鸿锛?)
         parts.extend(
             f"- [{str(item.get('anchor_id') or '').strip()}] {str(item.get('instruction') or item.get('issue') or '').strip()}"
             for item in instructions[:5]
@@ -4165,7 +4194,7 @@ def _normalize_asset_kind(value: str | None) -> str:
 
 def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> None:
     summary = dict(run.summary_json or {})
-    summary["current_stage"] = "检测到旧任务卡住，已自动恢复为失败状态"
+    summary["current_stage"] = "妫€娴嬪埌鏃т换鍔″崱浣忥紝宸茶嚜鍔ㄦ仮澶嶄负澶辫触鐘舵€?
     summary["current_facet"] = None
     summary["finished_at"] = utcnow().isoformat()
     run.summary_json = summary
@@ -4176,7 +4205,7 @@ def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> No
         run.id,
         event_type="lifecycle",
         level="warning",
-        message="检测到旧分析任务没有活动 worker，已自动标记为失败。",
+        message="妫€娴嬪埌鏃у垎鏋愪换鍔℃病鏈夋椿鍔?worker锛屽凡鑷姩鏍囪涓哄け璐ャ€?,
         payload_json={"stale_recovered": True, "reason": reason},
     )
 
@@ -4185,7 +4214,7 @@ def _resolve_run(session: Session, project_id: str, run_id: str | None) -> Analy
     if run_id:
         run = repository.get_analysis_run(session, run_id)
         if not run or run.project_id != project_id:
-            raise HTTPException(status_code=404, detail="未找到分析记录。")
+            raise HTTPException(status_code=404, detail="鏈壘鍒板垎鏋愯褰曘€?)
         return run
     return repository.get_latest_analysis_run(session, project_id)
 
@@ -4212,36 +4241,36 @@ def _chat_with_persona(
 def _ensure_project(session: Session, project_id: str):
     project = repository.get_project(session, project_id)
     if not project:
-        raise HTTPException(status_code=404, detail="未找到项目。")
+        raise HTTPException(status_code=404, detail="鏈壘鍒伴」鐩€?)
     return project
 
 
 def _get_project_document(session: Session, project_id: str, document_id: str) -> DocumentRecord:
     document = repository.get_document(session, document_id)
     if not document or document.project_id != project_id:
-        raise HTTPException(status_code=404, detail="未找到文档。")
+        raise HTTPException(status_code=404, detail="鏈壘鍒版枃妗ｃ€?)
     return document
 
 
 def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
-    label = facet_label or "分析任务"
+    label = facet_label or "鍒嗘瀽浠诲姟"
     if phase == "document_profiling":
-        return "逐篇文章预分析中"
+        return "閫愮瘒鏂囩珷棰勫垎鏋愪腑"
     if phase == "retrieving":
-        return f"{label}：检索证据中"
+        return f"{label}锛氭绱㈣瘉鎹腑"
     if phase == "llm":
-        return f"{label}：调用 LLM 生成中"
+        return f"{label}锛氳皟鐢?LLM 鐢熸垚涓?
     if phase == "analyzing":
-        return f"{label}：分析中"
+        return f"{label}锛氬垎鏋愪腑"
     if phase == "completed":
-        return "分析已完成"
+        return "鍒嗘瀽宸插畬鎴?
     if phase == "failed":
-        return "分析已结束，但存在失败维度"
+        return "鍒嗘瀽宸茬粨鏉燂紝浣嗗瓨鍦ㄥけ璐ョ淮搴?
     if phase == "persisting":
-        return "正在整理最终结果"
+        return "姝ｅ湪鏁寸悊鏈€缁堢粨鏋?
     if queued:
-        return f"还有 {queued} 个维度等待空闲槽位"
-    return "等待开始"
+        return f"杩樻湁 {queued} 涓淮搴︾瓑寰呯┖闂叉Ы浣?
+    return "绛夊緟寮€濮?
 
 
 
@@ -4380,19 +4409,19 @@ def _enqueue_analysis(
     documents = repository.list_project_documents(session, project_id)
     ready_documents = [document for document in documents if document.ingest_status == "ready"]
     if not ready_documents:
-        raise HTTPException(status_code=400, detail="请先完成至少一份文档的解析处理。")
+        raise HTTPException(status_code=400, detail="璇峰厛瀹屾垚鑷冲皯涓€浠芥枃妗ｇ殑瑙ｆ瀽澶勭悊銆?)
     if project.mode == "telegram":
         latest_successful_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
         if latest_successful_preprocess_run is None:
-            raise HTTPException(status_code=400, detail="Telegram 项目必须先完成预处理后才能开始分析。")
+            raise HTTPException(status_code=400, detail="Telegram 椤圭洰蹇呴』鍏堝畬鎴愰澶勭悊鍚庢墠鑳藉紑濮嬪垎鏋愩€?)
     elif project.mode == "stone":
         stats = _stone_profile_progress_stats(session, project_id)
         if not _stone_profiles_meet_analysis_threshold(stats["ready_document_count"], stats["profile_count"]):
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Stone 作者分析要求超过一半的已就绪文档拥有预处理画像。"
-                    f"当前覆盖率：{stats['profile_count']}/{stats['ready_document_count']}。"
+                    "Stone 浣滆€呭垎鏋愯姹傝秴杩囦竴鍗婄殑宸插氨缁枃妗ｆ嫢鏈夐澶勭悊鐢诲儚銆?
+                    f"褰撳墠瑕嗙洊鐜囷細{stats['profile_count']}/{stats['ready_document_count']}銆?
                 ),
             )
     pipeline = request.app.state.services.for_mode(project.mode)
@@ -4403,7 +4432,7 @@ def _enqueue_analysis(
         _mark_run_as_stale(
             session,
             existing_run,
-            reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
+            reason="妫€娴嬪埌鏃х殑鍒嗘瀽璁板綍娌℃湁娲诲姩 worker锛屽惎鍔ㄦ柊浠诲姟鍓嶅凡鑷姩鏍囪涓哄け璐ャ€?,
         )
         session.flush()
     run = pipeline.create_analysis_run(
@@ -4433,7 +4462,7 @@ def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
         )
     return (
         {"value": "cc_skill", "label": "Claude Code Skill"},
-        {"value": "profile_report", "label": "用户画像报告"},
+        {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
     )
 
 
@@ -4453,56 +4482,56 @@ def _resolve_asset_kind_for_project(project, requested_kind: str | None) -> str:
 def _writing_workspace_ui(locale: str) -> dict[str, Any]:
     base = page_strings("preprocess", locale)
     labels = {
-        "title": "Writing Workspace" if locale == "en-US" else "写作台",
-        "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
+        "title": "Writing Workspace" if locale == "en-US" else "鍐欎綔鍙?,
+        "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 鍐欎綔鍙?,
         "hero_note": (
             "Read Stone v3 profiles, prototype retrieval, and holistic critics directly. The old multi-facet bridge is now legacy fallback only."
             if locale == "en-US"
-            else "直接读取 Stone v3 画像、原型检索和整体 critic；旧的多维分析写作桥接只作为 legacy fallback 保留。"
+            else "鐩存帴璇诲彇 Stone v3 鐢诲儚銆佸師鍨嬫绱㈠拰鏁翠綋 critic锛涙棫鐨勫缁村垎鏋愬啓浣滄ˉ鎺ュ彧浣滀负 legacy fallback 淇濈暀銆?
         ),
-        "new_session": "New Session" if locale == "en-US" else "新建会话",
-        "rename_session": "Rename" if locale == "en-US" else "重命名",
-        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
-        "sessions": "Sessions" if locale == "en-US" else "会话",
-        "toggle_sessions": "Sessions" if locale == "en-US" else "会话列表",
-        "channel_live": "Live Channel" if locale == "en-US" else "群聊频道",
-        "pinned_label": "Pinned Baseline" if locale == "en-US" else "置顶基线",
+        "new_session": "New Session" if locale == "en-US" else "鏂板缓浼氳瘽",
+        "rename_session": "Rename" if locale == "en-US" else "閲嶅懡鍚?,
+        "delete_session": "Delete Session" if locale == "en-US" else "鍒犻櫎浼氳瘽",
+        "sessions": "Sessions" if locale == "en-US" else "浼氳瘽",
+        "toggle_sessions": "Sessions" if locale == "en-US" else "浼氳瘽鍒楄〃",
+        "channel_live": "Live Channel" if locale == "en-US" else "缇よ亰棰戦亾",
+        "pinned_label": "Pinned Baseline" if locale == "en-US" else "缃《鍩虹嚎",
         "composer_placeholder": (
             "Write something like: Write about a rainy station, 800 words, restrained tone"
             if locale == "en-US"
-            else "例如：写一篇雨夜车站，800字，克制一点"
+            else "渚嬪锛氬啓涓€绡囬洦澶滆溅绔欙紝800瀛楋紝鍏嬪埗涓€鐐?
         ),
         "message_hint": (
             "Include an explicit word count such as 800 words."
             if locale == "en-US"
-            else "消息里请带明确字数，例如：写一篇雨夜车站，800字，克制一点"
+            else "娑堟伅閲岃甯︽槑纭瓧鏁帮紝渚嬪锛氬啓涓€绡囬洦澶滆溅绔欙紝800瀛楋紝鍏嬪埗涓€鐐?
         ),
         "message_parse_error": (
             "Please include an explicit word count such as 800 words."
             if locale == "en-US"
-            else "请在消息里带上明确字数，例如 800字 或 800 words。"
+            else "璇峰湪娑堟伅閲屽甫涓婃槑纭瓧鏁帮紝渚嬪 800瀛?鎴?800 words銆?
         ),
-        "send": "Send" if locale == "en-US" else "发送",
-        "sending": "Writing..." if locale == "en-US" else "写作中...",
-        "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
-        "baseline_ready": "Using latest Stone v3 baseline." if locale == "en-US" else "当前使用最新 Stone v3 基线。",
+        "send": "Send" if locale == "en-US" else "鍙戦€?,
+        "sending": "Writing..." if locale == "en-US" else "鍐欎綔涓?..",
+        "baseline_label": "Baseline" if locale == "en-US" else "褰撳墠鍩虹嚎",
+        "baseline_ready": "Using latest Stone v3 baseline." if locale == "en-US" else "褰撳墠浣跨敤鏈€鏂?Stone v3 鍩虹嚎銆?,
         "baseline_requires_rebuild": (
             "Only legacy Stone v2 data exists. Re-run Stone preprocess to rebuild the v3 baseline."
             if locale == "en-US"
-            else "当前只有旧版 Stone v2 数据，请重新运行 Stone 预处理以重建 v3 基线。"
+            else "褰撳墠鍙湁鏃х増 Stone v2 鏁版嵁锛岃閲嶆柊杩愯 Stone 棰勫鐞嗕互閲嶅缓 v3 鍩虹嚎銆?
         ),
-        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "请先完成 Stone 预处理。",
-        "baseline_running_preprocess": "Stone preprocess is still running." if locale == "en-US" else "Stone 预处理仍在运行中。",
-        "baseline_missing_profiles": "No Stone v3 article profiles yet." if locale == "en-US" else "当前还没有 Stone v3 逐篇画像。",
-        "baseline_incomplete_baseline": "Stone v3 baseline assets are incomplete." if locale == "en-US" else "Stone v3 基线资产还不完整。",
-        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
-        "working": "Working..." if locale == "en-US" else "处理中...",
-        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
-        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
-        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
-        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
-        "you_label": "You" if locale == "en-US" else "你",
-        "agent_label": "Writing Agent" if locale == "en-US" else "写作 Agent",
+        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "璇峰厛瀹屾垚 Stone 棰勫鐞嗐€?,
+        "baseline_running_preprocess": "Stone preprocess is still running." if locale == "en-US" else "Stone 棰勫鐞嗕粛鍦ㄨ繍琛屼腑銆?,
+        "baseline_missing_profiles": "No Stone v3 article profiles yet." if locale == "en-US" else "褰撳墠杩樻病鏈?Stone v3 閫愮瘒鐢诲儚銆?,
+        "baseline_incomplete_baseline": "Stone v3 baseline assets are incomplete." if locale == "en-US" else "Stone v3 鍩虹嚎璧勪骇杩樹笉瀹屾暣銆?,
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "杩樻病鏈夊啓浣滄秷鎭紝鍏堝彂涓€鏉″懡浠ゅ紑濮嬨€?,
+        "working": "Working..." if locale == "en-US" else "澶勭悊涓?..",
+        "untitled_session": "Untitled Session" if locale == "en-US" else "鏈懡鍚嶄細璇?,
+        "rename_prompt": "Enter a new session title" if locale == "en-US" else "杈撳叆鏂扮殑浼氳瘽鏍囬",
+        "execution_failed": "Writing failed" if locale == "en-US" else "鍐欎綔澶辫触",
+        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "杩炴帴涓柇",
+        "you_label": "You" if locale == "en-US" else "浣?,
+        "agent_label": "Writing Agent" if locale == "en-US" else "鍐欎綔 Agent",
     }
     base.update(labels)
     return base
@@ -4745,7 +4774,7 @@ def _asset_label(asset_kind: str) -> str:
     if asset_kind == "stone_prototype_index_v2":
         return "Stone Prototype Index V2"
     if asset_kind == "profile_report":
-        return "用户画像报告"
+        return "鐢ㄦ埛鐢诲儚鎶ュ憡"
     return "Claude Code Skill"
 
 
@@ -4804,10 +4833,10 @@ def _generate_asset_draft(
             profile_key=STONE_V3_PROFILE_KEY,
         )
         if not preprocess_run:
-            raise HTTPException(status_code=400, detail="请先完成 Stone 预处理，再生成 Stone v3 基线资产。")
+            raise HTTPException(status_code=400, detail="璇峰厛瀹屾垚 Stone 棰勫鐞嗭紝鍐嶇敓鎴?Stone v3 鍩虹嚎璧勪骇銆?)
         profiles, documents = _load_stone_v3_profiles_and_documents(session, project_id)
         if not profiles:
-            raise HTTPException(status_code=400, detail="当前没有可用的 stone_profile_v3。")
+            raise HTTPException(status_code=400, detail="褰撳墠娌℃湁鍙敤鐨?stone_profile_v3銆?)
         chat_config = repository.get_service_config(session, "chat_service")
         if not chat_config:
             raise HTTPException(status_code=400, detail="Stone v3 baseline synthesis requires a configured chat model.")
@@ -4875,12 +4904,12 @@ def _generate_asset_draft(
         _raise_legacy_stone_v2_http_error()
     run = repository.get_latest_analysis_run(session, project_id)
     if not run:
-        raise HTTPException(status_code=400, detail="请先完成一次分析，再生成资产。")
+        raise HTTPException(status_code=400, detail="璇峰厛瀹屾垚涓€娆″垎鏋愶紝鍐嶇敓鎴愯祫浜с€?)
     if run.status in {"queued", "running"}:
-        raise HTTPException(status_code=409, detail="当前分析仍在进行中，请等待完成后再生成资产。")
+        raise HTTPException(status_code=409, detail="褰撳墠鍒嗘瀽浠嶅湪杩涜涓紝璇风瓑寰呭畬鎴愬悗鍐嶇敓鎴愯祫浜с€?)
     facets = run.facets or []
     if not facets:
-        raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
+        raise HTTPException(status_code=400, detail="褰撳墠鍒嗘瀽娌℃湁鍙敤浜庡悎鎴愯祫浜х殑缁村害缁撴灉銆?)
     chat_config = repository.get_service_config(session, "chat_service")
     summary = run.summary_json or {}
     bundle = request.app.state.services.for_mode(project.mode).build_asset_bundle(
@@ -4901,7 +4930,7 @@ def _generate_asset_draft(
         markdown_text=bundle.markdown_text,
         json_payload=bundle.json_payload,
         prompt_text=bundle.prompt_text,
-        notes="系统自动生成草稿，发布前请先复核。",
+        notes="绯荤粺鑷姩鐢熸垚鑽夌锛屽彂甯冨墠璇峰厛澶嶆牳銆?,
     )
     _persist_asset_files(
         request,
@@ -4913,3 +4942,19 @@ def _generate_asset_draft(
         draft.system_prompt,
     )
     return draft
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

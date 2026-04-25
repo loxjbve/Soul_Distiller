@@ -8,12 +8,43 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.service.common.pipeline.mode import BaseModePipeline, WritingRequest
-from app.service.common.pipeline.playground_runtime import playground_chat
+from app.service.common.pipeline import BaseModePipeline, WritingRequest, playground_chat
+from app.service.common.pipeline.stone_analysis_runtime import StoneAnalysisAgent as _StoneAnalysisAgent
+from app.service.common.pipeline.stone_assets_runtime import StoneV3BaselineSynthesizer as _StoneV3BaselineSynthesizer
+from app.service.common.pipeline.stone_preprocess_runtime import (
+    StonePreprocessStreamHub as _StonePreprocessStreamHub,
+    StonePreprocessWorker as _StonePreprocessWorker,
+)
+from app.service.common.pipeline.stone_writing_runtime import WritingAgentService as _WritingAgentService
+
+
+class StonePreprocessWorker(_StonePreprocessWorker):
+    pass
+
+
+class StonePreprocessStreamHub(_StonePreprocessStreamHub):
+    pass
+
+
+class StoneAnalysisAgent(_StoneAnalysisAgent):
+    pass
+
+
+class StoneV3BaselineSynthesizer(_StoneV3BaselineSynthesizer):
+    pass
+
+
+class WritingAgentService(_WritingAgentService):
+    pass
 
 
 class StoneModePipeline(BaseModePipeline):
     mode = "stone"
+    preprocess_worker_class = StonePreprocessWorker
+    preprocess_stream_hub_class = StonePreprocessStreamHub
+    analysis_agent_class = StoneAnalysisAgent
+    baseline_synthesizer_class = StoneV3BaselineSynthesizer
+    writing_service_class = WritingAgentService
 
     def __init__(
         self,

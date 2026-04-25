@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.service.common.pipeline.mode import ModePipeline
+from app.service.common.pipeline import ModePipeline
 
 
 class ServiceRegistry:
