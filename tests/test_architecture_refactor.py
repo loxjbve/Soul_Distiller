@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -7,7 +8,7 @@ from uuid import uuid4
 from app.service import ServiceRegistry
 from app.service.common.subagents import load_markdown_agent_spec
 from app.service.common.subagents.base import AgentRunContext
-from app.service.stone.subagent_runner import StoneAgentOrchestrator
+from app.service.common.subagents.stone_runner import StoneAgentOrchestrator
 from app.core import AppContainer
 from app.core.config import AppConfig
 from app.db import Database
@@ -124,25 +125,16 @@ def test_llm_gateway_wraps_openai_compatible_client(monkeypatch):
 
 def test_service_registry_routes_all_modes():
     registry = ServiceRegistry.build(
-        single_preprocess="single-preprocess",
-        group_preprocess="group-preprocess",
-        telegram_preprocess="telegram-preprocess",
-        stone_preprocess="stone-preprocess",
-        single_analysis="single-analysis",
-        group_analysis="group-analysis",
-        telegram_analysis="telegram-analysis",
-        stone_analysis="stone-analysis",
-        single_assets="single-assets",
-        group_assets="group-assets",
-        telegram_assets="telegram-assets",
-        stone_assets="stone-assets",
-        stone_writing="stone-writing",
+        single="single-pipeline",
+        group="group-pipeline",
+        telegram="telegram-pipeline",
+        stone="stone-pipeline",
     )
 
-    assert registry.for_mode("single").preprocess == "single-preprocess"
-    assert registry.for_mode("group").analysis == "group-analysis"
-    assert registry.for_mode("telegram").assets == "telegram-assets"
-    assert registry.for_mode("stone").writing == "stone-writing"
+    assert registry.for_mode("single") == "single-pipeline"
+    assert registry.for_mode("group") == "group-pipeline"
+    assert registry.for_mode("telegram") == "telegram-pipeline"
+    assert registry.for_mode("stone") == "stone-pipeline"
     assert registry.for_mode(None) is registry.group
     assert registry.for_mode("unexpected-mode") is registry.group
 
@@ -163,6 +155,17 @@ def test_mode_subagent_markdown_specs_have_required_frontmatter():
         assert spec.output_type in {"json", "markdown", "text"}
         assert spec.toolset
         assert spec.max_rounds >= 1
+        rendered_text = f"{spec.summary}\n{spec.task}\n{spec.body}"
+        assert re.search(r"[\u4e00-\u9fff]", rendered_text)
+
+
+def test_mode_directories_only_keep_pipeline_entrypoints():
+    service_root = _repo_root() / "app" / "service"
+
+    for mode in ("single", "group", "telegram", "stone"):
+        mode_root = service_root / mode
+        names = {path.name for path in mode_root.iterdir() if path.name != "__pycache__"}
+        assert names == {"__init__.py", "pipeline.py", "subagents"}
 
 
 def test_no_legacy_implementation_imports_remain():
@@ -189,18 +192,17 @@ def test_create_app_attaches_container_state():
         assert app.state.config is container.config
         assert app.state.db is container.db
         assert app.state.services is container.services
-        assert app.state.services.stone_agents is container.stone_agents
-        assert app.state.services.telegram_agents is container.telegram_agents
-        assert app.state.services.preprocess_agents is container.preprocess_agents
-        assert app.state.services.for_mode("single").preprocess is container.preprocess_service
-        assert app.state.services.for_mode("telegram").preprocess is container.telegram_preprocess_manager
-        assert app.state.services.for_mode("stone").writing is container.writing_service
+        assert app.state.services.for_mode("single").mode == "single"
+        assert app.state.services.for_mode("telegram").mode == "telegram"
+        assert app.state.services.for_mode("stone") is container.stone_pipeline
+        assert not hasattr(app.state.services, "preprocess_service")
+        assert not hasattr(app.state.services, "writing_service")
+        assert not hasattr(app.state.services, "stone_agents")
     finally:
-        container.project_deletion_manager.shutdown()
+        container.services.project_deletion_manager.shutdown()
         container.analysis_runner.shutdown()
-        container.preprocess_service.shutdown()
-        container.writing_service.shutdown()
-        container.telegram_preprocess_manager.shutdown()
+        container.services.shutdown_mode_pipelines()
+        asyncio.run(container.stone_pipeline.preprocess_worker.shutdown())
         container.rechunk_manager.shutdown()
         container.ingest_task_manager.shutdown()
         container.vector_store_manager.save_all()

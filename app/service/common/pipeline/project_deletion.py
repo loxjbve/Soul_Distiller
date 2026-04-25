@@ -30,10 +30,9 @@ from app.models import (
 )
 from app.service.common.pipeline.ingest_task import IngestTaskManager
 from app.service.common.pipeline.rechunk import RechunkTaskManager
-from app.service.common.workspace_preprocess import PreprocessAgentService
 from app.retrieval.vector_store import VectorStoreManager
+from app.service import ServiceRegistry
 from app.storage import repository
-from app.service.stone.writing import WritingAgentService
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +49,7 @@ class ProjectDeletionManager:
         ingest_task_manager: IngestTaskManager,
         rechunk_manager: RechunkTaskManager,
         analysis_runner,
-        preprocess_service: PreprocessAgentService,
-        writing_service: WritingAgentService | None = None,
-        telegram_preprocess_manager=None,
+        service_registry: ServiceRegistry,
         max_workers: int = 1,
         batch_size: int = 1000,
         stop_timeout_s: float = 180.0,
@@ -63,9 +60,7 @@ class ProjectDeletionManager:
         self.ingest_task_manager = ingest_task_manager
         self.rechunk_manager = rechunk_manager
         self.analysis_runner = analysis_runner
-        self.preprocess_service = preprocess_service
-        self.writing_service = writing_service
-        self.telegram_preprocess_manager = telegram_preprocess_manager
+        self.service_registry = service_registry
         self.batch_size = max(1, batch_size)
         self.stop_timeout_s = max(1.0, stop_timeout_s)
         self.executor = ThreadPoolExecutor(max_workers=max(1, max_workers), thread_name_prefix="project-delete")
@@ -184,13 +179,12 @@ class ProjectDeletionManager:
             self.ingest_task_manager.stop_project_tasks(project_id, wait=False, reset_documents=True)
             self.rechunk_manager.cancel_project(project_id)
             self.analysis_runner.cancel_project(project_id)
-            self.preprocess_service.cancel_project(project_id)
-            if self.writing_service:
-                self.writing_service.cancel_project(project_id)
-            if self.telegram_preprocess_manager:
-                self.telegram_preprocess_manager.cancel_project(project_id)
+            pipeline = self._pipeline_for_project(project_id)
+            if pipeline:
+                pipeline.cancel_project(project_id)
 
     def _wait_for_quiet(self, project_ids: list[str]) -> None:
+        # 删除前统一等待后台任务安静下来，避免边删文件边有 worker 继续写状态。
         deadline = time.time() + self.stop_timeout_s
         while time.time() < deadline:
             if not any(self._project_has_activity(project_id) for project_id in project_ids):
@@ -199,20 +193,22 @@ class ProjectDeletionManager:
         raise TimeoutError("Timed out while waiting for project tasks to stop.")
 
     def _project_has_activity(self, project_id: str) -> bool:
+        pipeline = self._pipeline_for_project(project_id)
         return any(
             (
                 self.ingest_task_manager.has_project_activity(project_id),
                 self.rechunk_manager.has_project_activity(project_id),
                 self.analysis_runner.has_project_activity(project_id),
-                self.preprocess_service.has_project_activity(project_id),
-                self.writing_service.has_project_activity(project_id)
-                if self.writing_service
-                else False,
-                self.telegram_preprocess_manager.has_project_activity(project_id)
-                if self.telegram_preprocess_manager
-                else False,
+                pipeline.has_project_activity(project_id) if pipeline else False,
             )
         )
+
+    def _pipeline_for_project(self, project_id: str):
+        with self.db.session() as session:
+            project = repository.get_project(session, project_id)
+        if not project:
+            return None
+        return self.service_registry.for_mode(project.mode)
 
     def _delete_database_rows(self, project_ids: list[str], task_id: str) -> None:
         ordered_project_ids = [str(item) for item in project_ids]

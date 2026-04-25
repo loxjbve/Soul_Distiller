@@ -77,15 +77,18 @@ def create_writing_message_api(
     session: legacy.SessionDep,
 ):
     legacy._ensure_stone_project(session, project_id)
+    pipeline, _ = legacy._pipeline_for_project(request, session, project_id)
     try:
         request_payload = legacy._resolve_writing_request_payload(payload)
-        result = request.app.state.services.writing_service.start_stream(
+        result = pipeline.start_writing_stream(
             project_id=project_id,
             session_id=session_id,
-            topic=request_payload["topic"],
-            target_word_count=request_payload["target_word_count"],
-            extra_requirements=request_payload["extra_requirements"],
-            raw_message=request_payload["message"],
+            request=legacy.WritingRequest(
+                topic=request_payload["topic"],
+                target_word_count=request_payload["target_word_count"],
+                extra_requirements=request_payload["extra_requirements"],
+                message=request_payload["message"],
+            ),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -103,11 +106,12 @@ def stream_writing_events_api(
     session: legacy.SessionDep,
 ):
     legacy._ensure_stone_project(session, project_id)
+    pipeline, _ = legacy._pipeline_for_project(request, session, project_id)
     chat_session = legacy.repository.get_chat_session(session, session_id, session_kind="writing")
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     try:
-        generator = request.app.state.services.writing_service.stream_events(stream_id)
+        generator = pipeline.stream_writing_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到写作流。") from exc
     return StreamingResponse(

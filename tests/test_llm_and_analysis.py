@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.service.common.workspace_analysis import FACET_EVIDENCE_LIMIT, _normalize_facet_payload
+from app.service.common.pipeline.analysis_runtime import FACET_EVIDENCE_LIMIT, _normalize_facet_payload
 from app.service.common.facets import FACETS
-from app.service.common.prompt_builders import build_facet_analysis_messages
+from app.service.common.subagents.prompt_templates import build_facet_analysis_messages
 from app.service.common.llm.client import OpenAICompatibleClient
 from app.schemas import ServiceConfig
 

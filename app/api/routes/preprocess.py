@@ -72,8 +72,9 @@ def create_preprocess_message_api(
     project_id: str,
     session_id: str,
     payload: legacy.PreprocessMessagePayload,
+    session: legacy.SessionDep,
 ):
-    return legacy.create_preprocess_message_api(request, project_id, session_id, payload)
+    return legacy.create_preprocess_message_api(request, project_id, session_id, payload, session)
 
 
 @router.get("/api/projects/{project_id}/preprocess/artifacts/{artifact_id}/download")

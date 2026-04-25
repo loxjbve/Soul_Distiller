@@ -1,7 +1,5 @@
-"""群聊模式 service。"""
+"""群聊模式入口。"""
 
-from app.service.group.analysis import GroupAnalysisService
-from app.service.group.assets import GroupAssetService
-from app.service.group.preprocess import GroupPreprocessService
+from app.service.group.pipeline import GroupModePipeline
 
-__all__ = ["GroupAnalysisService", "GroupAssetService", "GroupPreprocessService"]
+__all__ = ["GroupModePipeline"]

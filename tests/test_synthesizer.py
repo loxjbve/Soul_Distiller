@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.service.common.workspace_assets import AssetSynthesizer
+from app.service.common.pipeline.asset_runtime import AssetSynthesizer
 from app.models import AnalysisFacet, Project
 from app.schemas import ChatCompletionResult, ServiceConfig
 
@@ -23,7 +23,7 @@ def test_asset_synthesizer_excludes_large_internal_facet_fields(monkeypatch):
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         )
 
-    monkeypatch.setattr("app.service.common.workspace_assets.OpenAICompatibleClient.chat_completion_result", fake_chat_completion_result)
+    monkeypatch.setattr("app.service.common.pipeline.asset_runtime.OpenAICompatibleClient.chat_completion_result", fake_chat_completion_result)
 
     facet = AnalysisFacet(
         facet_key="language_style",
@@ -191,7 +191,7 @@ def test_cc_skill_llm_output_missing_frontmatter_is_wrapped(monkeypatch):
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
         )
 
-    monkeypatch.setattr("app.service.common.workspace_assets.OpenAICompatibleClient.chat_completion_result", fake_chat_completion_result)
+    monkeypatch.setattr("app.service.common.pipeline.asset_runtime.OpenAICompatibleClient.chat_completion_result", fake_chat_completion_result)
 
     project = Project(name="Demo")
     project.id = "12345678-1234-1234-1234-123456789012"

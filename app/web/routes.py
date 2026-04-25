@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import LegacyStoneDataError
-from app.service.stone.assets_support import (
+from app.service.common.pipeline.stone_assets_runtime import (
     STONE_V3_ASSET_KINDS,
     STONE_V3_PROFILE_KEY,
     is_valid_stone_v3_asset_payload,
@@ -52,6 +52,7 @@ from app.schemas import (
     MIN_ANALYSIS_CONCURRENCY,
     ServiceConfig,
 )
+from app.service.common.pipeline import WritingRequest
 from app.stone_runtime import (
     get_latest_usable_stone_preprocess_run,
     has_valid_asset_payload as shared_has_valid_asset_payload,
@@ -253,6 +254,11 @@ def _ensure_stone_project(session: Session, project_id: str):
     if project.mode != "stone":
         raise HTTPException(status_code=400, detail="Only stone projects support this workspace.")
     return project
+
+
+def _pipeline_for_project(request: Request, session: Session, project_id: str):
+    project = _ensure_project(session, project_id)
+    return request.app.state.services.for_mode(project.mode), project
 
 
 
@@ -1454,9 +1460,9 @@ def list_document_mentions_api(
     session: SessionDep,
     q: str = Query(default=""),
 ):
-    _ensure_project(session, project_id)
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
     return {
-        "items": request.app.state.services.preprocess_service.list_mentions(session, project_id, q, limit=8),
+        "items": pipeline.list_mentions(session, project_id, q, limit=8),
     }
 
 
@@ -2011,7 +2017,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                         document_key=str(progress.get("document_key") or "").strip() or None,
                     )
 
-                bundle = request.app.state.services.asset_synthesizer.build(
+                bundle = request.app.state.services.for_mode(project.mode).build_asset_bundle(
                     asset_kind,
                     project,
                     facets,
@@ -2286,9 +2292,11 @@ def create_preprocess_message_api(
     project_id: str,
     session_id: str,
     payload: PreprocessMessagePayload,
+    session: SessionDep,
 ):
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
     try:
-        result = request.app.state.services.preprocess_service.start_stream(
+        result = pipeline.start_preprocess_session_stream(
             project_id=project_id,
             session_id=session_id,
             message=payload.message,
@@ -2299,10 +2307,11 @@ def create_preprocess_message_api(
 
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
-def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str):
-    del project_id, session_id
+def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str, session: SessionDep):
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
+    del session_id
     try:
-        generator = request.app.state.services.preprocess_service.stream_events(stream_id)
+        generator = pipeline.stream_preprocess_session_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到预分析流。") from exc
     return StreamingResponse(
@@ -2374,15 +2383,18 @@ def create_writing_message_api(
     session: SessionDep,
 ):
     _ensure_stone_project(session, project_id)
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
     try:
         request_payload = _resolve_writing_request_payload(payload)
-        result = request.app.state.services.writing_service.start_stream(
+        result = pipeline.start_writing_stream(
             project_id=project_id,
             session_id=session_id,
-            topic=request_payload["topic"],
-            target_word_count=request_payload["target_word_count"],
-            extra_requirements=request_payload["extra_requirements"],
-            raw_message=request_payload["message"],
+            request=WritingRequest(
+                topic=request_payload["topic"],
+                target_word_count=request_payload["target_word_count"],
+                extra_requirements=request_payload["extra_requirements"],
+                message=request_payload["message"],
+            ),
         )
     except ValueError as exc:
         detail = str(exc)
@@ -2394,11 +2406,12 @@ def create_writing_message_api(
 @router.get("/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}")
 def stream_writing_events_api(request: Request, project_id: str, session_id: str, stream_id: str, session: SessionDep):
     _ensure_stone_project(session, project_id)
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
     chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     try:
-        generator = request.app.state.services.writing_service.stream_events(stream_id)
+        generator = pipeline.stream_writing_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到写作流。") from exc
     return StreamingResponse(
@@ -2815,10 +2828,10 @@ def _create_stone_preprocess_run(
     project_id: str,
     concurrency: int = DEFAULT_ANALYSIS_CONCURRENCY,
 ) -> "StonePreprocessRun":
-    project = _ensure_project(session, project_id)
+    pipeline, project = _pipeline_for_project(request, session, project_id)
     if project.mode != "stone":
         raise HTTPException(status_code=400, detail="Only Stone projects use preprocess runs.")
-    created = request.app.state.services.stone_preprocess_worker.submit(
+    created = pipeline.submit_preprocess_run(
         project_id,
         concurrency=concurrency,
     )
@@ -2834,13 +2847,13 @@ def _create_telegram_preprocess_run(
     *,
     weekly_summary_concurrency: int | None = None,
 ) -> TelegramPreprocessRun:
-    project = _ensure_project(session, project_id)
+    pipeline, project = _pipeline_for_project(request, session, project_id)
     if project.mode != "telegram":
         raise HTTPException(status_code=400, detail="Only Telegram projects use preprocess runs.")
     source_project_id = repository.get_target_project_id(session, project_id)
     if not repository.get_latest_telegram_chat(session, source_project_id):
         raise HTTPException(status_code=400, detail="Please upload and ingest a Telegram JSON export first.")
-    created = request.app.state.services.telegram_preprocess_manager.submit(
+    created = pipeline.submit_preprocess_run(
         source_project_id,
         weekly_summary_concurrency=weekly_summary_concurrency,
     )
@@ -4186,88 +4199,13 @@ def _chat_with_persona(
     message: str,
     session_id: str | None = None,
 ):
-    version = repository.get_latest_skill_version(session, project_id)
-    if not version:
-        raise HTTPException(status_code=400, detail="请先发布一个 Skill 版本，再进入试聊。")
-    chat_config = repository.get_service_config(session, "chat_service")
-    if session_id:
-        chat_session = repository.get_chat_session(session, session_id, session_kind="playground")
-        if not chat_session:
-            raise HTTPException(status_code=404, detail="未找到试聊会话。")
-    else:
-        chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
-    history = sorted(chat_session.turns, key=lambda item: item.created_at)
-    repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
-
-    assistant_reply, llm_meta = _generate_chat_reply(
-        chat_config,
-        version.system_prompt,
-        history,
-        message,
-        "",
-        log_path=str(request.app.state.config.llm_log_path),
-    )
-    trace = {
-        "skill_version_id": version.id,
-        "skill_version_number": version.version_number,
-        "prompt_excerpt": f"SKILL:\n{version.system_prompt[:1800]}",
-        "llm": llm_meta,
-    }
-    assistant_turn = repository.add_chat_turn(
+    pipeline, _ = _pipeline_for_project(request, session, project_id)
+    return pipeline.playground_chat(
+        request,
         session,
-        session_id=chat_session.id,
-        role="assistant",
-        content=assistant_reply,
-        trace_json=trace,
-    )
-    return {
-        "session_id": chat_session.id,
-        "assistant_turn_id": assistant_turn.id,
-        "response": assistant_reply,
-        "trace": trace,
-    }
-
-
-def _generate_chat_reply(
-    config: ServiceConfig | None,
-    system_prompt: str,
-    history: list[Any],
-    message: str,
-    evidence_block: str,
-    *,
-    log_path: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    if not config:
-        prefix = "当前未配置外部 LLM，系统正在使用本地降级模式。"
-        return (
-            (
-                f"{prefix}\n\n"
-                "我会尽量按照已发布 Skill 中的语气与立场来回应。\n\n"
-                f"你刚才说的是：{message}"
-            ),
-            {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
-        )
-
-    client = OpenAICompatibleClient(config, log_path=log_path)
-    messages = [{"role": "system", "content": system_prompt}]
-    if evidence_block:
-        messages.append({"role": "system", "content": f"来源文档证据：\n{evidence_block}"})
-    for turn in history[-8:]:
-        messages.append({"role": turn.role, "content": turn.content})
-    messages.append({"role": "user", "content": message})
-    try:
-        result = client.chat_completion_result(messages, model=config.model, temperature=0.7, max_tokens=900)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"对话生成失败：{exc}") from exc
-    return (
-        result.content,
-        {
-            "provider_kind": config.provider_kind,
-            "api_mode": config.api_mode,
-            "model": result.model,
-            "usage": result.usage,
-            "request_url": result.request_url,
-        },
+        project_id,
+        message=message,
+        session_id=session_id,
     )
 
 
@@ -4370,13 +4308,8 @@ def _recover_stone_preprocess_run_if_stale(
         return None
     if str(run.status or "").lower() not in {"queued", "running"}:
         return run
-    # ServiceRegistry is now the only supported app.state entry point for workers.
-    services = getattr(request.app.state, "services", None)
-    stone_worker = getattr(services, "stone_preprocess_worker", None) or getattr(request.app.state, "stone_preprocess_worker", None)
-    if stone_worker and hasattr(stone_worker, "is_tracking") and stone_worker.is_tracking(run.id):
-        return run
-    preprocess_service = getattr(services, "preprocess_service", None) or getattr(request.app.state, "preprocess_service", None)
-    if preprocess_service and hasattr(preprocess_service, "is_tracking") and preprocess_service.is_tracking(run.id):
+    pipeline = request.app.state.services.for_mode("stone")
+    if pipeline.is_preprocess_tracking(run.id):
         return run
 
     stats = _stone_profile_progress_stats(session, project_id)
@@ -4462,6 +4395,7 @@ def _enqueue_analysis(
                     f"当前覆盖率：{stats['profile_count']}/{stats['ready_document_count']}。"
                 ),
             )
+    pipeline = request.app.state.services.for_mode(project.mode)
     existing_run = repository.get_active_analysis_run(session, project_id)
     if existing_run:
         if request.app.state.services.analysis_runner.is_tracking(existing_run.id):
@@ -4472,7 +4406,7 @@ def _enqueue_analysis(
             reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
         )
         session.flush()
-    run = request.app.state.services.analysis_engine.create_run(
+    run = pipeline.create_analysis_run(
         session,
         project_id,
         target_role=(target_role or "").strip() or None if project.mode != "telegram" else None,
@@ -4482,7 +4416,7 @@ def _enqueue_analysis(
         concurrency=concurrency,
     )
     session.commit()
-    request.app.state.services.analysis_runner.submit(run.id)
+    pipeline.submit_analysis_run(run.id)
     session.expire_all()
     return repository.get_analysis_run(session, run.id) or run
 
@@ -4882,7 +4816,7 @@ def _generate_asset_draft(
         def persist_checkpoint(payload: dict[str, Any]) -> None:
             save_stone_v3_checkpoint(request.app.state.config.assets_dir, project_id, payload)
 
-        synthesis = request.app.state.services.stone_v3_synthesizer.build(
+        synthesis = request.app.state.services.for_mode(project.mode).build_stone_v3_baseline(
             project_name=project.name,
             profiles=profiles,
             documents=documents,
@@ -4949,7 +4883,7 @@ def _generate_asset_draft(
         raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
     chat_config = repository.get_service_config(session, "chat_service")
     summary = run.summary_json or {}
-    bundle = request.app.state.services.asset_synthesizer.build(
+    bundle = request.app.state.services.for_mode(project.mode).build_asset_bundle(
         asset_kind,
         project,
         facets,

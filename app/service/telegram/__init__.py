@@ -1,9 +1,5 @@
-"""Telegram 模式 service。"""
+"""Telegram 模式入口。"""
 
-from app.service.telegram.analysis import TelegramAnalysisService
-from app.service.telegram.assets import TelegramAssetService
-from app.service.telegram.preprocess import TelegramPreprocessManager
+from app.service.telegram.pipeline import TelegramModePipeline
 
-TelegramPreprocessService = TelegramPreprocessManager
-
-__all__ = ["TelegramAnalysisService", "TelegramAssetService", "TelegramPreprocessManager", "TelegramPreprocessService"]
+__all__ = ["TelegramModePipeline"]

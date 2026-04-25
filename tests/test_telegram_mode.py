@@ -9,12 +9,12 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 
 from app.service.common.facets import FacetDefinition
-from app.service.telegram.analysis_agent import TELEGRAM_TOOL_LOOP_MAX_STEPS, TelegramAnalysisAgent, TelegramFacetAnalysisResult
+from app.service.common.pipeline.telegram_analysis_runtime import TELEGRAM_TOOL_LOOP_MAX_STEPS, TelegramAnalysisAgent, TelegramFacetAnalysisResult
 from app.service.common.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
 from app.storage import repository
-from app.service.telegram.preprocess import TelegramPreprocessWorker
+from app.service.common.pipeline.telegram_runtime import TelegramPreprocessWorker
 
 
 def _telegram_export_bytes(payload: dict) -> bytes:
@@ -929,7 +929,7 @@ def test_telegram_preprocess_run_persists_topics_top_users_and_new_counts(client
             "usage": {"prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18, "cache_creation_tokens": 0, "cache_read_tokens": 0},
         }
 
-    monkeypatch.setattr("app.service.telegram.preprocess.TelegramPreprocessWorker.process", fake_process)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_runtime.TelegramPreprocessWorker.process", fake_process)
 
     response = client.post(f"/api/projects/{project_id}/preprocess/runs")
     assert response.status_code == 200
@@ -990,7 +990,7 @@ def test_telegram_preprocess_run_accepts_weekly_summary_concurrency(client, app,
             },
         }
 
-    monkeypatch.setattr("app.service.telegram.preprocess.TelegramPreprocessWorker.process", fake_process)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_runtime.TelegramPreprocessWorker.process", fake_process)
 
     response = client.post(
         f"/api/projects/{project_id}/preprocess/runs",
@@ -1087,7 +1087,7 @@ def test_telegram_analysis_uses_preprocess_tables_and_skips_retrieval(client, ap
             hit_count=1,
         )
 
-    monkeypatch.setattr("app.service.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_analysis_runtime.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     with app.state.db.session() as session:
         top_users = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)
@@ -1372,7 +1372,7 @@ def test_telegram_profile_children_share_parent_preprocess_and_run_independently
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.service.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_analysis_runtime.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/api/projects/{child.id}/analyze",
@@ -1592,9 +1592,9 @@ def test_telegram_preprocess_relationship_snapshot_llm_failure_degrades_to_parti
         del self, candidate, participant_lookup
         raise RuntimeError("relationship llm boom")
 
-    monkeypatch.setattr("app.service.telegram.preprocess.TelegramPreprocessWorker.process", fake_process)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_runtime.TelegramPreprocessWorker.process", fake_process)
     monkeypatch.setattr(
-        "app.service.telegram.preprocess.TelegramPreprocessWorker._summarize_relationship_edge",
+        "app.service.common.pipeline.telegram_runtime.TelegramPreprocessWorker._summarize_relationship_edge",
         fail_relationship_summary,
     )
 
@@ -1675,7 +1675,7 @@ def test_telegram_parent_persona_studio_auto_analyzes_and_redirects(client, app,
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.service.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_analysis_runtime.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/projects/{project_id}/profiles",
@@ -1932,7 +1932,7 @@ def test_telegram_analysis_runs_facets_concurrently(client, app, monkeypatch):
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.service.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_analysis_runtime.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/api/projects/{project_id}/analyze",
@@ -2135,7 +2135,7 @@ def test_telegram_preprocess_failure_keeps_sql_intermediate_tables_without_final
         del self, run_id, chat_id, progress_callback
         raise RuntimeError("weekly topic summary boom")
 
-    monkeypatch.setattr("app.service.telegram.preprocess.TelegramPreprocessWorker._run_weekly_topic_summary", fail_weekly_summary)
+    monkeypatch.setattr("app.service.common.pipeline.telegram_runtime.TelegramPreprocessWorker._run_weekly_topic_summary", fail_weekly_summary)
 
     response = client.post(f"/api/projects/{project_id}/preprocess/runs")
     assert response.status_code == 200

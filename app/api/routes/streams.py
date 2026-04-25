@@ -23,8 +23,14 @@ def stream_analysis_api(
 
 
 @router.get("/api/projects/{project_id}/preprocess/sessions/{session_id}/streams/{stream_id}")
-def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str):
-    return legacy.stream_preprocess_events_api(request, project_id, session_id, stream_id)
+def stream_preprocess_events_api(
+    request: Request,
+    project_id: str,
+    session_id: str,
+    stream_id: str,
+    session: legacy.SessionDep,
+):
+    return legacy.stream_preprocess_events_api(request, project_id, session_id, stream_id, session)
 
 
 @router.websocket("/api/projects/{project_id}/documents/ws")
