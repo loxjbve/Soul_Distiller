@@ -17,7 +17,7 @@
                     <span class="page-banner__label">Article Profiling</span>
                 </div>
                 <p>
-                    为每篇文章生成 Stone v2 画像，保留起笔动作、收口方式、语义核、母题与原文锚点。
+                    为每篇文章生成 Stone v3 画像，保留起笔动作、收口方式、语义核、母题与原文锚点。
                     预分析完成后，将鼠标移到文章卡片上，就能直接查看该篇文章的结果。
                 </p>
             </div>
@@ -91,11 +91,11 @@
                     <h2 id="stone-preprocess-stage-banner">{{ selected_run_data.current_stage if selected_run_data else "等待运行" }}</h2>
                     <p class="section-note" id="stone-preprocess-live-note">
                         {% if selected_run_data and selected_run_data.status in ["queued", "running"] %}
-                            当前正在持续生成文章的 Stone v2 画像，单篇完成后会立即写回文章卡片。
+                            当前正在持续生成文章的 Stone v3 画像，单篇完成后会立即写回文章卡片。
                         {% elif selected_run_data and selected_run_data.status == "completed" %}
                             本轮预分析已经完成，可以悬浮查看每篇文章画像，或直接进入作者分析。
                         {% else %}
-                            运行后会为每篇文章生成可复用的 Stone v2 画像，并写回文档元数据。
+                            运行后会为每篇文章生成可复用的 Stone v3 画像，并写回文档元数据。
                         {% endif %}
                     </p>
                 </div>
@@ -178,7 +178,7 @@
 
             <div class="panel-body stone-preprocess-panel__body">
                 <p class="section-note stone-preprocess-hover-hint">
-                    将鼠标移到任意文章卡片上，可以预览该篇文章的 Stone v2 画像结果。
+                    将鼠标移到任意文章卡片上，可以预览该篇文章的 Stone v3 画像结果。
                 </p>
 
                 <div id="stone-preprocess-topic-lamps" class="stone-preprocess-topic-lamps panel-scroll" data-panel-scroll>

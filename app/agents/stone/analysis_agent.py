@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis.facets import FacetDefinition
 from app.analysis.stone import build_stone_facet_messages
-from app.analysis.stone_v2 import expand_stone_profile_v2_for_analysis, normalize_stone_profile_v2
+from app.analysis.stone_v3 import STONE_V3_PROFILE_KEY, normalize_stone_profile_v3
 from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
 from app.models import DocumentRecord, Project
 from app.schemas import ServiceConfig
@@ -169,16 +169,91 @@ class StoneAnalysisAgent:
 
     @staticmethod
     def _profile_snapshot(document: DocumentRecord) -> dict[str, Any]:
-        profile = dict((document.metadata_json or {}).get("stone_profile_v2") or {})
-        expanded = expand_stone_profile_v2_for_analysis(
-            profile,
-            article_text=str(document.clean_text or document.raw_text or ""),
+        metadata = dict(document.metadata_json or {})
+        article_text = str(document.clean_text or document.raw_text or "")
+        expanded = StoneAnalysisAgent._expand_stone_profile_v3_for_analysis(
+            dict(metadata.get(STONE_V3_PROFILE_KEY) or {}),
+            article_text=article_text,
             title=document.title or document.filename,
         )
         return {
             "document_id": document.id,
             "title": document.title or document.filename,
             **expanded,
+        }
+
+    @staticmethod
+    def _expand_stone_profile_v3_for_analysis(
+        profile: dict[str, Any] | None,
+        *,
+        article_text: str = "",
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        normalized = normalize_stone_profile_v3(
+            profile,
+            article_text=article_text,
+            fallback_title=title,
+        )
+        document_core = dict(normalized.get("document_core") or {})
+        voice_contract = dict(normalized.get("voice_contract") or {})
+        structure_moves = dict(normalized.get("structure_moves") or {})
+        motifs = dict(normalized.get("motif_and_scene_bank") or {})
+        value_and_judgment = dict(normalized.get("value_and_judgment") or {})
+        anchors = dict(normalized.get("anchor_windows") or {})
+        retrieval_handles = dict(normalized.get("retrieval_handles") or {})
+        prototype_affordances = dict(normalized.get("prototype_affordances") or {})
+
+        selected_passages: list[str] = []
+        for value in (
+            anchors.get("opening"),
+            *(anchors.get("signature_lines") or []),
+            anchors.get("closing"),
+        ):
+            text = normalize_whitespace(str(value or ""))
+            if not text or text in selected_passages:
+                continue
+            selected_passages.append(text)
+            if len(selected_passages) >= 3:
+                break
+
+        tone_words = [str(item or "").strip() for item in (voice_contract.get("tone_words") or []) if str(item or "").strip()]
+        structure_parts = [
+            str(structure_moves.get("opening_move") or "").strip(),
+            str(structure_moves.get("development_move") or "").strip(),
+            str(structure_moves.get("turning_move") or "").strip(),
+            str(structure_moves.get("closure_move") or "").strip(),
+        ]
+        routing_tags = [
+            *[str(item or "").strip() for item in (retrieval_handles.get("keywords") or []) if str(item or "").strip()],
+            *[str(item or "").strip() for item in (motifs.get("motif_tags") or []) if str(item or "").strip()],
+        ]
+        return {
+            "content_summary": document_core.get("summary") or "",
+            "content_type": document_core.get("surface_form") or "",
+            "length_label": document_core.get("length_band") or "",
+            "emotion_label": " / ".join(tone_words[:2]),
+            "selected_passages": selected_passages,
+            "article_theme": document_core.get("dominant_theme") or document_core.get("summary") or (title or ""),
+            "document_theme": document_core.get("dominant_theme") or document_core.get("summary") or (title or ""),
+            "narrative_pov": voice_contract.get("person") or "",
+            "tone": " / ".join(
+                item
+                for item in (
+                    document_core.get("surface_form"),
+                    value_and_judgment.get("judgment_mode"),
+                    voice_contract.get("distance"),
+                )
+                if str(item or "").strip()
+            ),
+            "structure_template": " -> ".join(item for item in structure_parts if item),
+            "lexical_markers": list(motifs.get("lexicon_markers") or [])[:6],
+            "emotional_progression": " -> ".join(tone_words[:3]),
+            "nonclinical_signals": list(normalized.get("anti_patterns") or [])[:4],
+            "representative_lines": list(anchors.get("signature_lines") or [])[:3],
+            "routing_tags": routing_tags[:12],
+            "routing_text": str(retrieval_handles.get("routing_text") or "").strip(),
+            "cluster_key": str(prototype_affordances.get("cluster_hint") or prototype_affordances.get("prototype_family") or "").strip(),
+            "source_meta": dict((normalized.get("evidence_trace") or {}).get("source_meta") or {}),
         }
 
     @staticmethod

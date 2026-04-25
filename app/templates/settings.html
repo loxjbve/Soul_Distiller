@@ -8,22 +8,39 @@
 {% endblock %}
 
 {% block content %}
+{% set chat_count = (settings_bootstrap.services.chat.configs or []) | length %}
+{% set embedding_count = (settings_bootstrap.services.embedding.configs or []) | length %}
 <div class="page-frame">
-    <section class="page-banner">
+    <section class="page-banner page-banner--settings-hub">
         <div class="page-banner__main">
-            <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
-            <div class="page-banner__title-row">
-                <h1>{{ ui.hero_title }}</h1>
-                <span class="page-banner__label">Config Matrix</span>
+            <div class="settings-hero__copy">
+                <span class="page-banner__eyebrow">{{ ui.eyebrow }}</span>
+                <div class="page-banner__title-row">
+                    <h1>{{ ui.hero_title }}</h1>
+                    <span class="page-banner__label">{{ ui.hero_label }}</span>
+                </div>
+                <p>{{ ui.hero_note }}</p>
             </div>
-            <p>{{ ui.hero_note }}</p>
+            <div class="settings-hero__stats">
+                <div class="settings-hero__stat">
+                    <span>{{ ui.hero_stat_configs }}</span>
+                    <strong>{{ chat_count + embedding_count }}</strong>
+                </div>
+                <div class="settings-hero__stat">
+                    <span>{{ ui.hero_stat_providers }}</span>
+                    <strong>{{ provider_options | length }}</strong>
+                </div>
+                <div class="settings-hero__stat">
+                    <span>{{ ui.hero_stat_services }}</span>
+                    <strong>{{ settings_bootstrap.services | length }}</strong>
+                </div>
+            </div>
         </div>
-        <div class="page-banner__meta">
-            <div class="page-banner__portrait"></div>
-            <div class="page-banner__signal-row">
-                <span class="page-banner__label">Chat</span>
-                <span class="page-banner__label">Embedding</span>
-            </div>
+        <div class="settings-hero__signals">
+            <span class="settings-hero__signal">{{ ui.hero_chip_chat }}</span>
+            <span class="settings-hero__signal">{{ ui.hero_chip_embedding }}</span>
+            <span class="settings-hero__signal">{{ ui.hero_chip_active }}</span>
+            <span class="settings-hero__signal">{{ ui.hero_chip_fallback }}</span>
         </div>
     </section>
 
@@ -37,24 +54,26 @@
     </script>
 
     <section class="page-content">
-        <article class="panel-shell">
-            <div class="panel-header">
+        <article class="panel-shell settings-panel">
+            <div class="panel-header settings-panel__header">
                 <div>
                     <p class="eyebrow">Chat</p>
                     <h2>{{ ui.chat_panel }}</h2>
                 </div>
+                <span class="page-banner__label settings-panel__count">{{ chat_count }} {{ ui.config_unit }}</span>
             </div>
             <div class="panel-body panel-body--tight">
                 <div class="settings-service" data-settings-service="chat"></div>
             </div>
         </article>
 
-        <article class="panel-shell">
-            <div class="panel-header">
+        <article class="panel-shell settings-panel">
+            <div class="panel-header settings-panel__header">
                 <div>
                     <p class="eyebrow">Embedding</p>
                     <h2>{{ ui.embedding_panel }}</h2>
                 </div>
+                <span class="page-banner__label settings-panel__count">{{ embedding_count }} {{ ui.config_unit }}</span>
             </div>
             <div class="panel-body panel-body--tight">
                 <div class="settings-service" data-settings-service="embedding"></div>

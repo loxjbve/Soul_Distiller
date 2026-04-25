@@ -33,7 +33,7 @@ from app.pipeline.rechunk import RechunkTaskManager
 from app.preprocess.service import PreprocessAgentService
 from app.retrieval.vector_store import VectorStoreManager
 from app.storage import repository
-from app.writing.service import WritingAgentService
+from app.agents.stone.writing_service import WritingAgentService
 
 logger = logging.getLogger(__name__)
 

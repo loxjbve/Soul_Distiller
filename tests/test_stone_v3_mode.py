@@ -1,0 +1,1146 @@
+from __future__ import annotations
+
+import json
+import re
+import time
+from pathlib import Path
+from uuid import uuid4
+
+from app.stone_preprocess import StoneDocumentSnapshot
+from app.stone_v3_checkpoint import load_stone_v3_checkpoint, stone_v3_checkpoint_path
+from app.models import utcnow
+from app.schemas import ChatCompletionResult, DEFAULT_ANALYSIS_CONCURRENCY, ToolRoundResult
+from app.storage import repository
+from app.web.routes import _resolve_stone_writing_status
+from app.llm.client import OpenAICompatibleClient
+from app.web import routes as web_routes
+from app.agents.stone.writing_service import _fit_word_count, _light_trim_to_word_count
+
+
+def _mock_result(content: str) -> ChatCompletionResult:
+    return ChatCompletionResult(
+        content=content,
+        model="demo-model",
+        usage={"prompt_tokens": 32, "completion_tokens": 16, "total_tokens": 48},
+        request_url="https://example.com/v1/responses",
+        request_payload={"messages": []},
+    )
+
+
+def _ensure_service_config(app, service_name: str, *, model: str = "demo-model") -> None:
+    with app.state.db.session() as session:
+        repository.upsert_setting(
+            session,
+            service_name,
+            {
+                "provider_kind": "openai-compatible",
+                "base_url": "https://example.com/v1",
+                "api_key": "sk-test",
+                "model": model,
+                "api_mode": "responses",
+            },
+        )
+
+
+def _wait_for_ready(client, project_id: str, document_id: str, *, timeout_s: float = 12.0) -> dict:
+    deadline = time.time() + timeout_s
+    latest = {}
+    while time.time() < deadline:
+        latest = client.get(f"/api/projects/{project_id}/documents").json()
+        for item in latest.get("documents", []):
+            if item["id"] == document_id and item["ingest_status"] == "ready":
+                return item
+        time.sleep(0.1)
+    raise AssertionError(f"document {document_id} did not become ready: {latest}")
+
+
+def _wait_for_stone_preprocess(client, project_id: str, run_id: str, *, timeout_s: float = 12.0) -> dict:
+    deadline = time.time() + timeout_s
+    payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{run_id}").json()
+    while payload["status"] in {"queued", "running"} and time.time() < deadline:
+        time.sleep(0.05)
+        payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{run_id}").json()
+    return payload
+
+
+def _wait_for_analysis(client, project_id: str, run_id: str, *, timeout_s: float = 12.0) -> dict:
+    deadline = time.time() + timeout_s
+    payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    while payload["status"] in {"queued", "running"} and time.time() < deadline:
+        time.sleep(0.05)
+        payload = client.get(f"/api/projects/{project_id}/analysis", params={"run_id": run_id}).json()
+    return payload
+
+
+def _collect_sse_events(client, url: str, *, method: str = "GET", json_payload: dict | None = None) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+    with client.stream(method, url, json=json_payload) as response:
+        assert response.status_code == 200
+        current_event: str | None = None
+        data_lines: list[str] = []
+        for raw_line in response.iter_lines():
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if line == "":
+                if current_event is not None:
+                    payload = json.loads("\n".join(data_lines)) if data_lines else {}
+                    events.append((current_event, payload))
+                current_event = None
+                data_lines = []
+                continue
+            if line.startswith("event: "):
+                current_event = line[7:]
+            elif line.startswith("data: "):
+                data_lines.append(line[6:])
+    return events
+
+
+def _extract_target_word_count(text: str) -> int:
+    match = re.search(r"Target Word Count:\s*(\d+)", text)
+    return int(match.group(1)) if match else 400
+
+
+def _build_mock_article(topic: str, target_word_count: int) -> str:
+    paragraph = (
+        f"{topic} at night pulls me through the door again, not because it is good, but because the paper bag is warm, "
+        "the counter light is too bright, and the walk back home gives every bite a little more shame than comfort."
+    )
+    text = "\n\n".join([paragraph] * 12)
+    while len(re.findall(r"[A-Za-z0-9_]+", text)) < int(target_word_count * 0.9):
+        text = f"{text}\n\n{paragraph}"
+    return text
+
+
+def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = None) -> None:
+    def fake_chat_completion_result(self, messages, **kwargs):
+        del self, kwargs
+        system_text = str(messages[0].get("content") or "")
+        user_text = str(messages[-1].get("content") or "")
+
+        if "Stone v3 document profile" in system_text or "chunk-level Stone v3 profiles" in system_text:
+            article_text = user_text.split("Article text:\n", 1)[-1].strip()
+            if fail_profile_on_text and fail_profile_on_text in article_text:
+                raise RuntimeError("mock profile failure")
+            lines = [line.strip() for line in article_text.splitlines() if line.strip()]
+            opening = lines[0] if lines else article_text[:120]
+            closing = lines[-1] if lines else article_text[-120:]
+            payload = {
+                "document_core": {
+                    "summary": "Night food confession with cost and residue.",
+                    "length_band": "short",
+                    "surface_form": "scene_vignette",
+                    "dominant_theme": "cheap comfort with lingering cost",
+                },
+                "voice_contract": {
+                    "person": "first",
+                    "address_target": "self",
+                    "distance": "回收",
+                    "self_position": "自损",
+                    "cadence": "restrained",
+                    "sentence_shape": "mixed",
+                    "tone_words": ["restrained", "stubborn", "residual"],
+                },
+                "structure_moves": {
+                    "opening_move": "Open from a concrete action or object.",
+                    "development_move": "Let pressure rise through visible detail.",
+                    "turning_move": "small bodily recoil",
+                    "closure_move": "Leave residue instead of summary.",
+                    "paragraph_strategy": "2-4 paragraphs",
+                },
+                "motif_and_scene_bank": {
+                    "motif_tags": ["night", "door", "road", "grease"],
+                    "scene_terms": ["counter", "paper bag", "walk home"],
+                    "sensory_terms": ["warm", "salty", "bright"],
+                    "lexicon_markers": ["night", "door", "road", "cost"],
+                },
+                "value_and_judgment": {
+                    "judgment_target": "cheap comfort ritual",
+                    "judgment_mode": "stabilize through self-aware repetition",
+                    "value_lens": "cost",
+                    "felt_cost": "the body and wallet both pay a little",
+                },
+                "prototype_affordances": {
+                    "prototype_family": "scene_vignette|night_cost",
+                    "cluster_hint": "night comfort cost residue",
+                    "suitable_for": ["food ritual", "cheap comfort", "private shame"],
+                    "anti_drift_focus": ["Do not explain the ritual.", "Keep the ending unresolved."],
+                },
+                "anchor_windows": {
+                    "opening": opening,
+                    "pivot": opening,
+                    "closing": closing,
+                    "signature_lines": [opening, closing],
+                },
+                "retrieval_handles": {
+                    "keywords": ["kfc", "night", "door", "cost", "road"],
+                    "routing_text": "night food ritual cost residue",
+                },
+                "anti_patterns": ["Do not explain the writing process.", "Do not flatten into summary."],
+            }
+            return _mock_result(json.dumps(payload, ensure_ascii=False))
+
+        if "Stone v3 family induction stage" in system_text or "Stone v3 family synthesis stage" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "families": [
+                            {
+                                "family_id": "night-cost",
+                                "label": "night_cost",
+                                "description": "Concrete night scenes where comfort and cost stay tangled.",
+                                "selection_cues": ["night ritual", "cheap comfort", "residue"],
+                                "motif_tags": ["night", "door", "road"],
+                                "member_count": 1,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 author-model synthesizer" in system_text or "Stone v3 author-model finalizer" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "author_core": {
+                            "voice_summary": "Concrete first-person scenes with restrained pressure.",
+                            "worldview_summary": "Translates topics into lived cost before explanation.",
+                            "tone_summary": "Low-key, bodily, and unresolved.",
+                            "signature_motifs": ["night", "door", "road", "grease"],
+                        },
+                        "translation_rules": [
+                            {
+                                "value_lens": "cost",
+                                "preferred_motifs": ["night", "door", "road"],
+                                "opening_moves": ["Open from a concrete action or object."],
+                                "closure_moves": ["Leave residue instead of summary."],
+                            }
+                        ],
+                        "stable_moves": [
+                            "Open from a concrete action, object, or scene.",
+                            "Let pressure rise from visible detail.",
+                            "Keep closure unresolved when possible.",
+                        ],
+                        "forbidden_moves": [
+                            "Do not turn the piece into explanation.",
+                            "Do not flatten the ending into summary.",
+                        ],
+                        "family_map": [
+                            {
+                                "family_id": "night-cost",
+                                "label": "night_cost",
+                                "description": "Concrete night scenes where comfort and cost stay tangled.",
+                                "selection_cues": ["night ritual", "cheap comfort", "residue"],
+                                "motif_tags": ["night", "door", "road"],
+                                "member_count": 1,
+                            }
+                        ],
+                        "critic_rubrics": {
+                            "formal_fidelity": ["Match the concrete entry and residue-heavy closure."],
+                            "worldview_translation": ["Translate the topic into lived cost, not labels."],
+                            "syntheticness": ["Reject checklist prose and explanation-heavy lines."],
+                        },
+                        "global_evidence": [
+                            {
+                                "document_id": "seed",
+                                "title": "seed",
+                                "summary": "Night food confession with cost and residue.",
+                                "opening": "opening",
+                                "closing": "closing",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 prototype-card synthesis stage" in system_text:
+            return _mock_result(json.dumps({"documents": []}, ensure_ascii=False))
+
+        if "Stone v3 prototype-index finalizer" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "documents": [],
+                        "families": [
+                            {
+                                "family_id": "night-cost",
+                                "label": "night_cost",
+                                "description": "Concrete night scenes where comfort and cost stay tangled.",
+                                "selection_cues": ["night ritual", "cheap comfort", "residue"],
+                                "motif_tags": ["night", "door", "road"],
+                                "member_count": 1,
+                            }
+                        ],
+                        "retrieval_policy": {
+                            "shortlist_formula": "keyword overlap + routing facets + family cues",
+                            "target_shortlist_size": 12,
+                            "target_anchor_budget": 8,
+                            "notes": ["Shortlist is lightweight.", "Final choice belongs to the reranker."],
+                        },
+                        "selection_guides": {
+                            "when_to_expand": ["Expand when the shortlist is too homogeneous."],
+                            "when_to_prune": ["Prune duplicate family moves."],
+                            "quality_checks": ["Keep opening and closing anchors."],
+                        },
+                        "anchor_registry": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 baseline critic" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "verdict": "approve",
+                        "score": 0.96,
+                        "strengths": ["grounded in anchors", "clear retrieval policy"],
+                        "risks": [],
+                        "repair_notes": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 request adapter" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "desired_length_band": "medium",
+                        "surface_form": "scene_vignette",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through lived detail",
+                        "distance": "recycled first person",
+                        "entry_scene": "Start with the walk into the bright store.",
+                        "felt_cost": "Make the comfort feel a little embarrassing and expensive.",
+                        "query_terms": ["kfc", "night", "door", "road"],
+                        "motif_terms": ["night", "door", "road", "grease"],
+                        "anchor_preferences": ["opening", "closing", "signature"],
+                        "hard_constraints": [],
+                        "reasoning": "Use a night ritual and keep the cost bodily.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 reranker" in system_text:
+            document_ids = []
+            for value in re.findall(r'"document_id"\s*:\s*"([^"]+)"', user_text):
+                if value not in document_ids:
+                    document_ids.append(value)
+            anchor_ids = []
+            for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text):
+                if value.startswith("anchor:") and value not in anchor_ids:
+                    anchor_ids.append(value)
+            return _mock_result(
+                json.dumps(
+                    {
+                        "selected_documents": document_ids[:6],
+                        "anchor_ids": anchor_ids[:8],
+                        "selection_reason": "Night ritual anchors match the request and the author's cost lens.",
+                        "rerank_notes": ["Keep the closure unresolved."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 style packet builder" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "entry_scene": "Enter through the bright counter and the warm paper bag.",
+                        "felt_cost": "Comfort should feel useful and a little humiliating at once.",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through repetition",
+                        "distance": "recycled first person",
+                        "family_labels": ["night_cost"],
+                        "lexicon_keep": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "syntax_rules": ["Prefer concrete pressure over explanation."],
+                        "structure_recipe": [
+                            "Open on the walk in.",
+                            "Push pressure through small bodily details.",
+                            "Leave the ending unresolved.",
+                        ],
+                        "do_not_do": ["Do not explain the ritual."],
+                        "style_thesis": "Night comfort should carry cost and residue.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 blueprint composer" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "paragraph_count": 4,
+                        "shape_note": "Scene vignettes stacking bodily pressure.",
+                        "entry_move": "Open from the bright door and the walk inside.",
+                        "development_move": "Keep pressure in the body, wallet, and walk home.",
+                        "turning_device": "small recoil after the first bite",
+                        "closure_residue": "End on the road home, not a conclusion.",
+                        "keep_terms": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "steps": [
+                            "Open on action.",
+                            "Accumulate concrete detail.",
+                            "Let the cost surface without thesis.",
+                            "Close on residue.",
+                        ],
+                        "do_not_do": ["Do not explain the process."],
+                        "anchor_ids": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 formal_fidelity critic" in system_text:
+            anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
+            return _mock_result(
+                json.dumps(
+                    {
+                        "pass": True,
+                        "score": 0.95,
+                        "verdict": "approve",
+                        "anchor_ids": anchor_ids[:3],
+                        "matched_signals": ["concrete opening", "residue-heavy closure"],
+                        "must_keep_spans": [],
+                        "line_edits": [],
+                        "redraft_reason": "",
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 worldview_translation critic" in system_text:
+            anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
+            return _mock_result(
+                json.dumps(
+                    {
+                        "pass": True,
+                        "score": 0.94,
+                        "verdict": "approve",
+                        "anchor_ids": anchor_ids[:3],
+                        "matched_signals": ["topic translated into cost"],
+                        "must_keep_spans": [],
+                        "line_edits": [],
+                        "redraft_reason": "",
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "Stone v3 syntheticness critic" in system_text:
+            anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
+            return _mock_result(
+                json.dumps(
+                    {
+                        "pass": True,
+                        "score": 0.93,
+                        "verdict": "approve",
+                        "anchor_ids": anchor_ids[:3],
+                        "matched_signals": ["not checklist prose"],
+                        "must_keep_spans": [],
+                        "line_edits": [],
+                        "redraft_reason": "",
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if any(
+            marker in system_text
+            for marker in (
+                "Stone v3 drafter",
+                "Stone v3 redrafter",
+                "Stone v3 line editor",
+            )
+        ):
+            target = _extract_target_word_count(user_text)
+            return _mock_result(_build_mock_article("KFC", target))
+
+        raise AssertionError(f"Unhandled Stone v3 prompt: {system_text}")
+
+    def fake_tool_round(self, messages, tools, **kwargs):
+        del self, kwargs
+        tool_names = {
+            str((tool.get("function") or {}).get("name") or "")
+            for tool in (tools or [])
+            if isinstance(tool, dict)
+        }
+        if "get_corpus_overview" in tool_names:
+            facet_label = "当前维度"
+            system_text = str(messages[0].get("content") or "") if messages else ""
+            for candidate in (
+                "声音指纹",
+                "词汇私方言",
+                "结构与构图",
+                "意象与母题",
+                "立场与价值",
+                "情绪弧线",
+                "临床与心理动力",
+                "创作约束",
+            ):
+                if candidate in system_text:
+                    facet_label = candidate
+                    break
+            payload = {
+                "summary": f"围绕{facet_label}，现有已预处理文章已经能支撑稳定归纳。",
+                "bullets": [
+                    f"{facet_label}主要通过具体场景和重复母题显影。",
+                    f"{facet_label}更依赖可见细节，而不是直接解释。",
+                ],
+                "confidence": 0.84,
+                "fewshots": [],
+                "conflicts": [],
+                "notes": "",
+            }
+            return ToolRoundResult(
+                content=json.dumps(payload, ensure_ascii=False),
+                model="demo-model",
+                usage={"prompt_tokens": 40, "completion_tokens": 20, "total_tokens": 60},
+                tool_calls=[],
+                provider_response_id="stone-tool-round-mock",
+            )
+        raise AssertionError(f"Unhandled Stone tool round: {tool_names}")
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
+    monkeypatch.setattr(OpenAICompatibleClient, "tool_round", fake_tool_round)
+
+
+def _create_v3_preprocessed_project(client, app, monkeypatch, *, name: str) -> tuple[str, dict]:
+    create_response = client.post("/api/projects", json={"name": name, "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    upload_response = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "I still walk into KFC at night. The door is bright, the paper bag is warm, and the road home makes every bite feel slightly expensive.",
+            "source_type": "essay",
+        },
+    )
+    assert upload_response.status_code == 200
+    document_id = upload_response.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    _ensure_service_config(app, "chat_service")
+    _install_stone_v3_mocks(monkeypatch)
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_response.json()["id"])
+    assert preprocess_payload["status"] == "completed"
+    return project_id, preprocess_payload
+
+
+def _seed_legacy_v2_fallback(app) -> str:
+    raw_text = "KFC at night is cheap comfort that always leaves a little shame on the walk home."
+    profile_v2 = {
+        "length_band": "short",
+        "content_kernel": "Night comfort with cost residue.",
+        "surface_form": "scene_vignette",
+        "motif_tags": ["night", "door", "road"],
+        "prototype_family": "scene_vignette|night_cost",
+        "anchor_spans": {
+            "opening": raw_text,
+            "pivot": "",
+            "closing": raw_text,
+            "signature": [raw_text],
+        },
+    }
+
+    with app.state.db.session() as session:
+        project = repository.create_project(session, name="Legacy V2", mode="stone")
+        project_id = project.id
+        storage_path = app.state.config.upload_dir / project_id / "legacy-v2.txt"
+        storage_path.parent.mkdir(parents=True, exist_ok=True)
+        storage_path.write_text(raw_text, encoding="utf-8")
+        repository.create_document(
+            session,
+            id=str(uuid4()),
+            project_id=project_id,
+            filename="legacy-v2.txt",
+            mime_type="text/plain",
+            extension=".txt",
+            source_type="essay",
+            title="Legacy V2",
+            author_guess="Author",
+            created_at_guess=None,
+            raw_text=raw_text,
+            clean_text=raw_text,
+            language="en",
+            metadata_json={"stone_profile_v2": profile_v2},
+            ingest_status="ready",
+            error_message=None,
+            storage_path=str(storage_path),
+        )
+        preprocess_run = repository.create_stone_preprocess_run(
+            session,
+            project_id=project_id,
+            status="completed",
+            summary_json={"stone_profile_total": 1, "stone_profile_completed": 1},
+        )
+        preprocess_run.started_at = utcnow()
+        preprocess_run.finished_at = preprocess_run.started_at
+        repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=preprocess_run.id,
+            asset_kind="stone_author_model_v2",
+            markdown_text="# Stone Author Model V2",
+            json_payload={"asset_kind": "stone_author_model_v2", "legacy_seed": True},
+            prompt_text=json.dumps({"asset_kind": "stone_author_model_v2", "legacy_seed": True}, ensure_ascii=False, indent=2),
+            notes="seed",
+        )
+        repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=preprocess_run.id,
+            asset_kind="stone_prototype_index_v2",
+            markdown_text="# Stone Prototype Index V2",
+            json_payload={"asset_kind": "stone_prototype_index_v2", "legacy_seed": True},
+            prompt_text=json.dumps({"asset_kind": "stone_prototype_index_v2", "legacy_seed": True}, ensure_ascii=False, indent=2),
+            notes="seed",
+        )
+    return project_id
+
+def test_stone_preprocess_generates_v3_profiles_and_baseline(client, app, monkeypatch):
+    project_id, preprocess_payload = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Preprocess")
+
+    assert preprocess_payload["profile_version"] == "v3"
+    assert preprocess_payload["baseline_version"] == "v3"
+    assert preprocess_payload["baseline_review_v3"]["verdict"] == "approve"
+    stages = [item["stage"] for item in preprocess_payload["stage_trace"]]
+    assert "document_profile_v3" in stages
+    assert "family_induction_v3_finalize" in stages
+    assert "author_model_v3" in stages
+    assert "prototype_index_v3_finalize" in stages
+    assert "baseline_critic_v3" in stages
+
+    with app.state.db.session() as session:
+        documents = repository.list_project_documents(session, project_id)
+        assert isinstance(documents[0].metadata_json.get("stone_profile_v3"), dict)
+        assert repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v3") is not None
+        assert repository.get_latest_asset_draft(session, project_id, asset_kind="stone_prototype_index_v3") is not None
+
+
+def test_stone_preprocess_defaults_to_analysis_concurrency(client, app, monkeypatch):
+    project_id, preprocess_payload = _create_v3_preprocessed_project(
+        client,
+        app,
+        monkeypatch,
+        name="Stone V3 Default Concurrency",
+    )
+
+    assert preprocess_payload["concurrency"] == DEFAULT_ANALYSIS_CONCURRENCY
+
+    with app.state.db.session() as session:
+        run = repository.get_stone_preprocess_run(session, preprocess_payload["id"])
+        assert run is not None
+        assert dict(run.summary_json or {}).get("concurrency") == DEFAULT_ANALYSIS_CONCURRENCY
+
+
+def test_long_document_profiles_are_chunked_under_budget(app, monkeypatch):
+    _ensure_service_config(app, "chat_service")
+    _install_stone_v3_mocks(monkeypatch)
+
+    with app.state.db.session() as session:
+        chat_config = repository.get_service_config(session, "chat_service")
+
+    worker = app.state.stone_preprocess_worker
+    document = StoneDocumentSnapshot(
+        id=str(uuid4()),
+        title="Long Night Essay",
+        filename="long-night.txt",
+        source_type="essay",
+        created_at_guess=None,
+        clean_text="夜里走进肯德基。" * 70000,
+        raw_text=None,
+        metadata_json={},
+    )
+
+    result = worker._build_stone_profile_payload(
+        document,
+        project_name="Long Stone",
+        chat_config=chat_config,
+    )
+
+    profile = result.profile
+    source_meta = dict((profile.get("evidence_trace") or {}).get("source_meta") or {})
+    assert source_meta.get("chunked_profile") is True
+    assert int(source_meta.get("chunk_total") or 0) > 1
+
+
+def test_writing_postprocessing_does_not_trim_model_output():
+    text = (
+        "第一段写得很长，已经足够超过目标字数，而且后面还有真正的收口。\n\n"
+        "第二段继续铺陈细节，不应该因为目标字数被硬砍掉。\n\n"
+        "第三段才是真正的结尾，必须原样保留。"
+    )
+
+    assert _light_trim_to_word_count(text, 100) == text
+    assert _fit_word_count(text, 100, None, "主题", None) == text
+
+
+def test_manual_asset_generation_supports_stone_v3_kinds(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Assets")
+
+    response = client.post(
+        f"/api/projects/{project_id}/assets/generate",
+        json={"asset_kind": "stone_author_model_v3"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["asset_kind"] == "stone_author_model_v3"
+    assert payload["json_payload"]["asset_kind"] == "stone_author_model_v3"
+    assert payload["json_payload"]["version"] == "v3"
+    assert "Stone Author Model V3" in payload["markdown_text"]
+
+
+def test_stream_asset_generation_supports_stone_v3_kinds(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Asset Stream")
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/assets/generate/stream",
+        method="POST",
+        json_payload={"asset_kind": "stone_author_model_v3"},
+    )
+    done_events = [payload for name, payload in events if name == "done"]
+    assert done_events
+    draft = done_events[-1]["draft"]
+
+    assert draft["asset_kind"] == "stone_author_model_v3"
+    assert draft["json_payload"]["asset_kind"] == "stone_author_model_v3"
+    assert draft["json_payload"]["version"] == "v3"
+    assert "Stone Author Model V3" in draft["markdown_text"]
+
+    status_phases = [payload.get("phase") for name, payload in events if name == "status"]
+    assert "family_induction_v3" in status_phases
+    assert "author_model_v3" in status_phases
+    assert "prototype_index_v3" in status_phases
+    assert "baseline_critic_v3" in status_phases
+
+
+def test_stream_asset_generation_accepts_failed_preprocess_run_when_v3_profiles_exist(client, app, monkeypatch):
+    project_id, preprocess_payload = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Failed Run Asset Stream")
+
+    with app.state.db.session() as session:
+        run = repository.get_stone_preprocess_run(session, preprocess_payload["id"])
+        run.status = "failed"
+        run.error_message = "legacy failed status with usable profiles"
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/assets/generate/stream",
+        method="POST",
+        json_payload={"asset_kind": "stone_prototype_index_v3"},
+    )
+    done_events = [payload for name, payload in events if name == "done"]
+    error_events = [payload for name, payload in events if name == "error"]
+
+    assert not error_events
+    assert done_events
+    draft = done_events[-1]["draft"]
+    assert draft["asset_kind"] == "stone_prototype_index_v3"
+    assert draft["json_payload"]["asset_kind"] == "stone_prototype_index_v3"
+    assert draft["json_payload"]["version"] == "v3"
+
+
+def test_stream_asset_generation_times_out_after_inactivity(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Timeout")
+
+    monkeypatch.setattr(web_routes, "ASSET_STREAM_INACTIVITY_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(web_routes, "ASSET_STREAM_QUEUE_POLL_SECONDS", 0.01)
+
+    def fake_generate_asset_draft(
+        request,
+        session,
+        project_id,
+        *,
+        asset_kind,
+        progress_callback=None,
+        cancel_requested=None,
+    ):
+        del request, session, project_id, asset_kind, progress_callback
+        deadline = time.time() + 0.2
+        while time.time() < deadline:
+            if cancel_requested and cancel_requested():
+                raise TimeoutError("cancelled after inactivity")
+            time.sleep(0.01)
+        raise AssertionError("stream timeout did not trigger")
+
+    monkeypatch.setattr(web_routes, "_generate_asset_draft", fake_generate_asset_draft)
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/assets/generate/stream",
+        method="POST",
+        json_payload={"asset_kind": "stone_author_model_v3"},
+    )
+
+    error_events = [payload for name, payload in events if name == "error"]
+    assert error_events
+    assert "timed out" in str(error_events[-1]["message"]).lower()
+
+
+def test_stream_asset_generation_resumes_from_checkpoint_after_critic_failure(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Resume")
+    checkpoint_path = stone_v3_checkpoint_path(app.state.config.assets_dir, project_id)
+
+    _install_stone_v3_mocks(monkeypatch)
+    original = OpenAICompatibleClient.chat_completion_result
+    critic_failures = {"remaining": 3}
+
+    def flaky_chat_completion_result(self, messages, **kwargs):
+        system_text = str(messages[0].get("content") or "") if messages else ""
+        if "Stone v3 baseline critic" in system_text and critic_failures["remaining"] > 0:
+            critic_failures["remaining"] -= 1
+            raise RuntimeError("forced critic failure")
+        return original(self, messages, **kwargs)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", flaky_chat_completion_result)
+
+    failed_events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/assets/generate/stream",
+        method="POST",
+        json_payload={"asset_kind": "stone_author_model_v3"},
+    )
+    assert [payload for name, payload in failed_events if name == "error"]
+    assert checkpoint_path.exists()
+    checkpoint_payload = load_stone_v3_checkpoint(app.state.config.assets_dir, project_id)
+    assert checkpoint_payload.get("prototype_index")
+
+    resumed_events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/assets/generate/stream",
+        method="POST",
+        json_payload={"asset_kind": "stone_author_model_v3"},
+    )
+
+    assert not [payload for name, payload in resumed_events if name == "error"]
+    assert [payload for name, payload in resumed_events if name == "done"]
+    assert "resume_checkpoint_v3" in [payload.get("phase") for name, payload in resumed_events if name == "status"]
+    assert not checkpoint_path.exists()
+
+
+def test_stone_writing_status_flags_legacy_v2_data_as_requires_rebuild(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Status")
+    legacy_project_id = _seed_legacy_v2_fallback(app)
+
+    with app.state.db.session() as session:
+        v3_status = _resolve_stone_writing_status(session, project_id)
+        legacy_status = _resolve_stone_writing_status(session, legacy_project_id)
+
+    assert v3_status["status"] == "ready"
+    assert v3_status["profile_version"] == "v3"
+    assert v3_status["baseline_version"] == "v3"
+    assert v3_status["author_model_v3_ready"] is True
+    assert v3_status["prototype_index_v3_ready"] is True
+    assert "legacy_fallback_active" not in v3_status
+
+    assert legacy_status["status"] == "requires_rebuild"
+    assert legacy_status["profile_version"] is None
+    assert legacy_status["baseline_version"] is None
+    assert legacy_status["rebuild_required"] is True
+
+
+def test_invalid_latest_v3_drafts_do_not_block_writing(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Ignore Invalid Drafts")
+
+    with app.state.db.session() as session:
+        repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_author_model_v3",
+            markdown_text="# Broken",
+            json_payload={"asset_kind": "stone_author_model_v3"},
+            prompt_text="broken",
+            notes="invalid newer draft",
+        )
+        repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=None,
+            asset_kind="stone_prototype_index_v3",
+            markdown_text="# Broken",
+            json_payload={"asset_kind": "stone_prototype_index_v3"},
+            prompt_text="broken",
+            notes="invalid newer draft",
+        )
+        status = _resolve_stone_writing_status(session, project_id)
+
+    assert status["status"] == "ready"
+    assert status["author_model_v3_ready"] is True
+    assert status["prototype_index_v3_ready"] is True
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Recovery"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+
+def test_writing_uses_valid_v3_baseline_even_if_latest_preprocess_run_failed(client, app, monkeypatch):
+    project_id, preprocess_payload = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Failed Run Writing")
+
+    with app.state.db.session() as session:
+        run = repository.get_stone_preprocess_run(session, preprocess_payload["id"])
+        run.status = "failed"
+        run.error_message = "legacy failed status with usable profiles"
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Failed Run"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+
+def test_writing_service_uses_v3_pipeline_by_default(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Writing")
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Session"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+    stage_names = [payload.get("stage") for name, payload in events if name == "stage"]
+
+    assert "request_adapter_v3" in stage_names
+    assert "candidate_shortlist_v3" in stage_names
+    assert "llm_rerank_v3" in stage_names
+    assert "style_packet_v3" in stage_names
+    assert "blueprint_v3" in stage_names
+    assert "draft_v3" in stage_names
+    assert "formal_fidelity" in stage_names
+    assert "worldview_translation" in stage_names
+    assert "syntheticness" in stage_names
+    assert "sample_routing" not in stage_names
+    assert "local_decomposition" not in stage_names
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    latest_turn = assistant_turns[-1]
+    trace = latest_turn["trace"]
+
+    assert trace["baseline_source"] == "stone_v3_baseline"
+    assert trace["generation_packet"]["baseline"]["stone_v3"] is True
+    assert trace["generation_packet"]["baseline"]["author_model_v3_ready"] is True
+    assert trace["generation_packet"]["baseline"]["prototype_index_v3_ready"] is True
+    assert "request_adapter_v3" in trace
+    assert "candidate_shortlist_v3" in trace
+    assert "llm_rerank_v3" in trace
+    assert "style_packet_v3" in trace
+    assert "blueprint_v3" in trace
+    assert "local_router" not in trace
+
+
+def test_v3_writing_tolerates_string_translation_rules_in_author_model(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 String Rules")
+
+    with app.state.db.session() as session:
+        draft = repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v3")
+        assert draft is not None
+        payload = dict(draft.json_payload or {})
+        payload["translation_rules"] = [
+            "Interpret analogies as core arguments.",
+            "Distance cues should guide stance selection.",
+            "Surface form should follow rhetorical pressure.",
+        ]
+        draft.json_payload = payload
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 String Rules"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+
+    assert not [payload for name, payload in events if name == "error"]
+    stage_names = [payload.get("stage") for name, payload in events if name == "stage"]
+    assert "request_adapter_v3" in stage_names
+    assert "draft_v3" in stage_names
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    trace = assistant_turns[-1]["trace"]
+    assert trace["request_adapter_v3"]["value_lens"] == "cost"
+
+
+def test_partial_preprocess_still_allows_author_analysis(client, app, monkeypatch):
+    create_response = client.post("/api/projects", json={"name": "Stone V3 Partial", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    contents = [
+        "Night food and a bright door keep turning cheap comfort into visible cost.",
+        "The road home makes every bite feel slightly expensive, but I still go back.",
+        "FAILME this document should fail profiling while the others still complete.",
+    ]
+    for index, content in enumerate(contents, start=1):
+        upload_response = client.post(
+            f"/api/projects/{project_id}/documents/text",
+            json={"content": content, "source_type": "essay"},
+        )
+        assert upload_response.status_code == 200
+        _wait_for_ready(client, project_id, upload_response.json()["id"])
+
+    _ensure_service_config(app, "chat_service")
+    _install_stone_v3_mocks(monkeypatch, fail_profile_on_text="FAILME")
+    preprocess_response = client.post(f"/api/projects/{project_id}/preprocess/runs")
+    assert preprocess_response.status_code == 200
+    preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_response.json()["id"])
+
+    assert preprocess_payload["status"] == "partial_failed"
+    assert preprocess_payload["stone_profile_completed"] == 2
+    assert preprocess_payload["stone_profile_total"] == 3
+
+    analysis_response = client.post(
+        f"/api/projects/{project_id}/analyze",
+        json={"analysis_context": "stone corpus", "target_role": "Author"},
+    )
+    assert analysis_response.status_code == 200
+    run_id = analysis_response.json()["id"]
+    analysis_payload = _wait_for_analysis(client, project_id, run_id)
+    assert analysis_payload["status"] == "completed"
+
+
+def test_stale_stone_preprocess_run_recovers_from_running_state(client, app):
+    create_response = client.post("/api/projects", json={"name": "Stone V3 Stale", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    upload_response = client.post(
+        f"/api/projects/{project_id}/documents/text",
+        json={
+            "content": "A bright door, a night road, and the cost of cheap comfort.",
+            "source_type": "essay",
+        },
+    )
+    assert upload_response.status_code == 200
+    document_id = upload_response.json()["id"]
+    _wait_for_ready(client, project_id, document_id)
+
+    with app.state.db.session() as session:
+        document = repository.get_document(session, document_id)
+        metadata = dict(document.metadata_json or {})
+        metadata["stone_profile_v3"] = {
+            "document_core": {
+                "summary": "Night food and cost residue.",
+                "length_band": "short",
+                "surface_form": "scene_vignette",
+                "dominant_theme": "cost residue",
+            },
+            "voice_contract": {
+                "person": "first",
+                "address_target": "self",
+                "distance": "回收",
+                "self_position": "自损",
+                "cadence": "restrained",
+                "sentence_shape": "mixed",
+                "tone_words": ["restrained", "residual"],
+            },
+            "structure_moves": {
+                "opening_move": "Open from a concrete action.",
+                "development_move": "Let pressure rise through visible detail.",
+                "turning_move": "none",
+                "closure_move": "Leave residue instead of summary.",
+                "paragraph_strategy": "2-4 paragraphs",
+            },
+            "motif_and_scene_bank": {
+                "motif_tags": ["night", "door", "road"],
+                "scene_terms": ["counter", "walk home"],
+                "sensory_terms": ["bright", "warm"],
+                "lexicon_markers": ["night", "door", "road"],
+            },
+            "value_and_judgment": {
+                "judgment_target": "cheap comfort",
+                "judgment_mode": "stabilize through repetition",
+                "value_lens": "cost",
+                "felt_cost": "the wallet and body pay a little",
+            },
+            "prototype_affordances": {
+                "prototype_family": "scene_vignette|night_cost",
+                "cluster_hint": "night cost",
+                "suitable_for": ["night ritual"],
+                "anti_drift_focus": ["Do not explain the process."],
+            },
+            "anchor_windows": {
+                "opening": "A bright door, a night road, and the cost of cheap comfort.",
+                "pivot": "",
+                "closing": "A bright door, a night road, and the cost of cheap comfort.",
+                "signature_lines": ["A bright door, a night road, and the cost of cheap comfort."],
+            },
+            "retrieval_handles": {
+                "keywords": ["night", "door", "road"],
+                "routing_text": "night cost residue",
+            },
+            "anti_patterns": ["Do not explain the process."],
+        }
+        document.metadata_json = metadata
+        run = repository.create_stone_preprocess_run(
+            session,
+            project_id=project_id,
+            status="running",
+            summary_json={
+                "stone_profile_total": 1,
+                "stone_profile_completed": 1,
+                "concurrency": 1,
+                "current_stage": "family_induction_v3",
+            },
+        )
+        run.started_at = utcnow()
+        run.current_stage = "family_induction_v3"
+        run.progress_percent = 100
+        stale_run_id = run.id
+
+    payload = client.get(f"/api/projects/{project_id}/preprocess/runs/{stale_run_id}").json()
+    assert payload["status"] == "partial_failed"
+    assert payload["analysis_ready"] is True

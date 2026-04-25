@@ -287,7 +287,7 @@ if (bootstrap?.project_id) {
     }
 
     function renderDocumentCard(doc) {
-        const profile = doc.stone_profile_v2 || {};
+        const profile = doc.stone_profile_v3 || {};
         const voiceMask = profile.voice_mask || {};
         const stance = profile.stance_vector || {};
         const status = String(doc.lamp_status || deriveLampStatus(doc));
@@ -345,7 +345,7 @@ if (bootstrap?.project_id) {
         if (!elements.hovercardBody || !elements.hovercardTitle || !elements.hovercardStatus) {
             return;
         }
-        const profile = doc.stone_profile_v2 || null;
+        const profile = doc.stone_profile_v3 || null;
         elements.hovercardTitle.textContent = doc.title || doc.filename || "文章画像";
         setStatusTone(elements.hovercardStatus, doc.lamp_status || deriveLampStatus(doc), buildStatusLabel(doc.lamp_status || deriveLampStatus(doc)));
 
@@ -488,14 +488,14 @@ if (bootstrap?.project_id) {
     }
 
     function deriveLampStatus(doc) {
-        if (doc.has_profile || doc.stone_profile_v2) {
+        if (doc.has_profile || doc.stone_profile_v3) {
             return "completed";
         }
         return "queued";
     }
 
     function buildDocumentPreview(doc) {
-        const profile = doc.stone_profile_v2 || {};
+        const profile = doc.stone_profile_v3 || {};
         const anchors = profile.anchor_spans || {};
         return (
             doc.profile_preview
@@ -509,13 +509,13 @@ if (bootstrap?.project_id) {
     function buildDocumentFallback(doc) {
         const status = String(doc.lamp_status || deriveLampStatus(doc));
         if (status === "running") {
-            return "正在提取这篇文章的 Stone v2 画像...";
+            return "正在提取这篇文章的 Stone v3 画像...";
         }
         if (status === "failed") {
             return "当前未完成，可重新运行预分析。";
         }
         if (status === "completed") {
-            return "Stone v2 画像已生成，悬浮即可查看。";
+            return "Stone v3 画像已生成，悬浮即可查看。";
         }
         return "等待进入处理队列。";
     }
@@ -523,16 +523,16 @@ if (bootstrap?.project_id) {
     function buildLiveNote(bundle, documents) {
         const status = String(bundle?.status || "idle");
         if (status === "running" || status === "queued") {
-            return "系统正在逐篇生成 Stone v2 画像，完成后会立即同步到卡片，并支持悬浮预览。";
+            return "系统正在逐篇生成 Stone v3 画像，完成后会立即同步到卡片，并支持悬浮预览。";
         }
         if (status === "completed") {
-            return `本轮预分析已完成，共生成 ${countCompletedDocuments(documents)} 篇 Stone v2 画像；现在可以悬浮查看每篇文章的结果。`;
+            return `本轮预处理已完成，共生成 ${countCompletedDocuments(documents)} 篇 Stone v3 画像；现在可以悬浮查看每篇文章的结果。`;
         }
         if (status === "failed") {
             return bundle?.error_message || "本轮预分析执行失败，可以修复后重新运行。";
         }
         return documents.length
-            ? "运行后会为每篇文章生成 Stone v2 画像，并把结果写回文档元数据。"
+            ? "运行后会为每篇文章生成 Stone v3 画像，并把结果写回文档元数据。"
             : "先上传文章，然后再启动逐篇预分析。";
     }
 
@@ -557,7 +557,7 @@ if (bootstrap?.project_id) {
     }
 
     function countCompletedDocuments(documents) {
-        return documents.filter((item) => item?.has_profile || item?.stone_profile_v2).length;
+        return documents.filter((item) => item?.has_profile || item?.stone_profile_v3).length;
     }
 
     function buildStatusLabel(status) {
@@ -605,4 +605,57 @@ if (bootstrap?.project_id) {
     function escapeWithBreaks(value) {
         return escapeHtml(String(value || "")).replaceAll("\n", "<br>");
     }
+
+    buildLiveNote = function buildLiveNoteV3(bundle, documents) {
+        const status = String(bundle?.status || "idle");
+        if (status === "running" || status === "queued") {
+            return "系统正在逐篇生成 Stone v3 画像，完成后会立即同步到卡片，并支持悬浮预览。";
+        }
+        if (status === "completed") {
+            return `本轮预处理已完成，共生成 ${countCompletedDocuments(documents)} 篇 Stone v3 画像；现在可以悬浮查看每篇文章的结果。`;
+        }
+        if (status === "partial_failed") {
+            return bundle?.error_message || `预处理已以可用状态结束，已有 ${countCompletedDocuments(documents)} 篇文章生成 Stone v3 画像，可以继续进行作者分析。`;
+        }
+        if (status === "failed") {
+            return bundle?.error_message || "本轮预处理执行失败，可以修复后重新运行。";
+        }
+        return documents.length
+            ? "运行后会为每篇文章生成 Stone v3 画像，并把结果写回文档元数据。"
+            : "先上传文章，然后再启动逐篇预分析。";
+    };
+
+    buildBoardNote = function buildBoardNoteV3(completed, total, documentCount, status) {
+        if (!documentCount) {
+            return "等待文章进入工作区";
+        }
+        if (status === "failed") {
+            return `已完成 ${completed}/${Math.max(total, documentCount)}，本轮中途失败`;
+        }
+        if (status === "partial_failed") {
+            return `已处理文章 ${completed}/${Math.max(total, documentCount)}，已达到可分析阈值。`;
+        }
+        return `已处理文章 ${completed}/${Math.max(total, documentCount)}`;
+    };
+
+    buildStatusLabel = function buildStatusLabelV3(status) {
+        switch (String(status || "").toLowerCase()) {
+            case "queued":
+                return "已排队";
+            case "running":
+                return "进行中";
+            case "completed":
+                return "已完成";
+            case "partial_failed":
+                return "部分完成";
+            case "failed":
+                return "失败";
+            default:
+                return "等待中";
+        }
+    };
+
+    isRunning = function isRunningStoneV3(status) {
+        return status === "queued" || status === "running";
+    };
 }

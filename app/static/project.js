@@ -296,7 +296,7 @@ if (bootstrap.project?.id) {
         const current = state.documents.find((item) => item.id === documentItem.id) || documentItem;
         elements.modalTitle.textContent = current.title || current.filename || state.ui.modal_document_title || "文档详情";
         const userNote = current.metadata_json?.user_note || "";
-        const stoneProfile = current.metadata_json?.stone_profile_v2 || null;
+        const stoneProfile = current.metadata_json?.stone_profile_v3 || null;
 
         elements.modalBody.innerHTML = `
             <label>
@@ -549,7 +549,7 @@ if (bootstrap.project?.id) {
 
         return `
             <div class="empty-panel">
-                <strong>Stone v2 文章画像</strong>
+                <strong>Stone v3 文章画像</strong>
                 ${tagRows.length ? `<p>${escapeHtml(tagRows.join(" · "))}</p>` : ""}
                 <p>语义核：${escapeHtml(profile?.content_kernel || "--")}</p>
                 <p>起笔动作：${escapeHtml(profile?.opening_move || "--")}</p>

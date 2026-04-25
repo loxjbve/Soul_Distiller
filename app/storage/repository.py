@@ -737,7 +737,15 @@ def get_latest_stone_preprocess_run(
 
 
 def get_latest_successful_stone_preprocess_run(session: Session, project_id: str) -> StonePreprocessRun | None:
-    return get_latest_stone_preprocess_run(session, project_id, status="completed")
+    stmt = (
+        select(StonePreprocessRun)
+        .where(
+            StonePreprocessRun.project_id == project_id,
+            StonePreprocessRun.status.in_(("completed", "partial_failed")),
+        )
+        .order_by(desc(StonePreprocessRun.created_at))
+    )
+    return session.scalars(stmt).first()
 
 
 def get_active_stone_preprocess_run(session: Session, project_id: str) -> StonePreprocessRun | None:
@@ -1562,6 +1570,15 @@ def get_latest_asset_draft(session: Session, project_id: str, *, asset_kind: str
         .order_by(desc(SkillDraft.created_at))
     )
     return session.scalars(stmt).first()
+
+
+def list_asset_drafts(session: Session, project_id: str, *, asset_kind: str) -> list[SkillDraft]:
+    stmt = (
+        select(SkillDraft)
+        .where(SkillDraft.project_id == project_id, SkillDraft.asset_kind == asset_kind)
+        .order_by(desc(SkillDraft.created_at))
+    )
+    return list(session.scalars(stmt))
 
 
 def get_latest_skill_draft(session: Session, project_id: str) -> SkillDraft | None:

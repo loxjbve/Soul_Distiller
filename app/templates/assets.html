@@ -37,7 +37,7 @@
         } | tojson | safe }}
     </script>
 
-    <section class="page-content {% if asset_kind in ['stone_author_model_v2', 'stone_prototype_index_v2'] %}page-content--stone-assets{% endif %}">
+    <section class="page-content {% if asset_kind in ['stone_author_model_v3', 'stone_prototype_index_v3'] %}page-content--stone-assets{% endif %}">
         <article class="panel-shell assets-card--generate">
             <div class="panel-header">
                 <div>
@@ -69,8 +69,16 @@
                     <div class="asset-stream-summary">
                         <span class="asset-stream-summary__item"><strong id="asset-generation-state">{{ ui.status_idle }}</strong></span>
                         <span class="asset-stream-summary__item" id="asset-generation-message">{{ ui.stream_hint }}</span>
+                        <span class="asset-stream-summary__item"><strong id="asset-event-count">0</strong> events</span>
                         <span class="asset-stream-summary__item"><strong id="asset-chunk-count">0</strong> chunks</span>
                         <span class="asset-stream-summary__item"><strong id="asset-char-count">0</strong> chars</span>
+                    </div>
+                    <div class="asset-stream-log-shell">
+                        <div class="asset-stream-log-shell__head">
+                            <strong>Stream Log</strong>
+                            <span class="helper-text">Stage progress, batch updates, and timeout traces appear here.</span>
+                        </div>
+                        <div id="asset-stream-log" class="asset-stream-log"></div>
                     </div>
                 </div>
             </div>
@@ -92,7 +100,7 @@
                     <input type="hidden" name="asset_kind" value="{{ asset_kind }}">
                     <input type="hidden" name="markdown_text" id="asset-markdown-text" value="{{ draft.markdown_text if draft else '' }}">
 
-                    {% if asset_kind not in ['stone_author_model_v2', 'stone_prototype_index_v2'] %}
+                    {% if asset_kind not in ['stone_author_model_v3', 'stone_prototype_index_v3'] %}
                         <section class="asset-draft-monitor">
                             <div class="asset-draft-monitor__head" style="align-items: center; justify-content: flex-start; gap: 12px; margin-bottom: 6px;">
                                 <h3 style="margin: 0; font-size: 0.9rem; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-secondary);">输出跟踪</h3>
@@ -150,7 +158,7 @@
                                     </section>
                                 </div>
                             </div>
-                        {% elif asset_kind in ["stone_author_model_v2", "stone_prototype_index_v2"] %}
+                        {% elif asset_kind in ["stone_author_model_v3", "stone_prototype_index_v3"] %}
                             <div class="stone-asset-workbench">
                                 <section class="stone-asset-preview-shell">
                                     <div class="stone-asset-preview-shell__head">
@@ -159,7 +167,7 @@
                                             <h3>{{ asset_label }}</h3>
                                         </div>
                                         <p class="helper-text">
-                                            {% if asset_kind == "stone_author_model_v2" %}
+                                            {% if asset_kind in ["stone_author_model_v3"] %}
                                                 跨文档总结作者稳定写法，只保留必要的证据窗口，不展开检索目录。
                                             {% else %}
                                                 面向检索与原型回搬的目录资产，保留文档窗口、族群和召回词，不重复作者总论。

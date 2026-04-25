@@ -4,7 +4,7 @@ import pytest
 
 from app.analysis.engine import FACET_EVIDENCE_LIMIT, _normalize_facet_payload
 from app.analysis.facets import FACETS
-from app.analysis.prompts import build_facet_analysis_messages
+from app.agents.analysis.prompts import build_facet_analysis_messages
 from app.llm.client import OpenAICompatibleClient
 from app.schemas import ServiceConfig
 

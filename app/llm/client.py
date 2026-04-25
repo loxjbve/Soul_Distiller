@@ -145,6 +145,7 @@ class OpenAICompatibleClient:
         response_format: dict[str, Any] | None = None,
         max_tokens: int | None = 1400,
         stream_handler: Callable[[str], None] | None = None,
+        timeout: float | None = None,
     ) -> ChatCompletionResult:
         return self._run_with_fallbacks(
             lambda client, config: client._chat_completion_result_once(
@@ -159,6 +160,7 @@ class OpenAICompatibleClient:
                 response_format=response_format,
                 max_tokens=max_tokens,
                 stream_handler=stream_handler,
+                timeout=timeout,
             )
         )
 
@@ -171,7 +173,9 @@ class OpenAICompatibleClient:
         response_format: dict[str, Any] | None,
         max_tokens: int | None,
         stream_handler: Callable[[str], None] | None,
+        timeout: float | None,
     ) -> ChatCompletionResult:
+        resolved_timeout = float(timeout or 90.0)
         if normalize_api_mode(self.config.api_mode) == "responses":
             payload: dict[str, Any] = {
                 "model": resolved_model,
@@ -187,7 +191,7 @@ class OpenAICompatibleClient:
                 meta = self._post_stream_text_with_meta(
                     "/responses",
                     stream_payload,
-                    timeout=180.0,
+                    timeout=max(180.0, resolved_timeout),
                     stream_handler=stream_handler,
                     event_parser=self._parse_responses_stream_event,
                 )
@@ -202,7 +206,7 @@ class OpenAICompatibleClient:
                     raw_response_text=meta["response_text"],
                     response_id=meta.get("response_id"),
                 )
-            data, meta = self._post_json_with_meta("/responses", payload)
+            data, meta = self._post_json_with_meta("/responses", payload, timeout=resolved_timeout)
             content = self._extract_responses_text(data)
         else:
             payload = {
@@ -219,7 +223,7 @@ class OpenAICompatibleClient:
                 meta = self._post_stream_text_with_meta(
                     "/chat/completions",
                     stream_payload,
-                    timeout=180.0,
+                    timeout=max(180.0, resolved_timeout),
                     stream_handler=stream_handler,
                     event_parser=self._parse_chat_completions_stream_event,
                 )
@@ -234,7 +238,7 @@ class OpenAICompatibleClient:
                     raw_response_text=meta["response_text"],
                     response_id=meta.get("response_id"),
                 )
-            data, meta = self._post_json_with_meta("/chat/completions", payload)
+            data, meta = self._post_json_with_meta("/chat/completions", payload, timeout=resolved_timeout)
             try:
                 content = str(data["choices"][0]["message"]["content"] or "")
             except (KeyError, IndexError, TypeError) as exc:

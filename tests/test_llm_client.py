@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 
-from app.analysis.engine import _analyze_with_llm
+from app.agents.analysis.facet_llm import analyze_facet_with_llm
 from app.analysis.facets import FACETS
+from app.analysis.engine import _normalize_facet_payload
 from app.llm.client import OpenAICompatibleClient
 from app.preprocess.tools import build_tool_schemas
 from app.schemas import ChatCompletionResult, ServiceConfig
@@ -272,18 +273,20 @@ def test_analyze_with_llm_disables_token_limit(monkeypatch):
 
     monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", fake_chat_completion_result)
 
-    payload = _analyze_with_llm(
+    chunks = [
+        {
+            "chunk_id": "chunk-1",
+            "document_title": "memo",
+            "filename": "memo.txt",
+            "content": "Alpha alpha alpha",
+            "page_number": None,
+        }
+    ]
+
+    payload = analyze_facet_with_llm(
         FACETS[0],
         "Demo",
-        [
-            {
-                "chunk_id": "chunk-1",
-                "document_title": "memo",
-                "filename": "memo.txt",
-                "content": "Alpha alpha alpha",
-                "page_number": None,
-            }
-        ],
+        chunks,
         {
             "base_url": "https://example.com/v1",
             "api_key": "sk-test",
@@ -294,6 +297,8 @@ def test_analyze_with_llm_disables_token_limit(monkeypatch):
         llm_log_path=None,
         target_role="Demo",
         analysis_context="Check token limit behavior.",
+        normalize_payload=lambda payload: _normalize_facet_payload(payload, chunks, FACETS[0]),
+        raw_text_limit=20_000,
     )
 
     assert payload["summary"] == "ok"
@@ -312,8 +317,9 @@ def test_chat_completion_result_falls_back_to_secondary_service_config(monkeypat
         response_format=None,
         max_tokens=None,
         stream_handler=None,
+        timeout=None,
     ):
-        del messages, temperature, response_format, max_tokens, stream_handler
+        del messages, temperature, response_format, max_tokens, stream_handler, timeout
         calls.append((self.config.base_url, resolved_model))
         if self.config.base_url == "https://primary.example/v1":
             raise RuntimeError("primary unavailable")

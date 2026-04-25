@@ -15,7 +15,10 @@ if (bootstrap?.project_id) {
     const ui = bootstrap.ui_strings || {};
     const projectId = bootstrap.project_id;
     const assetKind = bootstrap.asset_kind || "cc_skill";
-    const isStoneAsset = assetKind === "stone_author_model_v2" || assetKind === "stone_prototype_index_v2";
+    const isStoneAsset = [
+        "stone_author_model_v3",
+        "stone_prototype_index_v3",
+    ].includes(assetKind);
     const splitDocumentKeys = assetKind === "cc_skill" ? ["skill", "personality", "memories", "analysis"] : [];
 
     const elements = {
@@ -28,8 +31,10 @@ if (bootstrap?.project_id) {
         fill: document.getElementById("asset-progress-fill"),
         state: document.getElementById("asset-generation-state"),
         message: document.getElementById("asset-generation-message"),
+        eventCount: document.getElementById("asset-event-count"),
         chunkCount: document.getElementById("asset-chunk-count"),
         charCount: document.getElementById("asset-char-count"),
+        streamLog: document.getElementById("asset-stream-log"),
         lockChip: document.getElementById("asset-editor-lock-chip"),
         activeDocument: document.getElementById("asset-active-document"),
         docStatus: document.getElementById("asset-document-status"),
@@ -54,8 +59,10 @@ if (bootstrap?.project_id) {
     const state = {
         draftId: String(bootstrap.draft_id || ""),
         locked: false,
+        eventCount: 0,
         chunkCount: 0,
         charCount: 0,
+        logs: [],
         activePage: isStoneAsset ? "preview" : (splitDocumentKeys[0] || (elements.singleMarkdown ? "markdown" : "")),
         activeStreamDocument: "",
         documents: splitDocumentKeys.reduce((accumulator, key) => {
@@ -71,6 +78,7 @@ if (bootstrap?.project_id) {
     syncMarkdownArtifacts();
     refreshDraftState();
     renderStoneAssetPreview();
+    renderStreamLog();
 
     elements.form?.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -101,7 +109,11 @@ if (bootstrap?.project_id) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ asset_kind: assetKind }),
             });
-            if (!response.ok || !response.body) {
+            if (!response.ok) {
+                const responseText = await response.text().catch(() => "");
+                throw new Error(extractResponseErrorMessage(responseText, response.status));
+            }
+            if (!response.body) {
                 throw new Error("Streaming asset generation is not available.");
             }
 
@@ -126,11 +138,13 @@ if (bootstrap?.project_id) {
                 }
             }
         } catch (error) {
+            recordStreamLog(error.message || "生成失败。", "warning", { phase: "error" });
             renderStatus({
                 status: "failed",
                 progress_percent: 0,
                 message: error.message || "生成失败。",
             });
+            showNotice(elements.message, error.message || "生成失败。", "warning");
             setEditorsLocked(false);
         } finally {
             setButtonBusy(elements.button, false);
@@ -143,7 +157,10 @@ if (bootstrap?.project_id) {
             return;
         }
         const { eventType, data } = parsed;
+        state.eventCount += 1;
+        updateCounts();
         if (eventType === "status") {
+            recordStreamLog(data.message || data.phase || "status", data.status === "failed" ? "warning" : "info", data);
             renderStatus(data);
             return;
         }
@@ -152,6 +169,7 @@ if (bootstrap?.project_id) {
             return;
         }
         if (eventType === "done") {
+            recordStreamLog(data.message || "Completed", "success", data);
             hydrateFromDraftPayload(data.draft || null, data.draft_id || "");
             renderStatus({
                 status: "completed",
@@ -162,11 +180,13 @@ if (bootstrap?.project_id) {
             return;
         }
         if (eventType === "error") {
+            recordStreamLog(data.message || ui.status_failed || "Generation failed", "warning", data);
             renderStatus({
                 status: "failed",
                 progress_percent: 0,
                 message: data.message || ui.status_failed || "Generation failed",
             });
+            showNotice(elements.message, data.message || ui.status_failed || "Generation failed", "warning");
             setEditorsLocked(false);
         }
     }
@@ -208,10 +228,13 @@ if (bootstrap?.project_id) {
     }
 
     function resetStreamingState() {
+        state.eventCount = 0;
         state.chunkCount = 0;
         state.charCount = 0;
+        state.logs = [];
         state.activeStreamDocument = "";
         updateCounts();
+        renderStreamLog();
         if (splitDocumentKeys.length) {
             splitDocumentKeys.forEach((key) => {
                 if (documentEditors[key]) {
@@ -238,8 +261,57 @@ if (bootstrap?.project_id) {
     }
 
     function updateCounts() {
+        updateText(elements.eventCount, state.eventCount);
         updateText(elements.chunkCount, state.chunkCount);
         updateText(elements.charCount, state.charCount);
+    }
+
+    function recordStreamLog(message, tone = "info", payload = {}) {
+        const text = String(message || "").trim();
+        if (!text) {
+            return;
+        }
+        const parts = [];
+        if (payload?.phase) {
+            parts.push(String(payload.phase));
+        }
+        if (payload?.stage && payload.stage !== payload.phase) {
+            parts.push(String(payload.stage));
+        }
+        if (Number.isFinite(payload?.attempt)) {
+            parts.push(`attempt ${payload.attempt}`);
+        }
+        if (Number.isFinite(payload?.batch_index) && Number.isFinite(payload?.batch_total)) {
+            parts.push(`batch ${payload.batch_index}/${payload.batch_total}`);
+        }
+        state.logs.unshift({
+            message: text,
+            tone,
+            meta: parts.join(" | "),
+            failureReason: String(payload?.failure_reason || "").trim(),
+        });
+        state.logs = state.logs.slice(0, 24);
+        renderStreamLog();
+    }
+
+    function renderStreamLog() {
+        if (!elements.streamLog) {
+            return;
+        }
+        if (!state.logs.length) {
+            elements.streamLog.innerHTML = `<div class="asset-stream-log__empty">No stream activity yet.</div>`;
+            return;
+        }
+        elements.streamLog.innerHTML = state.logs.map((entry) => `
+            <article class="asset-stream-log__entry" data-tone="${escapeHtml(entry.tone || "info")}">
+                <div class="asset-stream-log__meta">
+                    <span>${escapeHtml(entry.meta || "stream")}</span>
+                    <span>${escapeHtml(entry.tone || "info")}</span>
+                </div>
+                <div>${escapeHtml(entry.message || "")}</div>
+                ${entry.failureReason ? `<div class="helper-text">${escapeHtml(entry.failureReason)}</div>` : ""}
+            </article>
+        `).join("");
     }
 
     function bindEditorTabs() {
@@ -575,9 +647,11 @@ if (bootstrap?.project_id) {
             return;
         }
         const payload = safeParseJson(elements.jsonPayload?.value || "{}", {});
-        elements.stonePreview.innerHTML = assetKind === "stone_author_model_v2"
-            ? renderStoneAuthorModelPreview(payload)
-            : renderStonePrototypeIndexPreview(payload);
+        if (assetKind === "stone_author_model_v3") {
+            elements.stonePreview.innerHTML = renderStoneAuthorModelV3Preview(payload);
+            return;
+        }
+        elements.stonePreview.innerHTML = renderStonePrototypeIndexV3Preview(payload);
     }
 
     function renderStoneAuthorModelPreview(payload) {
@@ -644,6 +718,56 @@ if (bootstrap?.project_id) {
         `;
     }
 
+    function renderStoneAuthorModelV3Preview(payload) {
+        const authorCore = payload.author_core || {};
+        const translationRules = Array.isArray(payload.translation_rules) ? payload.translation_rules : [];
+        const stableMoves = Array.isArray(payload.stable_moves) ? payload.stable_moves : [];
+        const forbiddenMoves = Array.isArray(payload.forbidden_moves) ? payload.forbidden_moves : [];
+        const familyMap = Array.isArray(payload.family_map) ? payload.family_map : [];
+        const globalEvidence = Array.isArray(payload.global_evidence) ? payload.global_evidence : [];
+
+        return `
+            <div class="stone-asset-metrics">
+                ${renderMetric("profiles", payload.profile_count || 0)}
+                ${renderMetric("families", familyMap.length || payload.family_count || 0)}
+                ${renderMetric("evidence", globalEvidence.length)}
+            </div>
+            <div class="stone-asset-grid">
+                ${renderSection("Author Core", renderAuthorCoreV3(authorCore))}
+                ${renderSection("Critic Rubrics", renderCriticRubricsV3(payload.critic_rubrics || {}))}
+            </div>
+            <div class="stone-asset-grid">
+                ${renderSection("Stable Moves", renderList(stableMoves, "No stable moves yet."))}
+                ${renderSection("Forbidden Moves", renderList(forbiddenMoves, "No forbidden moves yet."))}
+            </div>
+            ${renderSection("Translation Rules", renderTranslationRulesV3(translationRules))}
+            ${renderSection("Family Map", renderFamilyMapV3(familyMap))}
+            ${renderSection("Global Evidence", renderGlobalEvidenceV3(globalEvidence))}
+        `;
+    }
+
+    function renderStonePrototypeIndexV3Preview(payload) {
+        const retrievalPolicy = payload.retrieval_policy || {};
+        const families = Array.isArray(payload.families) ? payload.families : [];
+        const documents = Array.isArray(payload.documents) ? payload.documents : [];
+        const anchorRegistry = Array.isArray(payload.anchor_registry) ? payload.anchor_registry : [];
+
+        return `
+            <div class="stone-asset-metrics">
+                ${renderMetric("documents", payload.document_count || documents.length)}
+                ${renderMetric("families", families.length || payload.family_count || 0)}
+                ${renderMetric("anchors", anchorRegistry.length)}
+            </div>
+            <div class="stone-asset-grid">
+                ${renderSection("Retrieval Policy", renderRetrievalPolicyV3(retrievalPolicy))}
+                ${renderSection("Selection Guides", renderSelectionGuidesV3(payload.selection_guides || {}))}
+            </div>
+            ${renderSection("Families", renderFamilyMapV3(families))}
+            ${renderSection("Prototype Documents", renderPrototypeDocumentsV3(documents.slice(0, 8)))}
+            ${renderSection("Anchor Registry", renderAnchorRegistryV3(anchorRegistry.slice(0, 10)))}
+        `;
+    }
+
     function renderMetric(label, value) {
         return `
             <article class="stone-asset-metric">
@@ -676,6 +800,171 @@ if (bootstrap?.project_id) {
             return `<p class="helper-text">${escapeHtml(emptyText)}</p>`;
         }
         return `<div class="stone-asset-chip-row">${rows.map((item) => `<span class="stone-asset-chip">${escapeHtml(item)}</span>`).join("")}</div>`;
+    }
+
+    function renderAuthorCoreV3(authorCore) {
+        const motifs = Array.isArray(authorCore?.signature_motifs) ? authorCore.signature_motifs : [];
+        return `
+            <ul class="stone-asset-list">
+                <li><strong>voice</strong> ${escapeHtml(String(authorCore?.voice_summary || "--"))}</li>
+                <li><strong>worldview</strong> ${escapeHtml(String(authorCore?.worldview_summary || "--"))}</li>
+                <li><strong>tone</strong> ${escapeHtml(String(authorCore?.tone_summary || "--"))}</li>
+            </ul>
+            ${renderChips(motifs, "No signature motifs yet.")}
+        `;
+    }
+
+    function renderCriticRubricsV3(rubrics) {
+        const rows = Object.entries(rubrics || {}).filter(([, items]) => Array.isArray(items) && items.length);
+        if (!rows.length) {
+            return `<p class="helper-text">No critic rubrics yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.map(([key, items]) => `
+                    <article class="stone-asset-item">
+                        <h4>${escapeHtml(key)}</h4>
+                        ${renderList(items, "No rubric items")}
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function renderTranslationRulesV3(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return `<p class="helper-text">No translation rules yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.slice(0, 8).map((item) => `
+                    <article class="stone-asset-item">
+                        <h4>${escapeHtml(String(item.value_lens || "--"))}</h4>
+                        ${renderChips(item.preferred_motifs || [], "No preferred motifs")}
+                        <ul class="stone-asset-list">
+                            <li><strong>openings</strong> ${escapeHtml((item.opening_moves || []).join(" / ") || "--")}</li>
+                            <li><strong>closures</strong> ${escapeHtml((item.closure_moves || []).join(" / ") || "--")}</li>
+                        </ul>
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function renderFamilyMapV3(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return `<p class="helper-text">No family map yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.slice(0, 10).map((item) => `
+                    <article class="stone-asset-item">
+                        <h4>${escapeHtml(String(item.label || item.family_id || "--"))}</h4>
+                        <div class="stone-asset-item__meta">
+                            <span>${escapeHtml(`members ${item.member_count || 0}`)}</span>
+                        </div>
+                        ${item.description ? `<p class="helper-text">${escapeHtml(String(item.description))}</p>` : ""}
+                        ${renderChips(item.motif_tags || [], "No motif tags")}
+                        ${renderChips(item.selection_cues || [], "No selection cues")}
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function renderGlobalEvidenceV3(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return `<p class="helper-text">No global evidence yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.slice(0, 8).map((item) => `
+                    <article class="stone-asset-item">
+                        <h4>${escapeHtml(String(item.title || item.document_id || "--"))}</h4>
+                        ${item.summary ? `<div class="stone-asset-window"><strong>summary</strong>${escapeHtml(String(item.summary))}</div>` : ""}
+                        ${item.opening ? `<div class="stone-asset-window"><strong>opening</strong>${escapeHtml(String(item.opening))}</div>` : ""}
+                        ${item.closing ? `<div class="stone-asset-window"><strong>closing</strong>${escapeHtml(String(item.closing))}</div>` : ""}
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function renderRetrievalPolicyV3(policy) {
+        const notes = Array.isArray(policy?.notes) ? policy.notes : [];
+        return `
+            <ul class="stone-asset-list">
+                <li><strong>shortlist</strong> ${escapeHtml(String(policy?.shortlist_formula || "--"))}</li>
+                <li><strong>size</strong> ${escapeHtml(String(policy?.target_shortlist_size || "--"))}</li>
+                <li><strong>anchor budget</strong> ${escapeHtml(String(policy?.target_anchor_budget || "--"))}</li>
+            </ul>
+            ${renderList(notes, "No retrieval notes")}
+        `;
+    }
+
+    function renderSelectionGuidesV3(guides) {
+        const rows = [
+            { label: "expand", items: Array.isArray(guides?.when_to_expand) ? guides.when_to_expand : [] },
+            { label: "prune", items: Array.isArray(guides?.when_to_prune) ? guides.when_to_prune : [] },
+            { label: "quality", items: Array.isArray(guides?.quality_checks) ? guides.quality_checks : [] },
+        ].filter((item) => item.items.length);
+        if (!rows.length) {
+            return `<p class="helper-text">No selection guides yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.map((item) => `
+                    <article class="stone-asset-item">
+                        <h4>${escapeHtml(item.label)}</h4>
+                        ${renderList(item.items, "No guide items")}
+                    </article>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    function renderPrototypeDocumentsV3(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return `<p class="helper-text">No prototype documents yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.map((item) => {
+                    const handles = item.retrieval_handles || {};
+                    const anchors = Array.isArray(item.anchor_registry) ? item.anchor_registry : [];
+                    const firstAnchor = anchors.find((anchor) => anchor && anchor.quote);
+                    return `
+                        <article class="stone-asset-item">
+                            <h4>${escapeHtml(String(item.title || item.document_id || "--"))}</h4>
+                            <div class="stone-asset-item__meta">
+                                <span>${escapeHtml(String(item.family_label || item.family_id || "--"))}</span>
+                            </div>
+                            ${renderChips(handles.keywords || [], "No keywords")}
+                            ${firstAnchor ? `<div class="stone-asset-window"><strong>${escapeHtml(String(firstAnchor.role || "anchor"))}</strong>${escapeHtml(String(firstAnchor.quote || ""))}</div>` : ""}
+                        </article>
+                    `;
+                }).join("")}
+            </div>
+        `;
+    }
+
+    function renderAnchorRegistryV3(rows) {
+        if (!Array.isArray(rows) || !rows.length) {
+            return `<p class="helper-text">No anchors yet.</p>`;
+        }
+        return `
+            <div class="stone-asset-rows">
+                ${rows.map((item) => `
+                    <article class="stone-asset-item">
+                        <div class="stone-asset-item__meta">
+                            <span>${escapeHtml(String(item.document_title || item.document_id || "--"))}</span>
+                            <span>${escapeHtml(String(item.role || "anchor"))}</span>
+                        </div>
+                        <div class="stone-asset-window"><strong>${escapeHtml(String(item.id || "anchor"))}</strong>${escapeHtml(String(item.quote || ""))}</div>
+                    </article>
+                `).join("")}
+            </div>
+        `;
     }
 
     function renderLengthBehaviors(rows) {
@@ -899,5 +1188,22 @@ if (bootstrap?.project_id) {
             memories: "references/memories.md",
             analysis: "references/analysis.md",
         }[key] || key;
+    }
+
+    function extractResponseErrorMessage(responseText, statusCode) {
+        const text = String(responseText || "").trim();
+        if (!text) {
+            return `Streaming asset generation failed with HTTP ${statusCode}.`;
+        }
+        try {
+            const payload = JSON.parse(text);
+            if (typeof payload?.detail === "string" && payload.detail.trim()) {
+                return payload.detail.trim();
+            }
+            if (typeof payload?.message === "string" && payload.message.trim()) {
+                return payload.message.trim();
+            }
+        } catch {}
+        return text.slice(0, 240);
     }
 }

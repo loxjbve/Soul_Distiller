@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import shutil
 import time
 import zipfile
 from queue import Empty
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -19,15 +20,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.analysis.stone_v2 import (
-    STONE_V2_ASSET_KINDS,
-    build_short_text_clusters,
-    build_stone_author_model_v2,
-    build_stone_prototype_index_v2,
-    normalize_stone_profile_v2,
-    render_stone_author_model_markdown,
-    render_stone_prototype_index_markdown,
-    validate_stone_v2_asset_payload,
+from app.core.errors import LegacyStoneDataError
+from app.analysis.stone_v3 import (
+    STONE_V3_ASSET_KINDS,
+    STONE_V3_PROFILE_KEY,
+    is_valid_stone_v3_asset_payload,
+    normalize_stone_profile_v3,
+    render_stone_author_model_v3_markdown,
+    render_stone_prototype_index_v3_markdown,
+    validate_stone_v3_asset_payload,
 )
 from app.analysis.facets import FACETS, get_facets_for_mode
 from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
@@ -51,13 +52,25 @@ from app.schemas import (
     MIN_ANALYSIS_CONCURRENCY,
     ServiceConfig,
 )
+from app.stone_runtime import (
+    get_latest_usable_stone_preprocess_run,
+    has_valid_asset_payload as shared_has_valid_asset_payload,
+)
+from app.stone_v3_checkpoint import (
+    clear_stone_v3_checkpoint,
+    load_stone_v3_checkpoint,
+    save_stone_v3_checkpoint,
+)
 from app.storage import repository
 from app.web.ui_strings import DEFAULT_LOCALE, page_strings
 
 
 router = APIRouter()
-
-from fastapi.responses import RedirectResponse
+logger = logging.getLogger(__name__)
+ASSET_STREAM_INACTIVITY_TIMEOUT_SECONDS = 120.0
+ASSET_STREAM_QUEUE_POLL_SECONDS = 5.0
+STONE_V2_ASSET_KINDS = frozenset({"stone_author_model_v2", "stone_prototype_index_v2"})
+LEGACY_STONE_V2_REBUILD_MESSAGE = "Stone v2 已停用；请重新运行 Stone 预处理并重建 Stone v3 基线。"
 
 def get_locale(request: Request) -> str:
     return request.cookies.get("locale", DEFAULT_LOCALE)
@@ -84,8 +97,8 @@ ASSET_KIND_OPTIONS = (
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
-    {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
-    {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
+    {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
+    {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
 )
 
 
@@ -100,8 +113,8 @@ ASSET_KIND_OPTIONS = (
     {"value": "cc_skill", "label": "Claude Code Skill"},
     {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
-    {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
-    {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
+    {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
+    {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
 )
 
 ANALYSIS_EVENT_LIMIT = 48
@@ -231,74 +244,8 @@ def _stone_mode_label(locale: str) -> str:
     return "Stone Mode" if locale == "en-US" else "搬石模式"
 
 
-def _stone_mode_hint_legacy_unused(locale: str) -> str:
-    if locale == "en-US":
-        return "For single-author corpus, article profiling, writing guide synthesis, and controlled article drafting"
-    return "适合单作者文本、逐篇预分析、写作指南生成与定向写作"
 
 
-def _writing_workspace_ui_legacy_unused(locale: str) -> dict[str, Any]:
-    base = page_strings("preprocess", locale)
-    labels = {
-        "title": "Writing Workspace" if locale == "en-US" else "写作台",
-        "eyebrow": "Writing Workspace" if locale == "en-US" else "搬石写作台",
-        "hero_note": (
-            "Draft against the latest writing guide, run reviewer passes, and keep style fidelity visible."
-            if locale == "en-US"
-            else "围绕最新 writing_guide 出稿，查看 reviewer 维度意见，并显式展示文风一致性。"
-        ),
-        "new_session": "New Session" if locale == "en-US" else "新建会话",
-        "rename_session": "Rename" if locale == "en-US" else "重命名",
-        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
-        "sessions": "Sessions" if locale == "en-US" else "会话",
-        "composer_placeholder": (
-            "Enter the topic, target word count, and optional extra requirements."
-            if locale == "en-US"
-            else "输入主题、目标字数和可选附加要求。"
-        ),
-        "topic_label": "Topic" if locale == "en-US" else "主题",
-        "target_word_count_label": "Target Word Count" if locale == "en-US" else "目标字数",
-        "extra_requirements_label": "Extra Requirements" if locale == "en-US" else "附加要求",
-        "send": "Start Writing" if locale == "en-US" else "开始写作",
-        "sending": "Writing..." if locale == "en-US" else "写作中...",
-        "guide_label": "Baseline" if locale == "en-US" else "当前基线",
-        "guide_missing": "No Stone v2 baseline yet." if locale == "en-US" else "还没有 Stone v2 基线。",
-        "guide_unpublished": "Using latest Stone v2 draft baseline." if locale == "en-US" else "当前使用未发布 Stone v2 基线。",
-        "guide_published": "Using latest Stone v2 published baseline." if locale == "en-US" else "当前使用已发布 Stone v2 基线。",
-        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作任务。",
-        "working": "Working..." if locale == "en-US" else "执行中...",
-        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
-        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
-        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
-        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
-        "stage_feed": "Pipeline" if locale == "en-US" else "流水线",
-    }
-    base.update(labels)
-    return base
-
-
-def _primary_asset_kind_for_mode(mode: str | None) -> str:
-    return "stone_author_model_v2" if str(mode or "").strip().lower() == "stone" else "cc_skill"
-
-
-def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
-    if str(project.mode or "").strip().lower() == "stone":
-        return (
-            {"value": "stone_author_model_v2", "label": "Stone Author Model V2"},
-            {"value": "stone_prototype_index_v2", "label": "Stone Prototype Index V2"},
-        )
-    return (
-        {"value": "cc_skill", "label": "Claude Code Skill"},
-        {"value": "profile_report", "label": "用户画像报告"},
-    )
-
-
-def _resolve_asset_kind_for_project(project, requested_kind: str | None) -> str:
-    default_kind = _primary_asset_kind_for_mode(project.mode)
-    asset_kind = _normalize_asset_kind(requested_kind or default_kind)
-    if str(project.mode or "").strip().lower() == "stone" and asset_kind not in {"stone_author_model_v2", "stone_prototype_index_v2"}:
-        return "stone_author_model_v2"
-    return asset_kind
 
 
 def _ensure_stone_project(session: Session, project_id: str):
@@ -308,22 +255,6 @@ def _ensure_stone_project(session: Session, project_id: str):
     return project
 
 
-def _resolve_writing_guide_status(session: Session, project_id: str) -> dict[str, Any]:
-    version = repository.get_latest_asset_version(session, project_id, asset_kind="writing_guide")
-    if version:
-        return {
-            "status": "published",
-            "asset_id": version.id,
-            "label": f"v{version.version_number}",
-        }
-    draft = repository.get_latest_asset_draft(session, project_id, asset_kind="writing_guide")
-    if draft:
-        return {
-            "status": "draft",
-            "asset_id": draft.id,
-            "label": "draft",
-        }
-    return {"status": "missing", "asset_id": None, "label": None}
 
 
 def _stone_mode_hint(locale: str) -> str:
@@ -332,101 +263,8 @@ def _stone_mode_hint(locale: str) -> str:
     return "适合单作者文本、逐篇预分析、多维分析与分析驱动写作"
 
 
-def _writing_workspace_ui(locale: str) -> dict[str, Any]:
-    base = page_strings("preprocess", locale)
-    labels = {
-        "title": "Writing Workspace" if locale == "en-US" else "写作台",
-        "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
-        "hero_note": (
-            "Draft from Stone v2 profiles, prototype retrieval, and holistic critics instead of the old multi-facet writing bridge."
-            if locale == "en-US"
-            else "直接读取 Stone v2 画像、原型检索和整体 critic，不再走旧的多维分析写作桥接。"
-        ),
-        "new_session": "New Session" if locale == "en-US" else "新建会话",
-        "rename_session": "Rename" if locale == "en-US" else "重命名",
-        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
-        "sessions": "Sessions" if locale == "en-US" else "会话",
-        "toggle_sessions": "Sessions" if locale == "en-US" else "会话列表",
-        "channel_live": "Live Channel" if locale == "en-US" else "群聊频道",
-        "pinned_label": "Pinned Baseline" if locale == "en-US" else "置顶基线",
-        "composer_placeholder": (
-            "Write something like: Write about a rainy station, 800 words, restrained tone"
-            if locale == "en-US"
-            else "例如：写一篇雨夜车站，800字，克制一点"
-        ),
-        "message_hint": (
-            "Include an explicit word count such as 800 words."
-            if locale == "en-US"
-            else "消息里请带明确字数，例如：写一篇雨夜车站，800字，克制一点"
-        ),
-        "message_parse_error": (
-            "Please include an explicit word count such as 800 words."
-            if locale == "en-US"
-            else "请在消息里带上明确字数，例如 800字 或 800 words。"
-        ),
-        "send": "Send" if locale == "en-US" else "发送",
-        "sending": "Writing..." if locale == "en-US" else "写作中...",
-        "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
-        "baseline_ready": "Using latest Stone v2 baseline." if locale == "en-US" else "当前使用最新 Stone v2 基线。",
-        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "请先完成 Stone 预分析。",
-        "baseline_running_preprocess": "Stone preprocess is still running." if locale == "en-US" else "Stone 预分析仍在运行中。",
-        "baseline_missing_profiles": "No Stone v2 article profiles yet." if locale == "en-US" else "当前还没有 Stone v2 逐篇画像。",
-        "baseline_incomplete_baseline": "Stone v2 baseline assets are incomplete." if locale == "en-US" else "Stone v2 基线资产还不完整。",
-        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
-        "working": "Working..." if locale == "en-US" else "处理中...",
-        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
-        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
-        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
-        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
-        "you_label": "You" if locale == "en-US" else "你",
-        "agent_label": "Writing Agent" if locale == "en-US" else "写作 Agent",
-    }
-    base.update(labels)
-    return base
-
-
-def _resolve_stone_writing_status(session: Session, project_id: str) -> dict[str, Any]:
-    author_model_available = bool(
-        repository.get_latest_asset_version(session, project_id, asset_kind="stone_author_model_v2")
-        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v2")
-    )
-    prototype_index_available = bool(
-        repository.get_latest_asset_version(session, project_id, asset_kind="stone_prototype_index_v2")
-        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_prototype_index_v2")
-    )
-    profile_count = sum(
-        1
-        for document in repository.list_project_documents(session, project_id)
-        if isinstance(dict(document.metadata_json or {}).get("stone_profile_v2"), dict)
-    )
-    active_preprocess = repository.get_active_stone_preprocess_run(session, project_id)
-    preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
-    if not preprocess_run:
-        return {
-            "status": "running_preprocess" if active_preprocess else "missing_preprocess",
-            "run_id": active_preprocess.id if active_preprocess else None,
-            "label": None,
-            "profile_count": profile_count,
-            "corpus_ready": profile_count > 0,
-            "author_model_ready": author_model_available,
-            "prototype_index_ready": prototype_index_available,
-        }
-
-    if profile_count <= 0:
-        status = "missing_profiles"
-    elif not author_model_available or not prototype_index_available:
-        status = "incomplete_baseline"
-    else:
-        status = "ready"
-    return {
-        "status": status,
-        "run_id": preprocess_run.id,
-        "label": f"preprocess {preprocess_run.id[:8]}",
-        "profile_count": profile_count,
-        "corpus_ready": profile_count > 0,
-        "author_model_ready": author_model_available,
-        "prototype_index_ready": prototype_index_available,
-    }
+def _raise_legacy_stone_v2_http_error() -> None:
+    raise HTTPException(status_code=400, detail=str(LegacyStoneDataError(LEGACY_STONE_V2_REBUILD_MESSAGE)))
 
 
 def _resolve_stone_channel_title(session: Session, project) -> str:
@@ -973,7 +811,13 @@ def publish_asset_form(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="Draft not found.")
-    _ensure_valid_stone_v2_asset_payload(draft.asset_kind, draft.json_payload)
+    if draft.asset_kind in STONE_V3_ASSET_KINDS:
+        try:
+            validate_stone_v3_asset_payload(draft.asset_kind, draft.json_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif draft.asset_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
     version = repository.publish_asset_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -1087,7 +931,7 @@ def preprocess_page(
             context=_page_context(request, "preprocess", **telegram_context),
         )
     elif context["project"].mode == "stone":
-        stone_context = _stone_preprocess_context(session, project_id, run_id=run_id)
+        stone_context = _stone_preprocess_context(request, session, project_id, run_id=run_id)
         return templates.TemplateResponse(
             request=request,
             name="stone_preprocess.html",
@@ -1200,7 +1044,7 @@ def start_preprocess_form(
             request,
             session,
             project_id,
-            concurrency=concurrency or 1,
+            concurrency=concurrency or DEFAULT_ANALYSIS_CONCURRENCY,
         )
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use this preprocess flow.")
@@ -1703,7 +1547,7 @@ def get_latest_preprocess_run_api(project_id: str, session: SessionDep, successf
 
 
 @router.get("/api/projects/{project_id}/preprocess/runs/{run_id}")
-def get_preprocess_run_api(project_id: str, run_id: str, session: SessionDep):
+def get_preprocess_run_api(request: Request, project_id: str, run_id: str, session: SessionDep):
     project = _ensure_project(session, project_id)
     if project.mode == "telegram":
         run = _resolve_telegram_preprocess_run(session, project_id, run_id)
@@ -1712,6 +1556,7 @@ def get_preprocess_run_api(project_id: str, run_id: str, session: SessionDep):
         run = repository.get_stone_preprocess_run(session, run_id)
         if not run or run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Run not found.")
+        run = _recover_stone_preprocess_run_if_stale(request, session, project_id, run)
         return _ok_response("已返回 Stone 预分析详情。", **_serialize_stone_preprocess_detail(session, project_id, run))
     else:
         raise HTTPException(status_code=400, detail="Only Telegram and Stone projects use preprocess runs.")
@@ -1998,11 +1843,50 @@ def get_rechunk_task_api(request: Request, project_id: str, task_id: str, sessio
 @router.post("/api/projects/{project_id}/assets/generate/stream")
 def generate_asset_stream_api(request: Request, project_id: str, payload: AssetGeneratePayload):
     from queue import Queue
-    from threading import Thread
+    from threading import Event, Lock, Thread
 
     events: Queue[dict[str, Any] | None] = Queue()
+    cancel_event = Event()
+    worker_finished = Event()
+    activity_lock = Lock()
+    last_activity_at = time.monotonic()
     asset_kind = _normalize_asset_kind(payload.asset_kind)
+    if asset_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
     default_document_key = "skill" if asset_kind == "cc_skill" else "asset"
+
+    def touch_activity() -> None:
+        nonlocal last_activity_at
+        with activity_lock:
+            last_activity_at = time.monotonic()
+
+    def seconds_since_activity() -> float:
+        with activity_lock:
+            return max(0.0, time.monotonic() - last_activity_at)
+
+    def emit_event(item: dict[str, Any]) -> None:
+        if cancel_event.is_set() and item.get("type") not in {"error", "done"}:
+            return
+        touch_activity()
+        event_type = str(item.get("type") or "status")
+        if event_type == "status":
+            logger.info(
+                "Asset stream status for project %s asset %s: phase=%s stage=%s progress=%s message=%s",
+                project_id,
+                asset_kind,
+                item.get("phase"),
+                item.get("stage"),
+                item.get("progress_percent"),
+                item.get("message"),
+            )
+        elif event_type == "error":
+            logger.warning(
+                "Asset stream error for project %s asset %s: %s",
+                project_id,
+                asset_kind,
+                item.get("message"),
+            )
+        events.put(item)
 
     def emit_status(
         phase: str,
@@ -2011,35 +1895,82 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
         *,
         status: str = "running",
         document_key: str | None = None,
+        stage: str | None = None,
+        attempt: int | None = None,
+        batch_index: int | None = None,
+        batch_total: int | None = None,
+        failure_reason: str | None = None,
     ) -> None:
-        events.put(
+        payload = {
+            "type": "status",
+            "status": status,
+            "phase": phase,
+            "stage": stage or phase,
+            "progress_percent": progress_percent,
+            "message": message,
+            "asset_kind": asset_kind,
+            "document_key": document_key,
+        }
+        if attempt is not None:
+            payload["attempt"] = attempt
+        if batch_index is not None:
+            payload["batch_index"] = batch_index
+        if batch_total is not None:
+            payload["batch_total"] = batch_total
+        if failure_reason:
+            payload["failure_reason"] = failure_reason
+        emit_event(payload)
+
+    def emit_error(message: str, *, detail: Any | None = None, status_code: int | None = None) -> None:
+        emit_event(
             {
-                "type": "status",
-                "status": status,
-                "phase": phase,
-                "progress_percent": progress_percent,
+                "type": "error",
                 "message": message,
-                "asset_kind": asset_kind,
-                "document_key": document_key,
+                "detail": detail,
+                "status_code": status_code,
             }
         )
 
     def worker():
         try:
-            emit_status("prepare", 6, f"开始生成{_asset_label(asset_kind)}草稿", document_key=default_document_key)
+            emit_status("prepare", 6, f"Preparing {_asset_label(asset_kind)} draft.", document_key=default_document_key)
             with request.app.state.db.session() as session:
                 project = _ensure_project(session, project_id)
-                if project.mode == "stone" and asset_kind in STONE_V2_ASSET_KINDS:
-                    emit_status("load", 28, "正在读取 Stone 预处理基线", document_key=default_document_key)
-                    draft = _generate_asset_draft(request, session, project_id, asset_kind=asset_kind)
-                    emit_status("persist", 94, "正在保存 Stone V2 基线资产", document_key=default_document_key)
-                    events.put(
+                if project.mode == "stone" and asset_kind in {*STONE_V2_ASSET_KINDS, *STONE_V3_ASSET_KINDS}:
+                    baseline_label = "Stone v3" if asset_kind in STONE_V3_ASSET_KINDS else "Stone v2"
+                    emit_status("load", 28, f"Loading the latest {baseline_label} preprocess output.", document_key=default_document_key)
+
+                    def stone_progress_callback(progress: dict[str, Any]) -> None:
+                        emit_status(
+                            str(progress.get("phase") or "running"),
+                            int(progress.get("progress_percent", 0) or 0),
+                            str(progress.get("message") or ""),
+                            status=str(progress.get("status") or "running"),
+                            document_key=default_document_key,
+                            stage=str(progress.get("stage") or progress.get("phase") or "running"),
+                            attempt=(int(progress["attempt"]) if progress.get("attempt") is not None else None),
+                            batch_index=(int(progress["batch_index"]) if progress.get("batch_index") is not None else None),
+                            batch_total=(int(progress["batch_total"]) if progress.get("batch_total") is not None else None),
+                            failure_reason=str(progress.get("failure_reason") or "") or None,
+                        )
+
+                    draft = _generate_asset_draft(
+                        request,
+                        session,
+                        project_id,
+                        asset_kind=asset_kind,
+                        progress_callback=stone_progress_callback if asset_kind in STONE_V3_ASSET_KINDS else None,
+                        cancel_requested=cancel_event.is_set if asset_kind in STONE_V3_ASSET_KINDS else None,
+                    )
+                    emit_status("persist", 98, f"Persisting {baseline_label} baseline assets.", document_key=default_document_key)
+                    emit_event(
                         {
                             "type": "done",
                             "status": "completed",
                             "phase": "done",
+                            "stage": "done",
                             "progress_percent": 100,
-                            "message": "草稿生成完成，已同步到编辑区。",
+                            "message": "Draft generation completed and the editor has been hydrated.",
                             "draft_id": draft.id,
                             "draft": _serialize_draft(draft),
                             "asset_kind": asset_kind,
@@ -2049,16 +1980,16 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     return
                 run = repository.get_latest_analysis_run(session, project_id)
                 if not run or run.status in {"queued", "running"}:
-                    events.put({"type": "error", "message": "分析结果尚未就绪。"})
+                    emit_error("Analysis is not ready yet.")
                     return
                 facets = run.facets or []
                 if not facets:
-                    events.put({"type": "error", "message": "当前分析没有可合成的维度结果。"})
+                    emit_error("The latest analysis has no facets to synthesize.")
                     return
                 chat_config = repository.get_service_config(session, "chat_service")
                 summary = run.summary_json or {}
 
-                emit_status("load", 14, "正在读取最新分析结果", document_key=default_document_key)
+                emit_status("load", 14, "Loading the latest analysis bundle.", document_key=default_document_key)
 
                 def stream_callback(payload: Any):
                     if isinstance(payload, dict):
@@ -2069,19 +2000,15 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                         document_key = default_document_key
                     if not chunk:
                         return
-                    events.put({"type": "delta", "document_key": document_key, "chunk": chunk, "asset_kind": asset_kind})
+                    emit_event({"type": "delta", "document_key": document_key, "chunk": chunk, "asset_kind": asset_kind})
 
                 def progress_callback(progress: dict[str, Any]):
-                    events.put(
-                        {
-                            "type": "status",
-                            "status": "running",
-                            "phase": progress.get("phase", "running"),
-                            "progress_percent": int(progress.get("progress_percent", 0) or 0),
-                            "message": str(progress.get("message", "") or ""),
-                            "asset_kind": asset_kind,
-                            "document_key": str(progress.get("document_key") or "").strip() or None,
-                        }
+                    emit_status(
+                        str(progress.get("phase") or "running"),
+                        int(progress.get("progress_percent", 0) or 0),
+                        str(progress.get("message", "") or ""),
+                        status="running",
+                        document_key=str(progress.get("document_key") or "").strip() or None,
                     )
 
                 bundle = request.app.state.asset_synthesizer.build(
@@ -2097,7 +2024,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     retrieval_service=request.app.state.retrieval,
                 )
 
-                emit_status("persist", 94, "正在保存草稿和导出文件", document_key=default_document_key)
+                emit_status("persist", 94, "Persisting the generated draft files.", document_key=default_document_key)
                 draft = repository.create_asset_draft(
                     session,
                     project_id=project_id,
@@ -2117,29 +2044,65 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     draft.json_payload,
                     draft.system_prompt,
                 )
-                events.put(
+                emit_event(
                     {
                         "type": "done",
                         "status": "completed",
                         "phase": "done",
+                        "stage": "done",
                         "progress_percent": 100,
-                        "message": "草稿生成完成，已同步到编辑区。",
+                        "message": "Draft generation completed and the editor has been hydrated.",
                         "draft_id": draft.id,
                         "draft": _serialize_draft(draft),
                         "asset_kind": asset_kind,
                         "document_key": default_document_key,
                     }
                 )
-        except Exception as e:
-            events.put({"type": "error", "message": str(e)})
+        except HTTPException as exc:
+            logger.warning(
+                "Asset stream generation failed for project %s asset %s: %s",
+                project_id,
+                asset_kind,
+                exc.detail,
+            )
+            detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+            emit_error(str(detail or exc), detail=exc.detail, status_code=exc.status_code)
+        except Exception as exc:
+            logger.exception(
+                "Asset stream generation crashed for project %s asset %s",
+                project_id,
+                asset_kind,
+            )
+            emit_error(f"{type(exc).__name__}: {exc}")
         finally:
+            worker_finished.set()
             events.put(None)
 
     Thread(target=worker, daemon=True).start()
 
     def generator():
         while True:
-            item = events.get()
+            try:
+                item = events.get(timeout=ASSET_STREAM_QUEUE_POLL_SECONDS)
+            except Empty:
+                idle_for = seconds_since_activity()
+                if idle_for >= ASSET_STREAM_INACTIVITY_TIMEOUT_SECONDS:
+                    cancel_event.set()
+                    timeout_message = (
+                        f"Streaming asset generation timed out after "
+                        f"{int(ASSET_STREAM_INACTIVITY_TIMEOUT_SECONDS)} seconds without any progress event."
+                    )
+                    logger.warning(
+                        "Asset stream timed out for project %s asset %s after %.1f seconds of inactivity.",
+                        project_id,
+                        asset_kind,
+                        idle_for,
+                    )
+                    yield f"event: error\ndata: {json.dumps({'message': timeout_message, 'status': 'failed', 'phase': 'timeout', 'stage': 'timeout', 'progress_percent': 0}, ensure_ascii=False)}\n\n"
+                    break
+                if worker_finished.is_set():
+                    break
+                continue
             if item is None:
                 break
             yield f"event: {item['type']}\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
@@ -2153,7 +2116,10 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
 
 @router.post("/api/projects/{project_id}/assets/generate")
 def generate_asset_api(request: Request, project_id: str, payload: AssetGeneratePayload, session: SessionDep):
-    draft = _generate_asset_draft(request, session, project_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
+    normalized_kind = _normalize_asset_kind(payload.asset_kind)
+    if normalized_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
+    draft = _generate_asset_draft(request, session, project_id, asset_kind=normalized_kind)
     return {**_serialize_draft(draft), "request_status": "ok", "message": "资产草稿已生成。"}
 
 
@@ -2201,7 +2167,13 @@ def publish_asset_api(
     draft = repository.get_asset_draft(session, draft_id, asset_kind=_normalize_asset_kind(payload.asset_kind))
     if not draft or draft.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到资产草稿。")
-    _ensure_valid_stone_v2_asset_payload(draft.asset_kind, draft.json_payload)
+    if draft.asset_kind in STONE_V3_ASSET_KINDS:
+        try:
+            validate_stone_v3_asset_payload(draft.asset_kind, draft.json_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif draft.asset_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
     version = repository.publish_asset_draft(session, project_id, draft)
     _persist_asset_files(
         request,
@@ -2738,6 +2710,7 @@ def _project_context(request: Request, session: Session, project_id: str, *, doc
 
 
 def _stone_preprocess_context(
+    request: Request,
     session: Session,
     project_id: str,
     *,
@@ -2746,6 +2719,8 @@ def _stone_preprocess_context(
     project = _ensure_project(session, project_id)
     runs = repository.list_stone_preprocess_runs(session, project_id, limit=24)
     active_run = repository.get_active_stone_preprocess_run(session, project_id)
+    if active_run:
+        active_run = _recover_stone_preprocess_run_if_stale(request, session, project_id, active_run)
     selected_run = None
     if run_id:
         selected_run = repository.get_stone_preprocess_run(session, run_id)
@@ -2838,7 +2813,7 @@ def _create_stone_preprocess_run(
     request: Request,
     session: Session,
     project_id: str,
-    concurrency: int = 1,
+    concurrency: int = DEFAULT_ANALYSIS_CONCURRENCY,
 ) -> "StonePreprocessRun":
     project = _ensure_project(session, project_id)
     if project.mode != "stone":
@@ -2898,216 +2873,6 @@ def _resolve_telegram_relationship_snapshot(
     if not snapshot or snapshot.project_id != source_project_id:
         raise HTTPException(status_code=404, detail="Telegram relationship snapshot not found.")
     return snapshot
-
-
-def _enqueue_analysis(
-    request: Request,
-    session: Session,
-    project_id: str,
-    *,
-    target_role: str | None,
-    target_user_query: str | None = None,
-    participant_id: str | None = None,
-    analysis_context: str | None,
-    concurrency: int | None = None,
-) -> AnalysisRun:
-    project = _ensure_project(session, project_id)
-    source_project_id = repository.get_target_project_id(session, project_id)
-    document_project_id = source_project_id if project.mode == "telegram" else project_id
-    documents = repository.list_project_documents(session, document_project_id)
-    ready_documents = [document for document in documents if document.ingest_status == "ready"]
-    if not ready_documents:
-        raise HTTPException(status_code=400, detail="Upload at least one successfully ingested document first.")
-    if project.mode == "telegram" and not repository.get_latest_successful_telegram_preprocess_run(session, source_project_id):
-        raise HTTPException(status_code=400, detail="Run Telegram preprocess successfully before analysis.")
-    existing_run = repository.get_active_analysis_run(session, project_id)
-    if existing_run:
-        if request.app.state.analysis_runner.is_tracking(existing_run.id):
-            return existing_run
-        _mark_run_as_stale(
-            session,
-            existing_run,
-            reason="Detected an unfinished run record without a live worker. Marked as failed before starting a new run.",
-        )
-        session.flush()
-    run = request.app.state.analysis_engine.create_run(
-        session,
-        project_id,
-        target_role=(target_role or "").strip() or None if project.mode != "telegram" else None,
-        target_user_query=(target_user_query or "").strip() or None,
-        participant_id=(participant_id or "").strip() or None,
-        analysis_context=(analysis_context or "").strip() or None,
-        concurrency=concurrency,
-    )
-    session.commit()
-    request.app.state.analysis_runner.submit(run.id)
-    session.expire_all()
-    return repository.get_analysis_run(session, run.id) or run
-
-
-def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> None:
-    summary = dict(run.summary_json or {})
-    summary["current_stage"] = "检测到旧任务卡住，已重置为失败"
-    summary["current_facet"] = None
-    summary["finished_at"] = utcnow().isoformat()
-    run.summary_json = summary
-    run.status = "failed"
-    run.finished_at = utcnow()
-    repository.add_analysis_event(
-        session,
-        run.id,
-        event_type="lifecycle",
-        level="warning",
-        message="检测到旧的分析任务没有活跃 worker，已自动标记为失败。",
-        payload_json={"stale_recovered": True, "reason": reason},
-    )
-
-
-def _resolve_run(session: Session, project_id: str, run_id: str | None) -> AnalysisRun | None:
-    if run_id:
-        run = repository.get_analysis_run(session, run_id)
-        if not run or run.project_id != project_id:
-            raise HTTPException(status_code=404, detail="Analysis run not found.")
-        return run
-    return repository.get_latest_analysis_run(session, project_id)
-
-
-def _generate_asset_draft(request: Request, session: Session, project_id: str, *, asset_kind: str):
-    project = _ensure_project(session, project_id)
-    run = repository.get_latest_analysis_run(session, project_id)
-    if not run:
-        raise HTTPException(status_code=400, detail="Run analysis before generating an asset.")
-    if run.status in {"queued", "running"}:
-        raise HTTPException(status_code=409, detail="Wait for the current analysis run to finish first.")
-    facets = run.facets or []
-    if not facets:
-        raise HTTPException(status_code=400, detail="Analysis has no facets to synthesize.")
-    chat_config = repository.get_service_config(session, "chat_service")
-    summary = run.summary_json or {}
-    bundle = request.app.state.asset_synthesizer.build(
-        asset_kind,
-        project,
-        facets,
-        chat_config,
-        target_role=summary.get("target_role"),
-        analysis_context=summary.get("analysis_context"),
-        session=session,
-        retrieval_service=request.app.state.retrieval,
-    )
-    draft = repository.create_asset_draft(
-        session,
-        project_id=project_id,
-        run_id=run.id,
-        asset_kind=bundle.asset_kind,
-        markdown_text=bundle.markdown_text,
-        json_payload=bundle.json_payload,
-        prompt_text=bundle.prompt_text,
-        notes="Auto-generated draft. Review before publishing.",
-    )
-    _persist_asset_files(
-        request,
-        project_id,
-        draft.asset_kind,
-        f"draft_{draft.id}",
-        draft.markdown_text,
-        draft.json_payload,
-        draft.system_prompt,
-    )
-    return draft
-
-
-def _chat_with_persona(
-    request: Request,
-    session: Session,
-    project_id: str,
-    message: str,
-    session_id: str | None = None,
-):
-    version = repository.get_latest_skill_version(session, project_id)
-    if not version:
-        raise HTTPException(status_code=400, detail="Publish a skill version before using the playground.")
-    chat_config = repository.get_service_config(session, "chat_service")
-    embedding_config = repository.get_service_config(session, "embedding_service")
-    if session_id:
-        chat_session = repository.get_chat_session(session, session_id, session_kind="playground")
-        if not chat_session:
-            raise HTTPException(status_code=404, detail="Chat session not found.")
-    else:
-        chat_session = repository.get_or_create_chat_session(session, project_id, session_kind="playground")
-    history = sorted(chat_session.turns, key=lambda item: item.created_at)
-    repository.add_chat_turn(session, session_id=chat_session.id, role="user", content=message)
-
-    evidence_block = ""
-    prompt_excerpt = f"SKILL:\n{version.system_prompt[:1800]}"
-    assistant_reply, llm_meta = _generate_chat_reply(
-        chat_config,
-        version.system_prompt,
-        history,
-        message,
-        evidence_block,
-        log_path=str(request.app.state.config.llm_log_path),
-    )
-    trace = {
-        "skill_version_id": version.id,
-        "skill_version_number": version.version_number,
-        "prompt_excerpt": prompt_excerpt,
-        "llm": llm_meta,
-    }
-    assistant_turn = repository.add_chat_turn(
-        session,
-        session_id=chat_session.id,
-        role="assistant",
-        content=assistant_reply,
-        trace_json=trace,
-    )
-    return {
-        "session_id": chat_session.id,
-        "assistant_turn_id": assistant_turn.id,
-        "response": assistant_reply,
-        "trace": trace,
-    }
-
-
-def _generate_chat_reply(
-    config: ServiceConfig | None,
-    system_prompt: str,
-    history: list[Any],
-    message: str,
-    evidence_block: str,
-    *,
-    log_path: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    if not config:
-        prefix = "当前为无外部 LLM 降级模式。"
-        return (
-            (
-                f"{prefix}\n\n"
-                f"根据已发布 skill，我会尽量保持设定中的语气与立场。\n\n"
-                f"你刚刚说的是：{message}"
-            ),
-            {"provider_kind": "local", "api_mode": "responses", "model": "fallback"},
-        )
-    client = OpenAICompatibleClient(config, log_path=log_path)
-    messages = [{"role": "system", "content": system_prompt}]
-    if evidence_block:
-        messages.append({"role": "system", "content": f"Retrieved evidence from source documents:\n{evidence_block}"})
-    for turn in history[-8:]:
-        messages.append({"role": turn.role, "content": turn.content})
-    messages.append({"role": "user", "content": message})
-    try:
-        result = client.chat_completion_result(messages, model=config.model, temperature=0.7, max_tokens=900)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Chat completion failed: {exc}") from exc
-    return (
-        result.content,
-        {
-            "provider_kind": config.provider_kind,
-            "api_mode": config.api_mode,
-            "model": result.model,
-            "usage": result.usage,
-            "request_url": result.request_url,
-        },
-    )
 
 
 def _persist_asset_files(
@@ -3314,48 +3079,6 @@ def _build_skill_export_zip(
     return f"{base_name}.zip", buffer.getvalue()
 
 
-def _normalize_saved_asset_content(
-    asset_kind: str,
-    json_payload: dict[str, Any],
-    markdown_text: str,
-    prompt_text: str,
-) -> tuple[dict[str, Any], str]:
-    if asset_kind in STONE_V2_ASSET_KINDS:
-        _ensure_valid_stone_v2_asset_payload(asset_kind, json_payload)
-        return dict(json_payload or {}), prompt_text
-    if asset_kind not in {"skill", "cc_skill"}:
-        return json_payload, prompt_text
-
-    payload = dict(json_payload or {})
-    export_docs = _skill_documents_for_export(asset_kind, payload, markdown_text)
-    documents = {
-        key: {
-            "filename": str(document.get("filename") or ""),
-            "markdown": str(document.get("markdown") or ""),
-        }
-        for key, document in export_docs.items()
-    }
-    if asset_kind == "skill":
-        documents["merge"] = {
-            "filename": str(documents.get("merge", {}).get("filename") or SKILL_DOCUMENT_FILENAMES["merge"]),
-            "markdown": markdown_text,
-        }
-    else:
-        documents["skill"] = {
-            "filename": str(documents.get("skill", {}).get("filename") or CC_SKILL_DOCUMENT_FILENAMES["skill"]),
-            "markdown": markdown_text,
-        }
-    payload["documents"] = documents
-    return payload, markdown_text
-
-
-def _ensure_valid_stone_v2_asset_payload(asset_kind: str, json_payload: dict[str, Any] | None) -> None:
-    if asset_kind not in STONE_V2_ASSET_KINDS:
-        return
-    try:
-        validate_stone_v2_asset_payload(asset_kind, json_payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _ordered_facets(facets: list[AnalysisFacet], summary: dict[str, Any] | None = None) -> list[AnalysisFacet]:
@@ -3364,20 +3087,6 @@ def _ordered_facets(facets: list[AnalysisFacet], summary: dict[str, Any] | None 
         facet_keys = [facet.key for facet in FACETS]
     order = {facet_key: index for index, facet_key in enumerate(facet_keys)}
     return sorted(facets, key=lambda item: order.get(item.facet_key, 999))
-
-
-def _ensure_project(session: Session, project_id: str):
-    project = repository.get_project(session, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    return project
-
-
-def _get_project_document(session: Session, project_id: str, document_id: str) -> DocumentRecord:
-    document = repository.get_document(session, document_id)
-    if not document or document.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return document
 
 
 def _delete_document_with_file(document: DocumentRecord) -> None:
@@ -3479,41 +3188,12 @@ def _normalize_analysis_concurrency(value: Any) -> int:
     return max(MIN_ANALYSIS_CONCURRENCY, candidate)
 
 
-def _project_write_block_detail(project) -> dict[str, Any]:
-    message = "项目正在删除中，当前操作已禁用。" if project.lifecycle_state == repository.PROJECT_LIFECYCLE_DELETING else "项目删除失败，当前仅允许重试删除。"
-    return {
-        "message": message,
-        "project_id": project.id,
-        "lifecycle_state": project.lifecycle_state,
-        "deletion_error": project.deletion_error,
-    }
 
 
-def _ensure_project(session: Session, project_id: str, *, require_active: bool = False):
-    project = repository.get_project(session, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found.")
-    if require_active and project.lifecycle_state != repository.PROJECT_LIFECYCLE_ACTIVE:
-        raise HTTPException(status_code=409, detail=_project_write_block_detail(project))
-    return project
 
 
-def _ensure_project_writable(session: Session, project_id: str):
-    return _ensure_project(session, project_id, require_active=True)
 
 
-def _get_project_document(
-    session: Session,
-    project_id: str,
-    document_id: str,
-    *,
-    require_active: bool = False,
-) -> DocumentRecord:
-    _ensure_project(session, project_id, require_active=require_active)
-    document = repository.get_document(session, document_id)
-    if not document or document.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Document not found.")
-    return document
 
 
 def _schedule_project_deletion(request: Request, session: Session, project_id: str):
@@ -3535,25 +3215,6 @@ def _schedule_project_deletion(request: Request, session: Session, project_id: s
             repository.mark_projects_delete_failed(repair_session, project_ids, error=error_text)
         raise HTTPException(status_code=500, detail=f"Failed to enqueue project deletion: {error_text}") from exc
     return project, task
-
-
-def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 0) -> str:
-    label = facet_label or "Analysis"
-    if phase == "retrieving":
-        return f"{label}: retrieving evidence"
-    if phase == "llm":
-        return f"{label}: generating with LLM"
-    if phase == "analyzing":
-        return f"{label}: analyzing"
-    if phase == "completed":
-        return "Analysis completed"
-    if phase == "failed":
-        return "Analysis finished with failures"
-    if phase == "persisting":
-        return "Finalizing analysis"
-    if queued:
-        return f"{queued} facet(s) waiting for a slot"
-    return "Waiting to start"
 
 
 def _serialize_analysis_event(event) -> dict[str, Any]:
@@ -4041,112 +3702,6 @@ def _render_writing_review_message(review: dict[str, Any]) -> str:
     return "\n".join(parts).strip()
 
 
-def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]:
-    summary = dict(run.summary_json or {})
-    return {
-        "id": run.id,
-        "project_id": run.project_id,
-        "status": run.status,
-        "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
-        "finished_at": run.finished_at.isoformat() + "Z" if run.finished_at else None,
-        "llm_model": run.llm_model,
-        "progress_percent": run.progress_percent,
-        "current_stage": run.current_stage,
-        "prompt_tokens": run.prompt_tokens,
-        "completion_tokens": run.completion_tokens,
-        "total_tokens": run.total_tokens,
-        "error_message": run.error_message,
-        "stone_profile_completed": summary.get("stone_profile_completed", 0),
-        "stone_profile_total": summary.get("stone_profile_total", 0),
-        "concurrency": summary.get("concurrency", 1),
-        "created_at": run.created_at.isoformat() + "Z",
-    }
-
-
-def _serialize_stone_profile_v2(profile: dict[str, Any] | None) -> dict[str, Any] | None:
-    if not isinstance(profile, dict):
-        return None
-    normalized = normalize_stone_profile_v2(profile)
-    if not normalized.get("content_kernel") and not (normalized.get("anchor_spans") or {}).get("signature"):
-        return None
-    return {
-        "length_band": normalized["length_band"],
-        "content_kernel": normalized["content_kernel"],
-        "surface_form": normalized["surface_form"],
-        "voice_mask": dict(normalized.get("voice_mask") or {}),
-        "lexicon_markers": list(normalized.get("lexicon_markers") or [])[:8],
-        "syntax_signature": dict(normalized.get("syntax_signature") or {}),
-        "segment_map": list(normalized.get("segment_map") or [])[:4],
-        "opening_move": normalized["opening_move"],
-        "turning_move": normalized["turning_move"],
-        "closure_move": normalized["closure_move"],
-        "motif_tags": list(normalized.get("motif_tags") or [])[:4],
-        "stance_vector": dict(normalized.get("stance_vector") or {}),
-        "emotion_curve": list(normalized.get("emotion_curve") or [])[:3],
-        "rhetorical_devices": list(normalized.get("rhetorical_devices") or [])[:6],
-        "prototype_family": normalized["prototype_family"],
-        "anchor_spans": dict(normalized.get("anchor_spans") or {}),
-        "anti_patterns": list(normalized.get("anti_patterns") or [])[:6],
-    }
-
-
-def _stone_document_status(index: int, run: "StonePreprocessRun | None", has_profile: bool) -> str:
-    if has_profile:
-        return "completed"
-    if not run:
-        return "queued"
-    status = str(run.status or "").lower()
-    if status not in {"queued", "running", "failed"}:
-        return "queued"
-    summary = dict(run.summary_json or {})
-    completed = int(summary.get("stone_profile_completed") or 0)
-    concurrency = max(1, int(summary.get("concurrency") or 1))
-    if status in {"queued", "running"} and completed < index <= completed + concurrency:
-        return "running"
-    if status == "failed" and index == min(completed + 1, int(summary.get("stone_profile_total") or index)):
-        return "failed"
-    return "queued"
-
-
-def _serialize_stone_preprocess_documents(
-    documents: list[DocumentRecord],
-    run: "StonePreprocessRun | None" = None,
-) -> list[dict[str, Any]]:
-    serialized: list[dict[str, Any]] = []
-    for index, document in enumerate(documents, start=1):
-        metadata = dict(document.metadata_json or {})
-        stone_profile_v2 = _serialize_stone_profile_v2(metadata.get("stone_profile_v2"))
-        serialized.append(
-            {
-                "id": document.id,
-                "title": document.title or document.filename,
-                "filename": document.filename,
-                "document_index": index,
-                "ingest_status": document.ingest_status,
-                "lamp_status": _stone_document_status(index, run, stone_profile_v2 is not None),
-                "has_profile": stone_profile_v2 is not None,
-                "stone_profile_v2": stone_profile_v2,
-                "updated_at": document.updated_at.isoformat() if getattr(document, "updated_at", None) else None,
-                "profile_preview": (
-                    (stone_profile_v2 or {}).get("content_kernel")
-                    or (((stone_profile_v2 or {}).get("anchor_spans") or {}).get("opening"))
-                    or ""
-                ),
-            }
-        )
-    return serialized
-
-
-def _serialize_stone_preprocess_detail(
-    session: Session,
-    project_id: str,
-    run: "StonePreprocessRun",
-) -> dict[str, Any]:
-    documents = repository.list_project_documents(session, project_id)
-    return {
-        **_serialize_stone_preprocess_run(run),
-        "documents": _serialize_stone_preprocess_documents(documents, run),
-    }
 
 
 def _serialize_telegram_preprocess_run(run: TelegramPreprocessRun) -> dict[str, Any]:
@@ -4588,64 +4143,11 @@ def _normalize_asset_kind(value: str | None) -> str:
     candidate = (value or "cc_skill").strip().lower()
     if candidate == "skill":
         return "cc_skill"
+    if candidate in {"stone_author_model_v2", "stone_prototype_index_v2"}:
+        return candidate
     return candidate if candidate in ASSET_KINDS else "cc_skill"
 
 
-def _asset_label(asset_kind: str) -> str:
-    if asset_kind == "writing_guide":
-        return "Writing Guide"
-    if asset_kind == "stone_author_model_v2":
-        return "Stone Author Model V2"
-    if asset_kind == "stone_prototype_index_v2":
-        return "Stone Prototype Index V2"
-    if asset_kind == "profile_report":
-        return "用户画像报告"
-    return "Claude Code Skill"
-
-
-def _enqueue_analysis(
-    request: Request,
-    session: Session,
-    project_id: str,
-    *,
-    target_role: str | None,
-    target_user_query: str | None = None,
-    participant_id: str | None = None,
-    analysis_context: str | None,
-    concurrency: int | None = None,
-) -> AnalysisRun:
-    project = _ensure_project(session, project_id)
-    documents = repository.list_project_documents(session, project_id)
-    ready_documents = [document for document in documents if document.ingest_status == "ready"]
-    if not ready_documents:
-        raise HTTPException(status_code=400, detail="请先完成至少一份文档的解析处理。")
-    if project.mode == "telegram":
-        latest_successful_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
-        if latest_successful_preprocess_run is None:
-            raise HTTPException(status_code=400, detail="Telegram 项目必须先完成预处理后才能开始分析。")
-    existing_run = repository.get_active_analysis_run(session, project_id)
-    if existing_run:
-        if request.app.state.analysis_runner.is_tracking(existing_run.id):
-            return existing_run
-        _mark_run_as_stale(
-            session,
-            existing_run,
-            reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
-        )
-        session.flush()
-    run = request.app.state.analysis_engine.create_run(
-        session,
-        project_id,
-        target_role=(target_role or "").strip() or None if project.mode != "telegram" else None,
-        target_user_query=(target_user_query or "").strip() or None,
-        participant_id=(participant_id or "").strip() or None,
-        analysis_context=(analysis_context or "").strip() or None,
-        concurrency=concurrency,
-    )
-    session.commit()
-    request.app.state.analysis_runner.submit(run.id)
-    session.expire_all()
-    return repository.get_analysis_run(session, run.id) or run
 
 
 def _mark_run_as_stale(session: Session, run: AnalysisRun, *, reason: str) -> None:
@@ -4675,115 +4177,6 @@ def _resolve_run(session: Session, project_id: str, run_id: str | None) -> Analy
     return repository.get_latest_analysis_run(session, project_id)
 
 
-def _generate_asset_draft(request: Request, session: Session, project_id: str, *, asset_kind: str):
-    project = _ensure_project(session, project_id)
-    if project.mode == "stone" and asset_kind in {"stone_author_model_v2", "stone_prototype_index_v2"}:
-        preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project_id)
-        if not preprocess_run:
-            raise HTTPException(status_code=400, detail="请先完成 Stone 预处理，再生成 v2 基线资产。")
-        documents = [
-            {
-                "document_id": document.id,
-                "title": document.title or document.filename,
-                "text": str(document.clean_text or document.raw_text or ""),
-                "clean_text": document.clean_text,
-                "raw_text": document.raw_text,
-            }
-            for document in repository.list_project_documents(session, project_id)
-            if document.ingest_status == "ready"
-        ]
-        profiles = []
-        for document in repository.list_project_documents(session, project_id):
-            metadata = dict(document.metadata_json or {})
-            profile = metadata.get("stone_profile_v2")
-            if not isinstance(profile, dict):
-                continue
-            normalized = normalize_stone_profile_v2(
-                profile,
-                article_text=str(document.clean_text or document.raw_text or ""),
-                fallback_title=document.title or document.filename,
-            )
-            normalized["document_id"] = document.id
-            normalized["title"] = document.title or document.filename
-            profiles.append(normalized)
-        if not profiles:
-            raise HTTPException(status_code=400, detail="当前没有可用的 stone_profile_v2。")
-        clusters = build_short_text_clusters(profiles)
-        if asset_kind == "stone_author_model_v2":
-            payload = build_stone_author_model_v2(
-                project_name=project.name,
-                profiles=profiles,
-                short_text_clusters=clusters,
-            )
-            markdown = render_stone_author_model_markdown(payload)
-        else:
-            payload = build_stone_prototype_index_v2(
-                project_name=project.name,
-                profiles=profiles,
-                documents=documents,
-            )
-            markdown = render_stone_prototype_index_markdown(payload)
-        _ensure_valid_stone_v2_asset_payload(asset_kind, payload)
-        draft = repository.create_asset_draft(
-            session,
-            project_id=project_id,
-            run_id=None,
-            asset_kind=asset_kind,
-            markdown_text=markdown,
-            json_payload=payload,
-            prompt_text=json.dumps(payload, ensure_ascii=False, indent=2),
-            notes="Stone v2 baseline draft regenerated from preprocess output.",
-        )
-        _persist_asset_files(
-            request,
-            project_id,
-            draft.asset_kind,
-            f"draft_{draft.id}",
-            draft.markdown_text,
-            draft.json_payload,
-            draft.system_prompt,
-        )
-        return draft
-    run = repository.get_latest_analysis_run(session, project_id)
-    if not run:
-        raise HTTPException(status_code=400, detail="请先完成一次分析，再生成资产。")
-    if run.status in {"queued", "running"}:
-        raise HTTPException(status_code=409, detail="当前分析仍在进行中，请等待完成后再生成资产。")
-    facets = run.facets or []
-    if not facets:
-        raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
-    chat_config = repository.get_service_config(session, "chat_service")
-    summary = run.summary_json or {}
-    bundle = request.app.state.asset_synthesizer.build(
-        asset_kind,
-        project,
-        facets,
-        chat_config,
-        target_role=summary.get("target_role"),
-        analysis_context=summary.get("analysis_context"),
-        session=session,
-        retrieval_service=request.app.state.retrieval,
-    )
-    draft = repository.create_asset_draft(
-        session,
-        project_id=project_id,
-        run_id=run.id,
-        asset_kind=bundle.asset_kind,
-        markdown_text=bundle.markdown_text,
-        json_payload=bundle.json_payload,
-        prompt_text=bundle.prompt_text,
-        notes="系统自动生成草稿，发布前请先复核。",
-    )
-    _persist_asset_files(
-        request,
-        project_id,
-        draft.asset_kind,
-        f"draft_{draft.id}",
-        draft.markdown_text,
-        draft.json_payload,
-        draft.system_prompt,
-    )
-    return draft
 
 
 def _chat_with_persona(
@@ -4913,16 +4306,6 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
     return "等待开始"
 
 
-def _asset_label(asset_kind: str) -> str:
-    if asset_kind == "writing_guide":
-        return "Writing Guide"
-    if asset_kind == "stone_author_model_v2":
-        return "Stone Author Model V2"
-    if asset_kind == "stone_prototype_index_v2":
-        return "Stone Prototype Index V2"
-    if asset_kind == "profile_report":
-        return "用户画像报告"
-    return "Claude Code Skill"
 
 
 @router.websocket("/api/projects/{project_id}/documents/ws")
@@ -4949,3 +4332,648 @@ async def websocket_document_status(websocket: WebSocket, project_id: str):
             await asyncio.sleep(1.0)
     except WebSocketDisconnect:
         pass
+
+
+def _stone_profile_progress_stats(session: Session, project_id: str) -> dict[str, int]:
+    documents = [
+        document
+        for document in repository.list_project_documents(session, project_id)
+        if document.ingest_status == "ready"
+    ]
+    profile_count = 0
+    for document in documents:
+        metadata = dict(document.metadata_json or {})
+        if isinstance(metadata.get(STONE_V3_PROFILE_KEY), dict):
+            profile_count += 1
+    return {
+        "ready_document_count": len(documents),
+        "profile_count": profile_count,
+        "failed_count": max(len(documents) - profile_count, 0),
+    }
+
+
+def _stone_profiles_meet_analysis_threshold(ready_document_count: int, profile_count: int) -> bool:
+    total = max(0, int(ready_document_count or 0))
+    completed = max(0, int(profile_count or 0))
+    if total <= 0:
+        return False
+    return completed * 2 > total
+
+
+def _recover_stone_preprocess_run_if_stale(
+    request: Request,
+    session: Session,
+    project_id: str,
+    run: "StonePreprocessRun | None",
+) -> "StonePreprocessRun | None":
+    if not run:
+        return None
+    if str(run.status or "").lower() not in {"queued", "running"}:
+        return run
+    stone_worker = getattr(request.app.state, "stone_preprocess_worker", None)
+    if stone_worker and hasattr(stone_worker, "is_tracking") and stone_worker.is_tracking(run.id):
+        return run
+    preprocess_service = getattr(request.app.state, "preprocess_service", None)
+    if preprocess_service and hasattr(preprocess_service, "is_tracking") and preprocess_service.is_tracking(run.id):
+        return run
+
+    stats = _stone_profile_progress_stats(session, project_id)
+    ready_count = int(stats["ready_document_count"] or 0)
+    profile_count = int(stats["profile_count"] or 0)
+    summary = dict(run.summary_json or {})
+    summary["stone_profile_total"] = max(int(summary.get("stone_profile_total") or 0), ready_count)
+    summary["stone_profile_completed"] = max(int(summary.get("stone_profile_completed") or 0), profile_count)
+    summary["stone_profile_failed"] = max(
+        int(summary.get("stone_profile_failed") or 0),
+        max(ready_count - profile_count, 0),
+    )
+    summary["progress_percent"] = int((profile_count / ready_count) * 100) if ready_count > 0 else 0
+    summary["current_stage"] = "partial_failed" if _stone_profiles_meet_analysis_threshold(ready_count, profile_count) else "failed"
+    summary["analysis_ready"] = _stone_profiles_meet_analysis_threshold(ready_count, profile_count)
+    run.summary_json = summary
+    run.progress_percent = int(summary.get("progress_percent") or 0)
+    run.finished_at = utcnow()
+    if _stone_profiles_meet_analysis_threshold(ready_count, profile_count):
+        run.status = "partial_failed"
+        run.current_stage = "Partial failed"
+        run.error_message = (
+            f"Detected a stale Stone preprocess run without a live worker. "
+            f"Profile coverage is still usable for analysis: {profile_count}/{ready_count}."
+        )
+    else:
+        run.status = "failed"
+        run.current_stage = "Failed"
+        run.error_message = (
+            f"Detected a stale Stone preprocess run without a live worker. "
+            f"Profile coverage is below the analysis threshold: {profile_count}/{ready_count}."
+        )
+    session.commit()
+    return run
+
+
+def _stone_document_status(index: int, run: "StonePreprocessRun | None", has_profile: bool) -> str:
+    if has_profile:
+        return "completed"
+    if not run:
+        return "queued"
+    status = str(run.status or "").lower()
+    if status not in {"queued", "running", "failed", "partial_failed"}:
+        return "queued"
+    summary = dict(run.summary_json or {})
+    completed = int(summary.get("stone_profile_completed") or 0)
+    failed = int(summary.get("stone_profile_failed") or 0)
+    concurrency = max(1, int(summary.get("concurrency") or DEFAULT_ANALYSIS_CONCURRENCY))
+    if status in {"queued", "running"} and completed < index <= completed + concurrency:
+        return "running"
+    if status in {"failed", "partial_failed"} and completed < index <= completed + max(failed, 1):
+        return "failed"
+    return "queued"
+
+
+def _enqueue_analysis(
+    request: Request,
+    session: Session,
+    project_id: str,
+    *,
+    target_role: str | None,
+    target_user_query: str | None = None,
+    participant_id: str | None = None,
+    analysis_context: str | None,
+    concurrency: int | None = None,
+) -> AnalysisRun:
+    project = _ensure_project(session, project_id)
+    documents = repository.list_project_documents(session, project_id)
+    ready_documents = [document for document in documents if document.ingest_status == "ready"]
+    if not ready_documents:
+        raise HTTPException(status_code=400, detail="请先完成至少一份文档的解析处理。")
+    if project.mode == "telegram":
+        latest_successful_preprocess_run = repository.get_latest_successful_telegram_preprocess_run(session, project_id)
+        if latest_successful_preprocess_run is None:
+            raise HTTPException(status_code=400, detail="Telegram 项目必须先完成预处理后才能开始分析。")
+    elif project.mode == "stone":
+        stats = _stone_profile_progress_stats(session, project_id)
+        if not _stone_profiles_meet_analysis_threshold(stats["ready_document_count"], stats["profile_count"]):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Stone 作者分析要求超过一半的已就绪文档拥有预处理画像。"
+                    f"当前覆盖率：{stats['profile_count']}/{stats['ready_document_count']}。"
+                ),
+            )
+    existing_run = repository.get_active_analysis_run(session, project_id)
+    if existing_run:
+        if request.app.state.analysis_runner.is_tracking(existing_run.id):
+            return existing_run
+        _mark_run_as_stale(
+            session,
+            existing_run,
+            reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
+        )
+        session.flush()
+    run = request.app.state.analysis_engine.create_run(
+        session,
+        project_id,
+        target_role=(target_role or "").strip() or None if project.mode != "telegram" else None,
+        target_user_query=(target_user_query or "").strip() or None,
+        participant_id=(participant_id or "").strip() or None,
+        analysis_context=(analysis_context or "").strip() or None,
+        concurrency=concurrency,
+    )
+    session.commit()
+    request.app.state.analysis_runner.submit(run.id)
+    session.expire_all()
+    return repository.get_analysis_run(session, run.id) or run
+
+
+def _primary_asset_kind_for_mode(mode: str | None) -> str:
+    return "stone_author_model_v3" if str(mode or "").strip().lower() == "stone" else "cc_skill"
+
+
+def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
+    if str(project.mode or "").strip().lower() == "stone":
+        return (
+            {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
+            {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
+        )
+    return (
+        {"value": "cc_skill", "label": "Claude Code Skill"},
+        {"value": "profile_report", "label": "用户画像报告"},
+    )
+
+
+def _resolve_asset_kind_for_project(project, requested_kind: str | None) -> str:
+    default_kind = _primary_asset_kind_for_mode(project.mode)
+    asset_kind = _normalize_asset_kind(requested_kind or default_kind)
+    if str(project.mode or "").strip().lower() != "stone":
+        return asset_kind
+    if asset_kind in {
+        "stone_author_model_v3",
+        "stone_prototype_index_v3",
+    }:
+        return asset_kind
+    return "stone_author_model_v3"
+
+
+def _writing_workspace_ui(locale: str) -> dict[str, Any]:
+    base = page_strings("preprocess", locale)
+    labels = {
+        "title": "Writing Workspace" if locale == "en-US" else "写作台",
+        "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
+        "hero_note": (
+            "Read Stone v3 profiles, prototype retrieval, and holistic critics directly. The old multi-facet bridge is now legacy fallback only."
+            if locale == "en-US"
+            else "直接读取 Stone v3 画像、原型检索和整体 critic；旧的多维分析写作桥接只作为 legacy fallback 保留。"
+        ),
+        "new_session": "New Session" if locale == "en-US" else "新建会话",
+        "rename_session": "Rename" if locale == "en-US" else "重命名",
+        "delete_session": "Delete Session" if locale == "en-US" else "删除会话",
+        "sessions": "Sessions" if locale == "en-US" else "会话",
+        "toggle_sessions": "Sessions" if locale == "en-US" else "会话列表",
+        "channel_live": "Live Channel" if locale == "en-US" else "群聊频道",
+        "pinned_label": "Pinned Baseline" if locale == "en-US" else "置顶基线",
+        "composer_placeholder": (
+            "Write something like: Write about a rainy station, 800 words, restrained tone"
+            if locale == "en-US"
+            else "例如：写一篇雨夜车站，800字，克制一点"
+        ),
+        "message_hint": (
+            "Include an explicit word count such as 800 words."
+            if locale == "en-US"
+            else "消息里请带明确字数，例如：写一篇雨夜车站，800字，克制一点"
+        ),
+        "message_parse_error": (
+            "Please include an explicit word count such as 800 words."
+            if locale == "en-US"
+            else "请在消息里带上明确字数，例如 800字 或 800 words。"
+        ),
+        "send": "Send" if locale == "en-US" else "发送",
+        "sending": "Writing..." if locale == "en-US" else "写作中...",
+        "baseline_label": "Baseline" if locale == "en-US" else "当前基线",
+        "baseline_ready": "Using latest Stone v3 baseline." if locale == "en-US" else "当前使用最新 Stone v3 基线。",
+        "baseline_requires_rebuild": (
+            "Only legacy Stone v2 data exists. Re-run Stone preprocess to rebuild the v3 baseline."
+            if locale == "en-US"
+            else "当前只有旧版 Stone v2 数据，请重新运行 Stone 预处理以重建 v3 基线。"
+        ),
+        "baseline_missing_preprocess": "Run Stone preprocess first." if locale == "en-US" else "请先完成 Stone 预处理。",
+        "baseline_running_preprocess": "Stone preprocess is still running." if locale == "en-US" else "Stone 预处理仍在运行中。",
+        "baseline_missing_profiles": "No Stone v3 article profiles yet." if locale == "en-US" else "当前还没有 Stone v3 逐篇画像。",
+        "baseline_incomplete_baseline": "Stone v3 baseline assets are incomplete." if locale == "en-US" else "Stone v3 基线资产还不完整。",
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
+        "working": "Working..." if locale == "en-US" else "处理中...",
+        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
+        "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
+        "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
+        "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",
+        "you_label": "You" if locale == "en-US" else "你",
+        "agent_label": "Writing Agent" if locale == "en-US" else "写作 Agent",
+    }
+    base.update(labels)
+    return base
+
+
+def _resolve_stone_writing_status(session: Session, project_id: str) -> dict[str, Any]:
+    author_model_v3_available = shared_has_valid_asset_payload(
+        session,
+        project_id,
+        asset_kind="stone_author_model_v3",
+        validator=is_valid_stone_v3_asset_payload,
+    )
+    prototype_index_v3_available = shared_has_valid_asset_payload(
+        session,
+        project_id,
+        asset_kind="stone_prototype_index_v3",
+        validator=is_valid_stone_v3_asset_payload,
+    )
+    documents = repository.list_project_documents(session, project_id)
+    profile_count_v3 = sum(
+        1 for document in documents if isinstance(dict(document.metadata_json or {}).get(STONE_V3_PROFILE_KEY), dict)
+    )
+    legacy_v2_detected = any(
+        isinstance(dict(document.metadata_json or {}).get("stone_profile_v2"), dict)
+        for document in documents
+    ) or bool(
+        repository.get_latest_asset_version(session, project_id, asset_kind="stone_author_model_v2")
+        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v2")
+        or repository.get_latest_asset_version(session, project_id, asset_kind="stone_prototype_index_v2")
+        or repository.get_latest_asset_draft(session, project_id, asset_kind="stone_prototype_index_v2")
+    )
+    active_preprocess = repository.get_active_stone_preprocess_run(session, project_id)
+    preprocess_run = get_latest_usable_stone_preprocess_run(
+        session,
+        project_id,
+        profile_key=STONE_V3_PROFILE_KEY,
+    )
+    if profile_count_v3 > 0:
+        if author_model_v3_available and prototype_index_v3_available:
+            status = "ready"
+        else:
+            status = "incomplete_baseline"
+    elif legacy_v2_detected:
+        status = "requires_rebuild"
+    elif preprocess_run:
+        status = "missing_profiles"
+    else:
+        status = "running_preprocess" if active_preprocess else "missing_preprocess"
+    return {
+        "status": status,
+        "run_id": (preprocess_run.id if preprocess_run else active_preprocess.id if active_preprocess else None),
+        "label": (
+            f"preprocess {preprocess_run.id[:8]}"
+            if preprocess_run and status != "requires_rebuild"
+            else "requires_rebuild" if status == "requires_rebuild" else None
+        ),
+        "profile_count": profile_count_v3,
+        "corpus_ready": profile_count_v3 > 0,
+        "author_model_ready": author_model_v3_available,
+        "prototype_index_ready": prototype_index_v3_available,
+        "author_model_v3_ready": author_model_v3_available,
+        "prototype_index_v3_ready": prototype_index_v3_available,
+        "profile_version": "v3" if profile_count_v3 > 0 else None,
+        "baseline_version": "v3" if author_model_v3_available and prototype_index_v3_available else None,
+        "rebuild_required": status == "requires_rebuild",
+    }
+
+
+def _serialize_stone_preprocess_run(run: "StonePreprocessRun") -> dict[str, Any]:
+    summary = dict(run.summary_json or {})
+    return {
+        "id": run.id,
+        "project_id": run.project_id,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() + "Z" if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() + "Z" if run.finished_at else None,
+        "llm_model": run.llm_model,
+        "progress_percent": run.progress_percent,
+        "current_stage": run.current_stage,
+        "prompt_tokens": run.prompt_tokens,
+        "completion_tokens": run.completion_tokens,
+        "total_tokens": run.total_tokens,
+        "error_message": run.error_message,
+        "stone_profile_completed": summary.get("stone_profile_completed", 0),
+        "stone_profile_total": summary.get("stone_profile_total", 0),
+        "stone_profile_failed": summary.get("stone_profile_failed", 0),
+        "concurrency": summary.get("concurrency", DEFAULT_ANALYSIS_CONCURRENCY),
+        "profile_version": summary.get("profile_version"),
+        "baseline_version": summary.get("baseline_version"),
+        "analysis_ready": bool(summary.get("analysis_ready")),
+        "baseline_review_v3": summary.get("baseline_review_v3"),
+        "stage_trace": list(summary.get("stage_trace") or []),
+        "created_at": run.created_at.isoformat() + "Z",
+    }
+
+
+def _serialize_stone_profile_v3(profile: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(profile, dict):
+        return None
+    normalized = normalize_stone_profile_v3(profile)
+    document_core = dict(normalized.get("document_core") or {})
+    voice_contract = dict(normalized.get("voice_contract") or {})
+    structure_moves = dict(normalized.get("structure_moves") or {})
+    motifs = dict(normalized.get("motif_and_scene_bank") or {})
+    value_and_judgment = dict(normalized.get("value_and_judgment") or {})
+    anchors = dict(normalized.get("anchor_windows") or {})
+    prototype_affordances = dict(normalized.get("prototype_affordances") or {})
+    if not document_core.get("summary") and not anchors.get("opening") and not anchors.get("closing"):
+        return None
+    return {
+        "length_band": document_core.get("length_band"),
+        "content_kernel": document_core.get("summary"),
+        "surface_form": document_core.get("surface_form"),
+        "voice_mask": {
+            "person": voice_contract.get("person"),
+            "address_target": voice_contract.get("address_target"),
+            "distance": voice_contract.get("distance"),
+            "self_position": voice_contract.get("self_position"),
+        },
+        "lexicon_markers": list(motifs.get("lexicon_markers") or [])[:8],
+        "syntax_signature": {
+            "cadence": voice_contract.get("cadence"),
+            "sentence_shape": voice_contract.get("sentence_shape"),
+            "punctuation_habits": [],
+        },
+        "segment_map": list(filter(None, [structure_moves.get("opening_move"), structure_moves.get("development_move"), structure_moves.get("closure_move")]))[:4],
+        "opening_move": structure_moves.get("opening_move"),
+        "turning_move": structure_moves.get("turning_move"),
+        "closure_move": structure_moves.get("closure_move"),
+        "motif_tags": list(motifs.get("motif_tags") or [])[:4],
+        "stance_vector": {
+            "target": value_and_judgment.get("judgment_target"),
+            "judgment": value_and_judgment.get("judgment_mode"),
+            "value_lens": value_and_judgment.get("value_lens"),
+        },
+        "emotion_curve": [],
+        "rhetorical_devices": list(motifs.get("scene_terms") or [])[:6],
+        "prototype_family": prototype_affordances.get("prototype_family"),
+        "anchor_spans": {
+            "opening": anchors.get("opening"),
+            "pivot": anchors.get("pivot"),
+            "closing": anchors.get("closing"),
+            "signature": list(anchors.get("signature_lines") or [])[:3],
+        },
+        "anti_patterns": list(normalized.get("anti_patterns") or [])[:6],
+    }
+
+
+def _serialize_stone_preprocess_documents(
+    documents: list[DocumentRecord],
+    run: "StonePreprocessRun | None" = None,
+) -> list[dict[str, Any]]:
+    serialized: list[dict[str, Any]] = []
+    for index, document in enumerate(documents, start=1):
+        metadata = dict(document.metadata_json or {})
+        stone_profile_v3 = _serialize_stone_profile_v3(metadata.get(STONE_V3_PROFILE_KEY))
+        serialized.append(
+            {
+                "id": document.id,
+                "title": document.title or document.filename,
+                "filename": document.filename,
+                "document_index": index,
+                "ingest_status": document.ingest_status,
+                "lamp_status": _stone_document_status(index, run, stone_profile_v3 is not None),
+                "has_profile": stone_profile_v3 is not None,
+                "stone_profile_v3": stone_profile_v3,
+                "profile_version": "v3" if stone_profile_v3 is not None else None,
+                "updated_at": document.updated_at.isoformat() if getattr(document, "updated_at", None) else None,
+                "profile_preview": (
+                    (stone_profile_v3 or {}).get("content_kernel")
+                    or (((stone_profile_v3 or {}).get("anchor_spans") or {}).get("opening"))
+                    or ""
+                ),
+            }
+        )
+    return serialized
+
+
+def _serialize_stone_preprocess_detail(
+    session: Session,
+    project_id: str,
+    run: "StonePreprocessRun",
+) -> dict[str, Any]:
+    documents = repository.list_project_documents(session, project_id)
+    return {
+        **_serialize_stone_preprocess_run(run),
+        "documents": _serialize_stone_preprocess_documents(documents, run),
+    }
+
+
+def _normalize_saved_asset_content(
+    asset_kind: str,
+    json_payload: dict[str, Any],
+    markdown_text: str,
+    prompt_text: str,
+) -> tuple[dict[str, Any], str]:
+    if asset_kind in STONE_V3_ASSET_KINDS:
+        try:
+            validate_stone_v3_asset_payload(asset_kind, json_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return dict(json_payload or {}), prompt_text
+    if asset_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
+    if asset_kind not in {"skill", "cc_skill"}:
+        return json_payload, prompt_text
+
+    payload = dict(json_payload or {})
+    export_docs = _skill_documents_for_export(asset_kind, payload, markdown_text)
+    documents = {
+        key: {
+            "filename": str(document.get("filename") or ""),
+            "markdown": str(document.get("markdown") or ""),
+        }
+        for key, document in export_docs.items()
+    }
+    if asset_kind == "skill":
+        documents["merge"] = {
+            "filename": str(documents.get("merge", {}).get("filename") or SKILL_DOCUMENT_FILENAMES["merge"]),
+            "markdown": markdown_text,
+        }
+    else:
+        documents["skill"] = {
+            "filename": str(documents.get("skill", {}).get("filename") or CC_SKILL_DOCUMENT_FILENAMES["skill"]),
+            "markdown": markdown_text,
+        }
+    payload["documents"] = documents
+    return payload, markdown_text
+
+
+def _asset_label(asset_kind: str) -> str:
+    if asset_kind == "writing_guide":
+        return "Writing Guide"
+    if asset_kind == "stone_author_model_v3":
+        return "Stone Author Model V3"
+    if asset_kind == "stone_prototype_index_v3":
+        return "Stone Prototype Index V3"
+    if asset_kind == "stone_author_model_v2":
+        return "Stone Author Model V2"
+    if asset_kind == "stone_prototype_index_v2":
+        return "Stone Prototype Index V2"
+    if asset_kind == "profile_report":
+        return "用户画像报告"
+    return "Claude Code Skill"
+
+
+def _load_stone_v3_profiles_and_documents(session: Session, project_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    profiles: list[dict[str, Any]] = []
+    documents: list[dict[str, Any]] = []
+    for document in repository.list_project_documents(session, project_id):
+        if document.ingest_status != "ready":
+            continue
+        article_text = str(document.clean_text or document.raw_text or "")
+        documents.append(
+            {
+                "document_id": document.id,
+                "title": document.title or document.filename,
+                "filename": document.filename,
+                "source_type": document.source_type,
+                "created_at_guess": document.created_at_guess,
+                "text": article_text,
+                "clean_text": document.clean_text,
+                "raw_text": document.raw_text,
+            }
+        )
+        profile = dict(document.metadata_json or {}).get(STONE_V3_PROFILE_KEY)
+        if not isinstance(profile, dict):
+            continue
+        normalized = normalize_stone_profile_v3(
+            profile,
+            article_text=article_text,
+            fallback_title=document.title or document.filename,
+            document_id=document.id,
+            source_meta={
+                "created_at_guess": document.created_at_guess,
+                "source_type": document.source_type,
+            },
+        )
+        normalized["document_id"] = document.id
+        normalized["title"] = document.title or document.filename
+        profiles.append(normalized)
+    return profiles, documents
+
+
+def _generate_asset_draft(
+    request: Request,
+    session: Session,
+    project_id: str,
+    *,
+    asset_kind: str,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
+):
+    project = _ensure_project(session, project_id)
+    if project.mode == "stone" and asset_kind in STONE_V3_ASSET_KINDS:
+        preprocess_run = get_latest_usable_stone_preprocess_run(
+            session,
+            project_id,
+            profile_key=STONE_V3_PROFILE_KEY,
+        )
+        if not preprocess_run:
+            raise HTTPException(status_code=400, detail="请先完成 Stone 预处理，再生成 Stone v3 基线资产。")
+        profiles, documents = _load_stone_v3_profiles_and_documents(session, project_id)
+        if not profiles:
+            raise HTTPException(status_code=400, detail="当前没有可用的 stone_profile_v3。")
+        chat_config = repository.get_service_config(session, "chat_service")
+        if not chat_config:
+            raise HTTPException(status_code=400, detail="Stone v3 baseline synthesis requires a configured chat model.")
+        resume_checkpoint = load_stone_v3_checkpoint(request.app.state.config.assets_dir, project_id)
+
+        def persist_checkpoint(payload: dict[str, Any]) -> None:
+            save_stone_v3_checkpoint(request.app.state.config.assets_dir, project_id, payload)
+
+        synthesis = request.app.state.stone_v3_synthesizer.build(
+            project_name=project.name,
+            profiles=profiles,
+            documents=documents,
+            config=chat_config,
+            progress_callback=progress_callback,
+            cancel_requested=cancel_requested,
+            checkpoint_callback=persist_checkpoint,
+            resume_from=resume_checkpoint,
+        )
+        if cancel_requested and cancel_requested():
+            raise TimeoutError("Stone v3 asset generation was cancelled after stream inactivity timeout.")
+        if asset_kind == "stone_author_model_v3":
+            payload = dict(synthesis.get("author_model") or {})
+            markdown = render_stone_author_model_v3_markdown(payload)
+        else:
+            payload = dict(synthesis.get("prototype_index") or {})
+            markdown = render_stone_prototype_index_v3_markdown(payload)
+        try:
+            validate_stone_v3_asset_payload(asset_kind, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if cancel_requested and cancel_requested():
+            raise TimeoutError("Stone v3 asset generation was cancelled after stream inactivity timeout.")
+        draft = repository.create_asset_draft(
+            session,
+            project_id=project_id,
+            run_id=preprocess_run.id,
+            asset_kind=asset_kind,
+            markdown_text=markdown,
+            json_payload=payload,
+            prompt_text=json.dumps(
+                {
+                    "asset_kind": asset_kind,
+                    "baseline_version": "v3",
+                    "critic_review": synthesis.get("critic_review") or {},
+                    "stage_trace": synthesis.get("stage_trace") or [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            notes="Stone v3 baseline draft regenerated from preprocess output.",
+        )
+        _persist_asset_files(
+            request,
+            project_id,
+            draft.asset_kind,
+            f"draft_{draft.id}",
+            draft.markdown_text,
+            draft.json_payload,
+            draft.system_prompt,
+        )
+        clear_stone_v3_checkpoint(request.app.state.config.assets_dir, project_id)
+        return draft
+    project = _ensure_project(session, project_id)
+    if project.mode == "stone" and asset_kind in STONE_V2_ASSET_KINDS:
+        _raise_legacy_stone_v2_http_error()
+    run = repository.get_latest_analysis_run(session, project_id)
+    if not run:
+        raise HTTPException(status_code=400, detail="请先完成一次分析，再生成资产。")
+    if run.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="当前分析仍在进行中，请等待完成后再生成资产。")
+    facets = run.facets or []
+    if not facets:
+        raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
+    chat_config = repository.get_service_config(session, "chat_service")
+    summary = run.summary_json or {}
+    bundle = request.app.state.asset_synthesizer.build(
+        asset_kind,
+        project,
+        facets,
+        chat_config,
+        target_role=summary.get("target_role"),
+        analysis_context=summary.get("analysis_context"),
+        session=session,
+        retrieval_service=request.app.state.retrieval,
+    )
+    draft = repository.create_asset_draft(
+        session,
+        project_id=project_id,
+        run_id=run.id,
+        asset_kind=bundle.asset_kind,
+        markdown_text=bundle.markdown_text,
+        json_payload=bundle.json_payload,
+        prompt_text=bundle.prompt_text,
+        notes="系统自动生成草稿，发布前请先复核。",
+    )
+    _persist_asset_files(
+        request,
+        project_id,
+        draft.asset_kind,
+        f"draft_{draft.id}",
+        draft.markdown_text,
+        draft.json_payload,
+        draft.system_prompt,
+    )
+    return draft

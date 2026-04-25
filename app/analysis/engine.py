@@ -8,16 +8,16 @@ from dataclasses import asdict
 from time import perf_counter
 from typing import Any
 
-from app.analysis.prompts import build_facet_analysis_messages
+from app.agents.analysis.facet_llm import analyze_facet_with_llm
 from app.db import Database
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.analysis.facets import ALL_FACETS, FACETS, FacetDefinition, get_facet_definition, get_facet_prompt_profile, get_facets_for_mode
-from app.analysis.stone_agent import StoneAnalysisAgent
+from app.agents.stone.analysis_agent import StoneAnalysisAgent
 from app.analysis.streaming import AnalysisStreamHub
-from app.analysis.telegram_agent import TelegramAnalysisAgent
-from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode, parse_json_response
+from app.agents.telegram.analysis_agent import TelegramAnalysisAgent
+from app.llm.client import LLMError, OpenAICompatibleClient, normalize_api_mode
 from app.models import (
     AnalysisFacet,
     AnalysisRun,
@@ -206,7 +206,7 @@ def analyze_facet_worker(
     try:
         if llm_config:
             try:
-                payload = _analyze_with_llm(
+                payload = analyze_facet_with_llm(
                     facet,
                     project_name,
                     chunks,
@@ -214,6 +214,8 @@ def analyze_facet_worker(
                     llm_log_path=llm_log_path,
                     target_role=target_role,
                     analysis_context=analysis_context,
+                    normalize_payload=lambda payload: _normalize_facet_payload(payload, chunks, facet),
+                    raw_text_limit=RAW_TEXT_PREVIEW_LIMIT,
                     stream_callback=stream_callback,
                 )
             except Exception as exc:
@@ -457,9 +459,23 @@ class AnalysisEngine:
         if project.mode == "telegram":
             self._execute_telegram_run(session, run, project, chat_config)
         elif project.mode == "stone":
-            stone_preprocess_run = repository.get_latest_successful_stone_preprocess_run(session, project.id)
-            if not stone_preprocess_run:
-                raise ValueError("Stone mode requires a successful preprocess run.")
+            ready_documents = [
+                document
+                for document in repository.list_project_documents(session, project.id)
+                if document.ingest_status == "ready"
+            ]
+            profiled_documents = [
+                document
+                for document in ready_documents
+                if isinstance(dict(document.metadata_json or {}).get("stone_profile_v3"), dict)
+            ]
+            if not ready_documents:
+                raise ValueError("Stone mode requires at least one ready document.")
+            if len(profiled_documents) * 2 <= len(ready_documents):
+                raise ValueError(
+                    f"Stone mode needs profiles on more than half of ready documents before author analysis can run. "
+                    f"Current coverage: {len(profiled_documents)}/{len(ready_documents)}."
+                )
             self._ensure_run_active(run.id, run.project_id)
             self._run_stone_facets(
                 session,
@@ -1163,7 +1179,7 @@ class AnalysisEngine:
         profiled_document_ids = [
             document.id
             for document in documents
-            if isinstance(dict(document.metadata_json or {}).get("stone_profile_v2"), dict)
+            if isinstance(dict(document.metadata_json or {}).get("stone_profile_v3"), dict)
         ]
         retrieval_trace = {
             "mode": "stone_agent",
@@ -2396,99 +2412,6 @@ class AnalysisEngine:
             raise AnalysisCancelledError("Analysis run cancelled.")
 
 
-def _analyze_with_llm(
-    facet: FacetDefinition,
-    project_name: str,
-    chunks: list[dict[str, Any]],
-    llm_config: dict[str, Any],
-    *,
-    llm_log_path: str | None,
-    target_role: str | None,
-    analysis_context: str | None,
-    stream_callback: Any | None = None,
-) -> dict[str, Any]:
-    config = ServiceConfig(**llm_config)
-    client = OpenAICompatibleClient(config, log_path=llm_log_path)
-    excerpt_text = "\n\n".join(
-        f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}\n{chunk['content'][:900]}"
-        for chunk in chunks
-    )
-    messages = build_facet_analysis_messages(
-        project_name,
-        facet,
-        excerpt_text,
-        target_role=target_role,
-        analysis_context=analysis_context,
-    )
-    endpoint_path = "/responses" if normalize_api_mode(config.api_mode) == "responses" else "/chat/completions"
-    request_payload: dict[str, Any] = {
-        "messages": messages,
-        "model": config.model,
-        "api_mode": config.api_mode,
-        "endpoint_url": client.endpoint_url(endpoint_path),
-    }
-    started = perf_counter()
-    last_error: Exception | None = None
-    attempts = 0
-    for _ in range(2):
-        attempts += 1
-        try:
-            completion = client.chat_completion_result(
-                messages,
-                model=config.model,
-                temperature=0.2,
-                max_tokens=None,
-                stream_handler=stream_callback,
-            )
-            flush_remaining = getattr(stream_callback, "_flush_remaining", None)
-            if callable(flush_remaining):
-                flush_remaining()
-            try:
-                parsed = parse_json_response(completion.content, fallback=False)
-                llm_success = True
-            except LLMError as exc:
-                parsed = parse_json_response(completion.content, fallback=True)
-                llm_success = False
-                llm_error_text = str(exc)
-            normalized = _normalize_facet_payload(parsed, chunks, facet)
-            if not llm_success:
-                normalized["notes"] = (
-                    f"{normalized.get('notes') or ''}\n"
-                    "LLM 返回的不是标准 JSON，系统已用回退解析尽量恢复当前维度结果。"
-                ).strip()
-            normalized["_meta"] = {
-                "llm_called": True,
-                "llm_success": llm_success,
-                "llm_attempts": attempts,
-                "provider_kind": config.provider_kind,
-                "api_mode": normalize_api_mode(config.api_mode),
-                "llm_model": completion.model,
-                "prompt_tokens": completion.usage.get("prompt_tokens", 0),
-                "completion_tokens": completion.usage.get("completion_tokens", 0),
-                "total_tokens": completion.usage.get("total_tokens", 0),
-                "duration_ms": int((perf_counter() - started) * 1000),
-                "request_url": completion.request_url,
-                "request_payload": completion.request_payload or request_payload,
-                "raw_text": completion.content[:RAW_TEXT_PREVIEW_LIMIT],
-                "llm_error": None if llm_success else llm_error_text,
-                "log_path": llm_log_path,
-            }
-            return normalized
-        except (LLMError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            flush_remaining = getattr(stream_callback, "_flush_remaining", None)
-            if callable(flush_remaining):
-                flush_remaining()
-            if getattr(exc, "request_payload", None) is None:
-                setattr(exc, "request_payload", request_payload)
-            if getattr(exc, "request_url", None) is None:
-                setattr(exc, "request_url", client.endpoint_url(endpoint_path))
-            last_error = exc
-    raise LLMError(
-        str(last_error) if last_error else "维度分析失败。",
-        raw_text=(getattr(last_error, "raw_text", None) or "")[:RAW_TEXT_PREVIEW_LIMIT] or None,
-        request_url=getattr(last_error, "request_url", None),
-        request_payload=getattr(last_error, "request_payload", None),
-    )
 
 
 def _analyze_heuristically(

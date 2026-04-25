@@ -4,8 +4,8 @@ import json
 import re
 from typing import Any
 
-from app.analysis.stone_v2 import expand_stone_profile_v2_for_analysis
-from app.analysis.prompts import build_asset_messages, build_cc_skill_messages
+from app.agents.analysis.prompts import build_asset_messages, build_cc_skill_messages
+from app.agents.stone.analysis_agent import StoneAnalysisAgent
 from app.analysis.writing_guide import (
     build_writing_guide_payload_from_facets as _build_writing_guide_payload_from_facets,
     guide_facet_material as _guide_facet_material,
@@ -66,8 +66,6 @@ class AssetSynthesizer:
         retrieval_service: Any | None = None,
     ) -> AssetBundle:
         normalized_kind = "cc_skill" if asset_kind == "skill" else (asset_kind if asset_kind in ASSET_KINDS else "cc_skill")
-        if normalized_kind in {"stone_author_model_v2", "stone_prototype_index_v2"}:
-            raise ValueError("Stone V2 assets must be generated from Stone preprocess output, not the generic synthesizer.")
         self._emit_progress(
             progress_callback,
             phase="prepare",
@@ -445,12 +443,12 @@ class AssetSynthesizer:
         session: Any | None,
         retrieval_service: Any | None,
     ) -> dict[str, Any]:
-        from app.analysis.prompts import build_memories_messages, build_personality_messages
+        from app.agents.analysis.prompts import build_memories_messages, build_personality_messages
         from app.storage import repository
 
         personality_markdown = ""
         memories_markdown = ""
-        analysis_markdown = self._render_analysis_reference_markdown_v2(facet_dump)
+        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -602,12 +600,12 @@ class AssetSynthesizer:
         session: Any | None,
         retrieval_service: Any | None,
     ) -> dict[str, Any]:
-        from app.analysis.prompts import build_memories_messages, build_personality_messages
+        from app.agents.analysis.prompts import build_memories_messages, build_personality_messages
         from app.storage import repository
 
         personality_markdown = ""
         memories_markdown = ""
-        analysis_markdown = self._render_analysis_reference_markdown_v2(facet_dump)
+        analysis_markdown = self._render_analysis_reference_markdown(facet_dump)
         skill_context = ""
         embedding_config = repository.get_service_config(session, "embedding_service") if session else None
 
@@ -1012,10 +1010,10 @@ class AssetSynthesizer:
         profiles: list[dict[str, Any]] = []
         for document in repository.list_project_documents(session, project_id):
             metadata = dict(document.metadata_json or {})
-            profile = metadata.get("stone_profile_v2")
+            profile = metadata.get("stone_profile_v3")
             if not isinstance(profile, dict):
                 continue
-            expanded = expand_stone_profile_v2_for_analysis(
+            expanded = StoneAnalysisAgent._expand_stone_profile_v3_for_analysis(
                 profile,
                 article_text=str(document.clean_text or document.raw_text or ""),
                 title=document.title or document.filename,
@@ -1205,7 +1203,7 @@ class AssetSynthesizer:
                         [str(item) for item in skill_payload["memories"]],
                         fallback_summary=str(summary_by_key.get("life_timeline", {}).get("summary", "")),
                     ),
-                    "analysis_markdown": self._render_analysis_reference_markdown_v2(self._build_facet_dump(facets)),
+                    "analysis_markdown": self._render_analysis_reference_markdown(self._build_facet_dump(facets)),
                 },
                 project_name=project.name,
                 project_id=project.id,

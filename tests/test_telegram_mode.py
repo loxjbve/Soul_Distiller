@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 
 from app.analysis.facets import FacetDefinition
-from app.analysis.telegram_agent import TELEGRAM_TOOL_LOOP_MAX_STEPS, TelegramAnalysisAgent, TelegramFacetAnalysisResult
+from app.agents.telegram.analysis_agent import TELEGRAM_TOOL_LOOP_MAX_STEPS, TelegramAnalysisAgent, TelegramFacetAnalysisResult
 from app.llm.client import OpenAICompatibleClient
 from app.models import TextChunk
 from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
@@ -1087,7 +1087,7 @@ def test_telegram_analysis_uses_preprocess_tables_and_skips_retrieval(client, ap
             hit_count=1,
         )
 
-    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.agents.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     with app.state.db.session() as session:
         top_users = repository.list_telegram_preprocess_top_users(session, project_id, run_id=preprocess_run_id)
@@ -1372,7 +1372,7 @@ def test_telegram_profile_children_share_parent_preprocess_and_run_independently
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.agents.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/api/projects/{child.id}/analyze",
@@ -1675,7 +1675,7 @@ def test_telegram_parent_persona_studio_auto_analyzes_and_redirects(client, app,
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.agents.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/projects/{project_id}/profiles",
@@ -1932,7 +1932,7 @@ def test_telegram_analysis_runs_facets_concurrently(client, app, monkeypatch):
             hit_count=0,
         )
 
-    monkeypatch.setattr("app.analysis.telegram_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
+    monkeypatch.setattr("app.agents.telegram.analysis_agent.TelegramAnalysisAgent.analyze_facet", fake_analyze_facet)
 
     response = client.post(
         f"/api/projects/{project_id}/analyze",

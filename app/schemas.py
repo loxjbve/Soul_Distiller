@@ -8,8 +8,8 @@ ASSET_KINDS: tuple[str, ...] = (
     "cc_skill",
     "profile_report",
     "writing_guide",
-    "stone_author_model_v2",
-    "stone_prototype_index_v2",
+    "stone_author_model_v3",
+    "stone_prototype_index_v3",
 )
 DEFAULT_ANALYSIS_CONCURRENCY = 4
 MIN_ANALYSIS_CONCURRENCY = 1

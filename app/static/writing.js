@@ -189,12 +189,15 @@ if (shell) {
         source.addEventListener("status", (event) => {
             const payload = safeParseJson(event.data, {});
             if (payload.stage === "generation_packet") {
-                state.baseline.status = "ready";
+                state.baseline.status = payload?.baseline_components?.status || (payload?.baseline_components?.rebuild_required ? "requires_rebuild" : "ready");
                 if (payload.baseline_components) {
                     state.baseline.corpus_ready = Boolean(payload.baseline_components.corpus_ready);
                     state.baseline.profile_count = Number(payload.baseline_components.profile_count || 0);
                     state.baseline.author_model_ready = Boolean(payload.baseline_components.author_model_ready);
                     state.baseline.prototype_index_ready = Boolean(payload.baseline_components.prototype_index_ready);
+                    state.baseline.rebuild_required = Boolean(payload.baseline_components.rebuild_required);
+                    state.baseline.profile_version = payload.baseline_components.profile_version || null;
+                    state.baseline.baseline_version = payload.baseline_components.baseline_version || null;
                     state.baseline.source_anchor_count = Number(payload.baseline_components.source_anchor_count || 0);
                 }
                 renderBaseline();
@@ -513,7 +516,7 @@ if (shell) {
 
     function resolveBaselineLabel(baseline) {
         if (baseline.status === "ready") {
-            return ui.baseline_ready || "当前使用最新 Stone v2 基线。";
+            return ui.baseline_ready || "当前使用最新 Stone v3 基线。";
         }
         if (baseline.status === "missing_preprocess") {
             return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
@@ -522,10 +525,10 @@ if (shell) {
             return ui.baseline_running_preprocess || "Stone 预分析仍在运行中。";
         }
         if (baseline.status === "missing_profiles") {
-            return ui.baseline_missing_profiles || "当前还没有 Stone v2 逐篇画像。";
+            return ui.baseline_missing_profiles || "当前还没有 Stone v3 逐篇画像。";
         }
         if (baseline.status === "incomplete_baseline") {
-            return ui.baseline_incomplete_baseline || "Stone v2 基线资产还不完整。";
+            return ui.baseline_incomplete_baseline || "Stone v3 基线资产还不完整。";
         }
         return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
     }
@@ -597,4 +600,26 @@ if (shell) {
         }
         scroller.scrollTop = scroller.scrollHeight;
     }
+
+    resolveBaselineLabel = function resolveBaselineLabelV3(baseline) {
+        if (baseline.status === "ready") {
+            return ui.baseline_ready || "当前使用最新 Stone v3 基线。";
+        }
+        if (baseline.status === "requires_rebuild") {
+            return ui.baseline_requires_rebuild || "检测到遗留 Stone v2 数据，请重新运行 Stone 预处理以重建 Stone v3 基线。";
+        }
+        if (baseline.status === "missing_preprocess") {
+            return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
+        }
+        if (baseline.status === "running_preprocess") {
+            return ui.baseline_running_preprocess || "Stone 预处理仍在运行中。";
+        }
+        if (baseline.status === "missing_profiles") {
+            return ui.baseline_missing_profiles || "当前还没有 Stone v3 逐篇画像。";
+        }
+        if (baseline.status === "incomplete_baseline") {
+            return ui.baseline_incomplete_baseline || "Stone v3 基线资产还不完整。";
+        }
+        return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
+    };
 }
