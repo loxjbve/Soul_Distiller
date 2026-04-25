@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.llm.client import OpenAICompatibleClient
+from app.service.common.llm.client import OpenAICompatibleClient
 from app.models import DocumentRecord, TextChunk
 from app.retrieval.base import RetrievalFilters
 from app.retrieval.vector_store import VectorStoreResolution, model_key_for

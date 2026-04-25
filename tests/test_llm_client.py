@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 
-from app.agents.analysis.facet_llm import analyze_facet_with_llm
-from app.analysis.facets import FACETS
-from app.analysis.engine import _normalize_facet_payload
-from app.llm.client import OpenAICompatibleClient
-from app.preprocess.tools import build_tool_schemas
+from app.service.common.facet_llm import analyze_facet_with_llm
+from app.service.common.facets import FACETS
+from app.service.common.workspace_analysis import _normalize_facet_payload
+from app.service.common.llm.client import OpenAICompatibleClient
+from app.service.common.tools.workspace import build_tool_schemas
 from app.schemas import ChatCompletionResult, ServiceConfig
 
 

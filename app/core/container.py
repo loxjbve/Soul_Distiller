@@ -6,29 +6,31 @@ from dataclasses import dataclass
 
 from fastapi import FastAPI
 
-from app.agents.preprocess.orchestrator import PreprocessAgentOrchestrator
-from app.agents.stone.orchestrator import StoneAgentOrchestrator
-from app.agents.telegram.orchestrator import TelegramAgentOrchestrator
-from app.analysis.engine import AnalysisEngine
-from app.analysis.runner import AnalysisTaskRunner
-from app.analysis.streaming import AnalysisStreamHub
-from app.analysis.synthesizer import AssetSynthesizer
-from app.analysis.stone_v3 import StoneV3BaselineSynthesizer
+from app.service import ServiceRegistry
+from app.service.registry import AppServices
+from app.service.common.subagents.runner import AgentOrchestrator as PreprocessAgentOrchestrator
+from app.service.stone.subagent_runner import StoneAgentOrchestrator
+from app.service.common.subagents.runner import AgentOrchestrator as TelegramAgentOrchestrator
+from app.service.common.workspace_analysis import AnalysisEngine
+from app.service.common.jobs.analysis_runner import AnalysisTaskRunner
+from app.service.common.streaming.analysis import AnalysisStreamHub
+from app.service.common.workspace_assets import AssetSynthesizer
+from app.service.stone.assets_support import StoneV3BaselineSynthesizer
 from app.core.config import AppConfig, default_config
 from app.db import Database
 from app.models import utcnow
-from app.pipeline.ingest import DocumentIngestService
-from app.pipeline.ingest_task import IngestTaskManager
-from app.pipeline.project_deletion import ProjectDeletionManager
-from app.pipeline.rechunk import RechunkTaskManager
-from app.preprocess.service import PreprocessAgentService
+from app.service.common.pipeline.ingest import DocumentIngestService
+from app.service.common.pipeline.ingest_task import IngestTaskManager
+from app.service.common.pipeline.project_deletion import ProjectDeletionManager
+from app.service.common.pipeline.rechunk import RechunkTaskManager
+from app.service.common.workspace_preprocess import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
-from app.stone_preprocess import StonePreprocessStreamHub, StonePreprocessWorker
+from app.service.stone.preprocess import StonePreprocessStreamHub, StonePreprocessWorker
 from app.storage import repository
-from app.telegram_preprocess import TelegramPreprocessManager
-from app.agents.stone.writing_service import WritingAgentService
+from app.service.telegram.preprocess import TelegramPreprocessManager
+from app.service.stone.writing import WritingAgentService
 
 
 def _recover_interrupted_analysis_runs(database: Database) -> None:
@@ -56,6 +58,7 @@ def _recover_interrupted_analysis_runs(database: Database) -> None:
 class AppContainer:
     config: AppConfig
     db: Database
+    services: AppServices
     vector_store_manager: VectorStoreManager
     retrieval: RetrievalService
     analysis_stream_hub: AnalysisStreamHub
@@ -145,6 +148,44 @@ class AppContainer:
         stone_agents = StoneAgentOrchestrator(retrieval_service=retrieval)
         telegram_agents = TelegramAgentOrchestrator()
         preprocess_agents = PreprocessAgentOrchestrator()
+        service_registry = ServiceRegistry.build(
+            single_preprocess=preprocess_service,
+            group_preprocess=preprocess_service,
+            telegram_preprocess=telegram_preprocess_manager,
+            stone_preprocess=stone_preprocess_worker,
+            single_analysis=analysis_engine,
+            group_analysis=analysis_engine,
+            telegram_analysis=analysis_engine,
+            stone_analysis=analysis_engine,
+            single_assets=asset_synthesizer,
+            group_assets=asset_synthesizer,
+            telegram_assets=asset_synthesizer,
+            stone_assets=stone_v3_synthesizer,
+            stone_writing=writing_service,
+        )
+        services = AppServices(
+            registry=service_registry,
+            retrieval=retrieval,
+            vector_store_manager=vector_store_manager,
+            analysis_stream_hub=analysis_stream_hub,
+            telegram_preprocess_stream_hub=telegram_preprocess_stream_hub,
+            stone_preprocess_stream_hub=stone_preprocess_stream_hub,
+            analysis_engine=analysis_engine,
+            analysis_runner=analysis_runner,
+            ingest_service=ingest_service,
+            ingest_task_manager=ingest_task_manager,
+            rechunk_manager=rechunk_manager,
+            asset_synthesizer=asset_synthesizer,
+            stone_v3_synthesizer=stone_v3_synthesizer,
+            preprocess_service=preprocess_service,
+            writing_service=writing_service,
+            telegram_preprocess_manager=telegram_preprocess_manager,
+            stone_preprocess_worker=stone_preprocess_worker,
+            project_deletion_manager=project_deletion_manager,
+            stone_agents=stone_agents,
+            telegram_agents=telegram_agents,
+            preprocess_agents=preprocess_agents,
+        )
 
         _recover_interrupted_analysis_runs(database)
         telegram_preprocess_manager.resume_interrupted_runs()
@@ -153,6 +194,7 @@ class AppContainer:
         return cls(
             config=config,
             db=database,
+            services=services,
             vector_store_manager=vector_store_manager,
             retrieval=retrieval,
             analysis_stream_hub=analysis_stream_hub,
@@ -176,30 +218,9 @@ class AppContainer:
         )
 
     def attach_to_app(self, app: FastAPI) -> None:
-        app.state.container = self
         app.state.config = self.config
         app.state.db = self.db
-        app.state.retrieval = self.retrieval
-        app.state.vector_store_manager = self.vector_store_manager
-        app.state.analysis_stream_hub = self.analysis_stream_hub
-        app.state.telegram_preprocess_stream_hub = self.telegram_preprocess_stream_hub
-        app.state.analysis_engine = self.analysis_engine
-        app.state.analysis_runner = self.analysis_runner
-        app.state.ingest_service = self.ingest_service
-        app.state.ingest_task_manager = self.ingest_task_manager
-        app.state.rechunk_manager = self.rechunk_manager
-        app.state.asset_synthesizer = self.asset_synthesizer
-        app.state.skill_synthesizer = self.asset_synthesizer
-        app.state.stone_v3_synthesizer = self.stone_v3_synthesizer
-        app.state.preprocess_service = self.preprocess_service
-        app.state.writing_service = self.writing_service
-        app.state.telegram_preprocess_manager = self.telegram_preprocess_manager
-        app.state.project_deletion_manager = self.project_deletion_manager
-        app.state.stone_preprocess_stream_hub = self.stone_preprocess_stream_hub
-        app.state.stone_preprocess_worker = self.stone_preprocess_worker
-        app.state.stone_agents = self.stone_agents
-        app.state.telegram_agents = self.telegram_agents
-        app.state.preprocess_agents = self.preprocess_agents
+        app.state.services = self.services
 
     @asynccontextmanager
     async def lifespan(self, _: FastAPI):

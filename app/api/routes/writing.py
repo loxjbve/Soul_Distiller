@@ -79,7 +79,7 @@ def create_writing_message_api(
     legacy._ensure_stone_project(session, project_id)
     try:
         request_payload = legacy._resolve_writing_request_payload(payload)
-        result = request.app.state.writing_service.start_stream(
+        result = request.app.state.services.writing_service.start_stream(
             project_id=project_id,
             session_id=session_id,
             topic=request_payload["topic"],
@@ -107,7 +107,7 @@ def stream_writing_events_api(
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     try:
-        generator = request.app.state.writing_service.stream_events(stream_id)
+        generator = request.app.state.services.writing_service.stream_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到写作流。") from exc
     return StreamingResponse(

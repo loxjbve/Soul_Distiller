@@ -3,8 +3,8 @@ from __future__ import annotations
 import io
 import json
 
-from app.llm.client import OpenAICompatibleClient
-from app.preprocess.tools import build_tool_schemas
+from app.service.common.llm.client import OpenAICompatibleClient
+from app.service.common.tools.workspace import build_tool_schemas
 from app.schemas import LLMToolCall, ServiceConfig, ToolRoundResult
 
 

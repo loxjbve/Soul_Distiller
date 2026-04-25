@@ -5,8 +5,8 @@ from typing import Any
 from pathlib import Path
 from uuid import uuid4
 
-from app.llm.client import OpenAICompatibleClient
-from app.pipeline.chunking import chunk_segments
+from app.service.common.llm.client import OpenAICompatibleClient
+from app.service.common.pipeline.chunking import chunk_segments
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreBatch, VectorStoreManager, VectorStoreResolution, model_key_for
 from app.schemas import ExtractedSegment, ServiceConfig

@@ -21,7 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.errors import LegacyStoneDataError
-from app.analysis.stone_v3 import (
+from app.service.stone.assets_support import (
     STONE_V3_ASSET_KINDS,
     STONE_V3_PROFILE_KEY,
     is_valid_stone_v3_asset_payload,
@@ -30,8 +30,8 @@ from app.analysis.stone_v3 import (
     render_stone_prototype_index_v3_markdown,
     validate_stone_v3_asset_payload,
 )
-from app.analysis.facets import FACETS, get_facets_for_mode
-from app.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
+from app.service.common.facets import FACETS, get_facets_for_mode
+from app.service.common.llm.client import OpenAICompatibleClient, normalize_api_mode, normalize_provider_kind
 from app.models import (
     AnalysisFacet,
     AnalysisRun,
@@ -45,7 +45,7 @@ from app.models import (
     TelegramPreprocessTopic,
     utcnow,
 )
-from app.pipeline.project_deletion import ACTIVE_TASK_STATUSES
+from app.service.common.pipeline.project_deletion import ACTIVE_TASK_STATUSES
 from app.schemas import (
     ASSET_KINDS,
     DEFAULT_ANALYSIS_CONCURRENCY,
@@ -481,7 +481,7 @@ async def upload_documents_form(
     files: list[UploadFile] = File(...),
 ):
     project = _ensure_project(session, project_id)
-    ingest = request.app.state.ingest_service
+    ingest = request.app.state.services.ingest_service
     await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
     return RedirectResponse(url=f"/projects/{project_id}", status_code=303)
 
@@ -573,7 +573,7 @@ def accept_facet(project_id: str, facet_key: str, session: SessionDep):
 def rerun_facet(request: Request, project_id: str, facet_key: str, session: SessionDep):
     run = repository.get_active_analysis_run(session, project_id)
     if run:
-        if request.app.state.analysis_runner.is_tracking(run.id):
+        if request.app.state.services.analysis_runner.is_tracking(run.id):
             raise HTTPException(status_code=409, detail="An analysis is already running for this project.")
         _mark_run_as_stale(
             session,
@@ -583,7 +583,7 @@ def rerun_facet(request: Request, project_id: str, facet_key: str, session: Sess
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
         raise HTTPException(status_code=404, detail="No analysis run found.")
-    request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
+    request.app.state.services.analysis_runner.submit_facet_rerun(project_id, facet_key)
     return RedirectResponse(url=f"/projects/{project_id}/analysis?run_id={latest_run.id}", status_code=303)
 
 
@@ -1215,7 +1215,7 @@ def delete_project_api_v2(request: Request, project_id: str, session: SessionDep
 
 @router.get("/api/projects/{project_id}/deletion")
 def get_project_deletion_api(request: Request, project_id: str, session: SessionDep):
-    task = request.app.state.project_deletion_manager.get_by_project(project_id)
+    task = request.app.state.services.project_deletion_manager.get_by_project(project_id)
     if task:
         return _task_response("已返回项目删除任务状态。", task, project_id=project_id)
     project = repository.get_project(session, project_id)
@@ -1247,13 +1247,13 @@ async def upload_documents_api(
     files: list[UploadFile] = File(...),
 ):
     project = _ensure_project(session, project_id)
-    ingest = request.app.state.ingest_service
+    ingest = request.app.state.services.ingest_service
     try:
         created = await ingest.create_documents_from_uploads(session, project_id=project_id, uploads=files)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if project.mode == "stone" and created:
-        task_manager = request.app.state.ingest_task_manager
+        task_manager = request.app.state.services.ingest_task_manager
         for document in created:
             document.ingest_status = "queued"
         task_manager.set_embedding_config(None)
@@ -1290,7 +1290,7 @@ def create_text_document_api(
     content = str(payload.content or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="Content is required.")
-    ingest = request.app.state.ingest_service
+    ingest = request.app.state.services.ingest_service
     document = ingest.create_text_document(
         session,
         project_id=project.id,
@@ -1300,7 +1300,7 @@ def create_text_document_api(
         user_note=payload.user_note,
     )
     document.ingest_status = "queued"
-    task_manager = request.app.state.ingest_task_manager
+    task_manager = request.app.state.services.ingest_task_manager
     task_manager.set_embedding_config(None)
     session.commit()
     task = task_manager.submit(
@@ -1336,7 +1336,7 @@ def list_documents_api(project_id: str, session: SessionDep, offset: int = 0, li
 
 @router.get("/api/projects/{project_id}/documents/{document_id}/task")
 def get_document_task_status(request: Request, project_id: str, document_id: str):
-    task = request.app.state.ingest_task_manager.get_by_document(document_id)
+    task = request.app.state.services.ingest_task_manager.get_by_document(document_id)
     if not task:
         return {"task_id": None, "status": "missing", "progress_percent": 0, "message": "当前文档没有活动任务。"}
     return _task_response("已返回文档任务状态。", task)
@@ -1344,7 +1344,7 @@ def get_document_task_status(request: Request, project_id: str, document_id: str
 
 @router.get("/api/projects/{project_id}/tasks")
 def get_project_tasks(request: Request, project_id: str):
-    tasks = request.app.state.ingest_task_manager.get_by_project(project_id)
+    tasks = request.app.state.services.ingest_task_manager.get_by_project(project_id)
     return _ok_response("已返回项目任务列表。", tasks=tasks)
 
 
@@ -1352,7 +1352,7 @@ def get_project_tasks(request: Request, project_id: str):
 def process_document_api(request: Request, project_id: str, document_id: str, session: SessionDep):
     document = _get_project_document(session, project_id, document_id)
     embedding_config = repository.get_service_config(session, "embedding_service")
-    task_manager = request.app.state.ingest_task_manager
+    task_manager = request.app.state.services.ingest_task_manager
     task_manager.set_embedding_config(embedding_config)
 
     task = task_manager.submit(
@@ -1369,7 +1369,7 @@ def process_document_api(request: Request, project_id: str, document_id: str, se
 def process_all_documents_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
     embedding_config = repository.get_service_config(session, "embedding_service")
-    task_manager = request.app.state.ingest_task_manager
+    task_manager = request.app.state.services.ingest_task_manager
     task_manager.set_embedding_config(embedding_config)
     documents = repository.list_project_documents(session, project_id)
     submitted = []
@@ -1393,7 +1393,7 @@ def process_all_documents_api(request: Request, project_id: str, session: Sessio
 def retry_all_documents_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
     embedding_config = repository.get_service_config(session, "embedding_service")
-    task_manager = request.app.state.ingest_task_manager
+    task_manager = request.app.state.services.ingest_task_manager
     task_manager.set_embedding_config(embedding_config)
     
     # First, forcefully stop any existing processing for this project
@@ -1422,7 +1422,7 @@ def retry_all_documents_api(request: Request, project_id: str, session: SessionD
 @router.post("/api/projects/{project_id}/stop-processing")
 def stop_processing_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
-    task_manager = request.app.state.ingest_task_manager
+    task_manager = request.app.state.services.ingest_task_manager
     task_manager.stop_project_tasks(project_id)
     return _ok_response("当前项目的处理任务已停止。", stopped=True)
 
@@ -1456,7 +1456,7 @@ def list_document_mentions_api(
 ):
     _ensure_project(session, project_id)
     return {
-        "items": request.app.state.preprocess_service.list_mentions(session, project_id, q, limit=8),
+        "items": request.app.state.services.preprocess_service.list_mentions(session, project_id, q, limit=8),
     }
 
 
@@ -1567,7 +1567,7 @@ def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, se
     project = _ensure_project(session, project_id)
     if project.mode == "telegram":
         run = _resolve_telegram_preprocess_run(session, project_id, run_id)
-        hub = request.app.state.telegram_preprocess_stream_hub
+        hub = request.app.state.services.telegram_preprocess_stream_hub
         subscription = hub.subscribe(run.id)
 
         async def generate():
@@ -1618,7 +1618,7 @@ def stream_preprocess_run_api(request: Request, project_id: str, run_id: str, se
         run = repository.get_stone_preprocess_run(session, run_id)
         if not run or run.project_id != project_id:
             raise HTTPException(status_code=404, detail="Run not found.")
-        hub = request.app.state.stone_preprocess_stream_hub
+        hub = request.app.state.services.stone_preprocess_stream_hub
         
         async def generate_stone():
             with request.app.state.db.session() as live_session:
@@ -1738,7 +1738,7 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
     if not run:
         raise HTTPException(status_code=404, detail="未找到分析记录。")
 
-    hub = request.app.state.analysis_stream_hub
+    hub = request.app.state.services.analysis_stream_hub
     subscription = hub.subscribe(run.id)
 
     async def generate():
@@ -1795,7 +1795,7 @@ def stream_analysis_api(request: Request, project_id: str, session: SessionDep, 
 def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: SessionDep):
     run = repository.get_active_analysis_run(session, project_id)
     if run:
-        if request.app.state.analysis_runner.is_tracking(run.id):
+        if request.app.state.services.analysis_runner.is_tracking(run.id):
             raise HTTPException(status_code=409, detail="当前项目已有分析任务正在运行。")
         _mark_run_as_stale(
             session,
@@ -1805,7 +1805,7 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
     latest_run = repository.get_latest_analysis_run(session, project_id)
     if not latest_run:
         raise HTTPException(status_code=404, detail="未找到分析记录。")
-    request.app.state.analysis_runner.submit_facet_rerun(project_id, facet_key)
+    request.app.state.services.analysis_runner.submit_facet_rerun(project_id, facet_key)
     session.expire_all()
     refreshed = repository.get_analysis_run(session, latest_run.id) or latest_run
     return _ok_response("维度重跑任务已提交。", **_serialize_analysis_run(refreshed))
@@ -1815,7 +1815,7 @@ def rerun_facet_api(request: Request, project_id: str, facet_key: str, session: 
 def start_rechunk_api(request: Request, project_id: str, session: SessionDep):
     _ensure_project(session, project_id)
     embedding_config = repository.get_service_config(session, "embedding_service")
-    manager = request.app.state.rechunk_manager
+    manager = request.app.state.services.rechunk_manager
     try:
         task = manager.submit(project_id=project_id, embedding_config=embedding_config)
         return _task_response("重分块任务已提交。", task)
@@ -1834,7 +1834,7 @@ def start_rechunk_api(request: Request, project_id: str, session: SessionDep):
 @router.get("/api/projects/{project_id}/rechunk/{task_id}")
 def get_rechunk_task_api(request: Request, project_id: str, task_id: str, session: SessionDep):
     _ensure_project(session, project_id)
-    task = request.app.state.rechunk_manager.get(task_id)
+    task = request.app.state.services.rechunk_manager.get(task_id)
     if not task or task.get("project_id") != project_id:
         raise HTTPException(status_code=404, detail="未找到重分块任务。")
     return _task_response("已返回重分块任务状态。", task)
@@ -2011,7 +2011,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                         document_key=str(progress.get("document_key") or "").strip() or None,
                     )
 
-                bundle = request.app.state.asset_synthesizer.build(
+                bundle = request.app.state.services.asset_synthesizer.build(
                     asset_kind,
                     project,
                     facets,
@@ -2021,7 +2021,7 @@ def generate_asset_stream_api(request: Request, project_id: str, payload: AssetG
                     stream_callback=stream_callback,
                     progress_callback=progress_callback,
                     session=session,
-                    retrieval_service=request.app.state.retrieval,
+                    retrieval_service=request.app.state.services.retrieval,
                 )
 
                 emit_status("persist", 94, "Persisting the generated draft files.", document_key=default_document_key)
@@ -2288,7 +2288,7 @@ def create_preprocess_message_api(
     payload: PreprocessMessagePayload,
 ):
     try:
-        result = request.app.state.preprocess_service.start_stream(
+        result = request.app.state.services.preprocess_service.start_stream(
             project_id=project_id,
             session_id=session_id,
             message=payload.message,
@@ -2302,7 +2302,7 @@ def create_preprocess_message_api(
 def stream_preprocess_events_api(request: Request, project_id: str, session_id: str, stream_id: str):
     del project_id, session_id
     try:
-        generator = request.app.state.preprocess_service.stream_events(stream_id)
+        generator = request.app.state.services.preprocess_service.stream_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到预分析流。") from exc
     return StreamingResponse(
@@ -2376,7 +2376,7 @@ def create_writing_message_api(
     _ensure_stone_project(session, project_id)
     try:
         request_payload = _resolve_writing_request_payload(payload)
-        result = request.app.state.writing_service.start_stream(
+        result = request.app.state.services.writing_service.start_stream(
             project_id=project_id,
             session_id=session_id,
             topic=request_payload["topic"],
@@ -2398,7 +2398,7 @@ def stream_writing_events_api(request: Request, project_id: str, session_id: str
     if not chat_session or chat_session.project_id != project_id:
         raise HTTPException(status_code=404, detail="未找到写作会话。")
     try:
-        generator = request.app.state.writing_service.stream_events(stream_id)
+        generator = request.app.state.services.writing_service.stream_events(stream_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="未找到写作流。") from exc
     return StreamingResponse(
@@ -2818,7 +2818,7 @@ def _create_stone_preprocess_run(
     project = _ensure_project(session, project_id)
     if project.mode != "stone":
         raise HTTPException(status_code=400, detail="Only Stone projects use preprocess runs.")
-    created = request.app.state.stone_preprocess_worker.submit(
+    created = request.app.state.services.stone_preprocess_worker.submit(
         project_id,
         concurrency=concurrency,
     )
@@ -2840,7 +2840,7 @@ def _create_telegram_preprocess_run(
     source_project_id = repository.get_target_project_id(session, project_id)
     if not repository.get_latest_telegram_chat(session, source_project_id):
         raise HTTPException(status_code=400, detail="Please upload and ingest a Telegram JSON export first.")
-    created = request.app.state.telegram_preprocess_manager.submit(
+    created = request.app.state.services.telegram_preprocess_manager.submit(
         source_project_id,
         weekly_summary_concurrency=weekly_summary_concurrency,
     )
@@ -3104,7 +3104,7 @@ def _delete_project_resources(request: Request, session: Session, project_id: st
 
     repository.delete_project_cascade(session, project_id)
     config = request.app.state.config
-    request.app.state.vector_store_manager.delete_store(project_id)
+    request.app.state.services.vector_store_manager.delete_store(project_id)
     for directory in (
         config.upload_dir / project_id,
         config.assets_dir / project_id,
@@ -3197,7 +3197,7 @@ def _normalize_analysis_concurrency(value: Any) -> int:
 
 
 def _schedule_project_deletion(request: Request, session: Session, project_id: str):
-    manager = request.app.state.project_deletion_manager
+    manager = request.app.state.services.project_deletion_manager
     existing_task = manager.get_by_project(project_id)
     if existing_task and existing_task.get("status") in ACTIVE_TASK_STATUSES:
         project = _ensure_project(session, project_id)
@@ -4311,7 +4311,7 @@ def _analysis_stage_label(facet_label: str | None, phase: str, *, queued: int = 
 @router.websocket("/api/projects/{project_id}/documents/ws")
 async def websocket_document_status(websocket: WebSocket, project_id: str):
     await websocket.accept()
-    task_manager = websocket.app.state.ingest_task_manager
+    task_manager = websocket.app.state.services.ingest_task_manager
     try:
         from sqlalchemy import select
         from app.models import DocumentRecord
@@ -4370,10 +4370,12 @@ def _recover_stone_preprocess_run_if_stale(
         return None
     if str(run.status or "").lower() not in {"queued", "running"}:
         return run
-    stone_worker = getattr(request.app.state, "stone_preprocess_worker", None)
+    # ServiceRegistry is now the only supported app.state entry point for workers.
+    services = getattr(request.app.state, "services", None)
+    stone_worker = getattr(services, "stone_preprocess_worker", None) or getattr(request.app.state, "stone_preprocess_worker", None)
     if stone_worker and hasattr(stone_worker, "is_tracking") and stone_worker.is_tracking(run.id):
         return run
-    preprocess_service = getattr(request.app.state, "preprocess_service", None)
+    preprocess_service = getattr(services, "preprocess_service", None) or getattr(request.app.state, "preprocess_service", None)
     if preprocess_service and hasattr(preprocess_service, "is_tracking") and preprocess_service.is_tracking(run.id):
         return run
 
@@ -4462,7 +4464,7 @@ def _enqueue_analysis(
             )
     existing_run = repository.get_active_analysis_run(session, project_id)
     if existing_run:
-        if request.app.state.analysis_runner.is_tracking(existing_run.id):
+        if request.app.state.services.analysis_runner.is_tracking(existing_run.id):
             return existing_run
         _mark_run_as_stale(
             session,
@@ -4470,7 +4472,7 @@ def _enqueue_analysis(
             reason="检测到旧的分析记录没有活动 worker，启动新任务前已自动标记为失败。",
         )
         session.flush()
-    run = request.app.state.analysis_engine.create_run(
+    run = request.app.state.services.analysis_engine.create_run(
         session,
         project_id,
         target_role=(target_role or "").strip() or None if project.mode != "telegram" else None,
@@ -4480,7 +4482,7 @@ def _enqueue_analysis(
         concurrency=concurrency,
     )
     session.commit()
-    request.app.state.analysis_runner.submit(run.id)
+    request.app.state.services.analysis_runner.submit(run.id)
     session.expire_all()
     return repository.get_analysis_run(session, run.id) or run
 
@@ -4880,7 +4882,7 @@ def _generate_asset_draft(
         def persist_checkpoint(payload: dict[str, Any]) -> None:
             save_stone_v3_checkpoint(request.app.state.config.assets_dir, project_id, payload)
 
-        synthesis = request.app.state.stone_v3_synthesizer.build(
+        synthesis = request.app.state.services.stone_v3_synthesizer.build(
             project_name=project.name,
             profiles=profiles,
             documents=documents,
@@ -4947,7 +4949,7 @@ def _generate_asset_draft(
         raise HTTPException(status_code=400, detail="当前分析没有可用于合成资产的维度结果。")
     chat_config = repository.get_service_config(session, "chat_service")
     summary = run.summary_json or {}
-    bundle = request.app.state.asset_synthesizer.build(
+    bundle = request.app.state.services.asset_synthesizer.build(
         asset_kind,
         project,
         facets,
@@ -4955,7 +4957,7 @@ def _generate_asset_draft(
         target_role=summary.get("target_role"),
         analysis_context=summary.get("analysis_context"),
         session=session,
-        retrieval_service=request.app.state.retrieval,
+        retrieval_service=request.app.state.services.retrieval,
     )
     draft = repository.create_asset_draft(
         session,

@@ -6,7 +6,7 @@ import pytest
 from docx import Document
 from pypdf import PdfWriter
 
-from app.pipeline.extractors import UnsupportedScannedPdfError, extract_text
+from app.service.common.pipeline.extractors import UnsupportedScannedPdfError, extract_text
 
 
 def build_text_pdf_bytes(text: str) -> bytes:

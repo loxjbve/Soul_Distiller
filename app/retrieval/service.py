@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.llm.client import OpenAICompatibleClient
+from app.service.common.llm.client import OpenAICompatibleClient
 from app.retrieval.base import RetrievalFilters
 from app.retrieval.embedding import EmbeddingRetriever
 from app.retrieval.lexical import LexicalRetriever

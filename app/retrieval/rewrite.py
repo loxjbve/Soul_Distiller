@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.llm.client import OpenAICompatibleClient, parse_json_response
+from app.service.common.llm.client import OpenAICompatibleClient, parse_json_response
 from app.schemas import ServiceConfig
 
 REWRITE_PROMPT = """You are an expert search query optimization assistant for a technical Retrieval-Augmented Generation (RAG) system.

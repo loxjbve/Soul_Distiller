@@ -6,15 +6,15 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from app.stone_preprocess import StoneDocumentSnapshot
+from app.service.stone.preprocess import StoneDocumentSnapshot
 from app.stone_v3_checkpoint import load_stone_v3_checkpoint, stone_v3_checkpoint_path
 from app.models import utcnow
 from app.schemas import ChatCompletionResult, DEFAULT_ANALYSIS_CONCURRENCY, ToolRoundResult
 from app.storage import repository
 from app.web.routes import _resolve_stone_writing_status
-from app.llm.client import OpenAICompatibleClient
+from app.service.common.llm.client import OpenAICompatibleClient
 from app.web import routes as web_routes
-from app.agents.stone.writing_service import _fit_word_count, _light_trim_to_word_count
+from app.service.stone.writing import _fit_word_count, _light_trim_to_word_count
 
 
 def _mock_result(content: str) -> ChatCompletionResult:
@@ -650,7 +650,7 @@ def test_long_document_profiles_are_chunked_under_budget(app, monkeypatch):
     with app.state.db.session() as session:
         chat_config = repository.get_service_config(session, "chat_service")
 
-    worker = app.state.stone_preprocess_worker
+    worker = app.state.services.stone_preprocess_worker
     document = StoneDocumentSnapshot(
         id=str(uuid4()),
         title="Long Night Essay",

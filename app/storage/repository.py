@@ -7,7 +7,7 @@ from uuid import uuid4
 from sqlalchemy import delete, desc, func, or_, select
 from sqlalchemy.orm import Session, defer, selectinload
 
-from app.llm.client import normalize_api_mode, normalize_provider_kind
+from app.service.common.llm.client import normalize_api_mode, normalize_provider_kind
 from app.models import (
     AnalysisFacet,
     AnalysisEvent,

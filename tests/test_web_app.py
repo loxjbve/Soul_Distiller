@@ -9,9 +9,9 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from app.analysis.facets import FACETS
+from app.service.common.facets import FACETS
 from app.config import AppConfig
-from app.llm.client import OpenAICompatibleClient
+from app.service.common.llm.client import OpenAICompatibleClient
 from app.main import create_app
 from app.models import TextChunk
 from app.schemas import AssetBundle, ChatCompletionResult, DEFAULT_ANALYSIS_CONCURRENCY, ExtractedSegment, ExtractionResult, RetrievedChunk
@@ -349,7 +349,7 @@ def test_analysis_api_backfills_queue_fields_for_legacy_runs(client, app):
 
 
 def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
-    import app.analysis.engine as analysis_engine_module
+    import app.service.common.workspace_analysis as analysis_engine_module
 
     project_payload = client.post("/api/projects", json={"name": "Serial Run"}).json()
     project_id = project_payload["id"]
@@ -360,7 +360,7 @@ def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
     client.post(f"/api/projects/{project_id}/process-all")
     _wait_for_ready(client, project_id)
 
-    app.state.analysis_runner.run_inline = False
+    app.state.services.analysis_runner.run_inline = False
 
     def fake_retrieve(session, project_id, facet, **kwargs):
         del session, project_id, kwargs
@@ -419,7 +419,7 @@ def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
             },
         }
 
-    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(app.state.services.analysis_engine, "_retrieve_hits", fake_retrieve)
     monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
 
     analyze_response = client.post(
@@ -445,7 +445,7 @@ def test_analysis_concurrency_one_is_strictly_serial(client, app, monkeypatch):
 
 
 def test_analysis_concurrency_two_caps_active_slots(client, app, monkeypatch):
-    import app.analysis.engine as analysis_engine_module
+    import app.service.common.workspace_analysis as analysis_engine_module
 
     project_payload = client.post("/api/projects", json={"name": "Parallel Cap"}).json()
     project_id = project_payload["id"]
@@ -456,7 +456,7 @@ def test_analysis_concurrency_two_caps_active_slots(client, app, monkeypatch):
     client.post(f"/api/projects/{project_id}/process-all")
     _wait_for_ready(client, project_id)
 
-    app.state.analysis_runner.run_inline = False
+    app.state.services.analysis_runner.run_inline = False
 
     def fake_retrieve(session, project_id, facet, **kwargs):
         del session, project_id, kwargs
@@ -515,7 +515,7 @@ def test_analysis_concurrency_two_caps_active_slots(client, app, monkeypatch):
             },
         }
 
-    monkeypatch.setattr(app.state.analysis_engine, "_retrieve_hits", fake_retrieve)
+    monkeypatch.setattr(app.state.services.analysis_engine, "_retrieve_hits", fake_retrieve)
     monkeypatch.setattr(analysis_engine_module, "analyze_facet_worker", fake_worker)
 
     analyze_response = client.post(
@@ -573,7 +573,7 @@ def test_asset_generation_stream_emits_status_events(client, app, monkeypatch):
             prompt_text="Prompt",
         )
 
-    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+    monkeypatch.setattr(app.state.services.asset_synthesizer, "build", fake_build)
 
     response = client.post(f"/api/projects/{project_id}/assets/generate/stream", json={"asset_kind": "profile_report"})
     assert response.status_code == 200
@@ -637,7 +637,7 @@ def test_skill_asset_stream_emits_document_specific_deltas(client, app, monkeypa
             prompt_text="# Draft",
         )
 
-    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+    monkeypatch.setattr(app.state.services.asset_synthesizer, "build", fake_build)
 
     response = client.post(f"/api/projects/{project_id}/assets/generate/stream", json={"asset_kind": "skill"})
     assert response.status_code == 200
@@ -736,7 +736,7 @@ def test_skill_generation_with_llm_creates_split_documents(client, app, monkeypa
             {},
         )
 
-    monkeypatch.setattr(app.state.retrieval, "search", fake_search)
+    monkeypatch.setattr(app.state.services.retrieval, "search", fake_search)
 
     llm_calls = []
 
@@ -851,7 +851,7 @@ def test_cc_skill_generation_with_llm_creates_skill_md_frontmatter(client, app, 
             {},
         )
 
-    monkeypatch.setattr(app.state.retrieval, "search", fake_search)
+    monkeypatch.setattr(app.state.services.retrieval, "search", fake_search)
 
     llm_calls = []
 
@@ -1157,7 +1157,7 @@ def test_analysis_run_survives_single_facet_retrieval_failure(client, app, monke
     client.post(f"/api/projects/{project_id}/process-all")
     _wait_for_ready(client, project_id)
 
-    engine = app.state.analysis_engine
+    engine = app.state.services.analysis_engine
     original = engine._retrieve_hits
 
     def flaky_retrieve(session, project_id, facet, **kwargs):
@@ -1221,10 +1221,10 @@ def test_create_app_recovers_stale_active_runs():
             )
             run_id = run.id
     finally:
-        first_app.state.analysis_runner.shutdown()
-        first_app.state.preprocess_service.shutdown()
-        first_app.state.telegram_preprocess_manager.shutdown()
-        first_app.state.rechunk_manager.shutdown()
+        first_app.state.services.analysis_runner.shutdown()
+        first_app.state.services.preprocess_service.shutdown()
+        first_app.state.services.telegram_preprocess_manager.shutdown()
+        first_app.state.services.rechunk_manager.shutdown()
         first_app.state.db.close()
 
     second_app = create_app(config)
@@ -1239,10 +1239,10 @@ def test_create_app_recovers_stale_active_runs():
                 for event in recovered.events
             )
     finally:
-        second_app.state.analysis_runner.shutdown()
-        second_app.state.preprocess_service.shutdown()
-        second_app.state.telegram_preprocess_manager.shutdown()
-        second_app.state.rechunk_manager.shutdown()
+        second_app.state.services.analysis_runner.shutdown()
+        second_app.state.services.preprocess_service.shutdown()
+        second_app.state.services.telegram_preprocess_manager.shutdown()
+        second_app.state.services.rechunk_manager.shutdown()
         second_app.state.db.close()
         if root_dir.exists():
             import shutil
@@ -1462,7 +1462,7 @@ def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
             prompt_text="Prompt",
         )
 
-    monkeypatch.setattr(app.state.asset_synthesizer, "build", fake_build)
+    monkeypatch.setattr(app.state.services.asset_synthesizer, "build", fake_build)
 
     draft_payload = client.post(
         f"/api/projects/{project_id}/assets/generate",
@@ -1484,7 +1484,7 @@ def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
 
 
 def test_ingest_processing_uses_real_extractor_pipeline(client, app, monkeypatch):
-    import app.pipeline.ingest_task as ingest_task_module
+    import app.service.common.pipeline.ingest_task as ingest_task_module
 
     calls = []
 
