@@ -1,1 +1,1 @@
-"""Preprocess agent services and tools."""
+"""Preprocess tool helpers."""

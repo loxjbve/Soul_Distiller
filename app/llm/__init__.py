@@ -1,6 +1,6 @@
 """LLM service integrations."""
 
-from app.llm.client import OpenAICompatibleClient, parse_json_response
+from app.llm.client_runtime import OpenAICompatibleClient, parse_json_response
 from app.llm.config import OFFICIAL_PROVIDER_BASE_URLS, normalize_api_mode, normalize_provider_kind
 from app.llm.errors import LLMError
 from app.llm.gateway import LLMGateway

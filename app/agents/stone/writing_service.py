@@ -1,13 +1,5 @@
-from importlib import import_module
+from app.agents.stone.writing.service import *  # noqa: F401,F403
+from app.agents.stone.writing.service import _light_trim_to_word_count
+from app.agents.stone.writing.text_utils import _fit_word_count
 
-_impl = import_module("app.agents.stone.writing_service_impl")
-
-globals().update(
-    {
-        name: value
-        for name, value in vars(_impl).items()
-        if not (name.startswith("__") and name.endswith("__"))
-    }
-)
-
-__all__ = [name for name in globals() if not (name.startswith("__") and name.endswith("__"))]
+__all__ = [name for name in globals() if not name.startswith("_")]

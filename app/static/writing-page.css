@@ -463,117 +463,199 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
 }
 
 .page-writing .group-message {
+    --node-accent: rgba(104, 232, 255, 0.9);
+    --node-border: rgba(104, 232, 255, 0.2);
+    --node-bg: rgba(9, 18, 34, 0.82);
     display: grid;
-    grid-template-columns: 2.75rem minmax(0, 1fr);
-    gap: 0.82rem;
+    grid-template-columns: 3rem minmax(0, 1fr);
+    gap: 0.9rem;
     align-items: start;
     animation: writing-message-in 260ms var(--easing-standard) both;
-}
-
-.page-writing .group-message--user {
-    grid-template-columns: minmax(0, 1fr);
-    justify-items: end;
-}
-
-.page-writing .group-message--user .group-message__avatar {
-    display: none;
 }
 
 .page-writing .group-message__avatar {
     display: grid;
     place-items: center;
-    width: 2.75rem;
-    height: 2.75rem;
-    border: 1px solid rgba(126, 221, 255, 0.24);
-    border-radius: 1rem;
+    width: 3rem;
+    height: 3rem;
+    border: 1px solid color-mix(in srgb, var(--node-accent) 34%, transparent);
+    border-radius: 1.05rem;
     background:
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.34), transparent 24%),
-        linear-gradient(135deg, rgba(26, 217, 255, 0.22), rgba(117, 103, 255, 0.28)),
+        radial-gradient(circle at 28% 20%, rgba(255, 255, 255, 0.28), transparent 24%),
+        linear-gradient(135deg, color-mix(in srgb, var(--node-accent) 22%, transparent), rgba(117, 103, 255, 0.2)),
         rgba(8, 18, 36, 0.9);
-    color: #effbff;
+    color: #f4fbff;
     font-family: var(--font-mono);
     font-size: 0.92rem;
     font-weight: 800;
-    box-shadow: 0 0 22px rgba(104, 232, 255, 0.12);
-}
-
-.page-writing .group-message--review .group-message__avatar {
-    border-color: rgba(155, 131, 255, 0.34);
-    background:
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.28), transparent 24%),
-        linear-gradient(135deg, rgba(155, 131, 255, 0.32), rgba(37, 50, 99, 0.92));
-}
-
-.page-writing .group-message--evidence_plan .group-message__avatar {
-    border-color: rgba(255, 208, 102, 0.34);
-    background:
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.28), transparent 24%),
-        linear-gradient(135deg, rgba(255, 208, 102, 0.28), rgba(33, 56, 92, 0.92));
-}
-
-.page-writing .group-message--final .group-message__avatar {
-    border-color: rgba(124, 255, 199, 0.36);
-    background:
-        radial-gradient(circle at 30% 24%, rgba(255, 255, 255, 0.3), transparent 24%),
-        linear-gradient(135deg, rgba(124, 255, 199, 0.3), rgba(20, 74, 84, 0.9));
+    letter-spacing: 0.04em;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.26), 0 0 18px color-mix(in srgb, var(--node-accent) 18%, transparent);
 }
 
 .page-writing .group-message__inner {
     min-width: 0;
-    max-width: min(54rem, 100%);
+    max-width: min(64rem, 100%);
 }
 
-.page-writing .group-message--user .group-message__inner {
-    max-width: min(44rem, 82%);
+.page-writing .group-message__panel {
+    position: relative;
+    border: 1px solid var(--node-border);
+    border-radius: 1.24rem;
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.04), transparent 38%),
+        var(--node-bg);
+    overflow: hidden;
+    box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
 }
 
-.page-writing .group-message__meta {
+.page-writing .group-message__panel::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--node-accent), transparent);
+    opacity: 0.92;
+}
+
+.page-writing .group-message__summary {
+    display: block;
+    cursor: default;
+    list-style: none;
+    position: relative;
+    padding: 0.88rem 1rem 0.82rem;
+}
+
+.page-writing .group-message__panel > summary {
+    cursor: pointer;
+    padding-right: 2.7rem;
+}
+
+.page-writing .group-message__summary::-webkit-details-marker {
+    display: none;
+}
+
+.page-writing details > .group-message__summary::after {
+    content: "›";
+    position: absolute;
+    right: 1rem;
+    top: 0.98rem;
+    color: var(--writing-muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    transform: rotate(90deg);
+    transition: transform 160ms var(--easing-standard), color 160ms var(--easing-standard);
+}
+
+.page-writing details[open] > .group-message__summary::after {
+    color: color-mix(in srgb, var(--node-accent) 72%, white);
+    transform: rotate(270deg);
+}
+
+.page-writing .group-message__summary-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.9rem;
+}
+
+.page-writing .group-message__headline {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+}
+
+.page-writing .group-message__headline strong {
+    min-width: 0;
+    color: var(--writing-text);
+    font-size: 0.98rem;
+    letter-spacing: -0.02em;
+}
+
+.page-writing .group-message__summary-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.58rem;
-    margin-bottom: 0.42rem;
+    justify-content: flex-end;
+    gap: 0.45rem;
     color: var(--writing-muted);
     font-family: var(--font-mono);
-    font-size: 0.76rem;
+    font-size: 0.72rem;
 }
 
-.page-writing .group-message__meta strong {
-    color: #dff7ff;
-    font-family: var(--font-sans);
-    font-size: 0.86rem;
-}
-
-.page-writing .group-message__meta-state,
-.page-writing .group-message__meta-live {
+.page-writing .group-message__kind-chip,
+.page-writing .group-message__status-chip,
+.page-writing .group-message__metric {
     display: inline-flex;
     align-items: center;
-    min-height: 1.45rem;
-    padding: 0 0.55rem;
+    min-height: 1.48rem;
+    padding: 0 0.6rem;
     border-radius: 999px;
-    border: 1px solid rgba(126, 221, 255, 0.18);
-    background: rgba(12, 24, 44, 0.72);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
 }
 
-.page-writing .group-message__meta-live {
-    border-color: rgba(255, 208, 102, 0.3);
-    color: #ffe1a0;
-    box-shadow: 0 0 0 1px rgba(255, 208, 102, 0.08) inset;
+.page-writing .group-message__kind-chip {
+    border: 1px solid color-mix(in srgb, var(--node-accent) 24%, transparent);
+    background: color-mix(in srgb, var(--node-accent) 10%, rgba(9, 18, 34, 0.9));
+    color: color-mix(in srgb, var(--node-accent) 84%, white);
+}
+
+.page-writing .group-message__status-chip {
+    border: 1px solid rgba(126, 221, 255, 0.18);
+    background: rgba(12, 24, 44, 0.82);
+    color: #deefff;
+}
+
+.page-writing .group-message__summary-body {
+    display: grid;
+    gap: 0.55rem;
+    margin-top: 0.72rem;
+}
+
+.page-writing .group-message__preview {
+    margin: 0;
+    color: #d8e8f5;
+    line-height: 1.62;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.page-writing .group-message__metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+}
+
+.page-writing .group-message__metric {
+    border: 1px solid rgba(126, 221, 255, 0.12);
+    background: rgba(7, 15, 29, 0.74);
+    color: var(--writing-muted);
+}
+
+.page-writing .group-message__panel-body {
+    display: grid;
+    gap: 0.72rem;
+    padding: 0 1rem 1rem;
+    border-top: 1px solid rgba(126, 221, 255, 0.08);
 }
 
 .page-writing .group-message__bubble {
-    padding: 0.95rem 1rem;
-    border: 1px solid rgba(126, 221, 255, 0.16);
-    border-radius: 1.2rem;
+    padding: 0.98rem 1rem;
+    border: 1px solid rgba(126, 221, 255, 0.14);
+    border-radius: 1rem;
     background:
-        linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 54%),
-        rgba(10, 19, 36, 0.86);
+        linear-gradient(135deg, rgba(255, 255, 255, 0.03), transparent 54%),
+        rgba(5, 11, 23, 0.74);
     color: #dcecf8;
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-.page-writing .group-message.is-streaming .group-message__bubble {
-    border-color: rgba(255, 208, 102, 0.32);
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 208, 102, 0.12) inset;
+.page-writing .group-message.is-streaming .group-message__panel {
+    box-shadow:
+        0 18px 42px rgba(0, 0, 0, 0.24),
+        0 0 0 1px color-mix(in srgb, var(--node-accent) 14%, transparent) inset,
+        0 0 24px color-mix(in srgb, var(--node-accent) 12%, transparent);
 }
 
 .page-writing .group-message__bubble--plain {
@@ -581,47 +663,97 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
     word-break: break-word;
 }
 
-.page-writing .group-message--user .group-message__bubble {
-    border-color: rgba(154, 205, 255, 0.52);
-    background: var(--writing-user);
-    color: #ffffff;
-    border-bottom-right-radius: 0.36rem;
-    box-shadow: 0 16px 34px rgba(92, 117, 255, 0.2), 0 0 26px rgba(104, 232, 255, 0.12);
+.page-writing .group-message--command {
+    --node-accent: #8ecbff;
+    --node-border: rgba(142, 203, 255, 0.26);
+    --node-bg: rgba(10, 19, 38, 0.84);
 }
 
-.page-writing .group-message--review .group-message__bubble {
-    border-color: rgba(155, 131, 255, 0.24);
-    background:
-        linear-gradient(135deg, rgba(155, 131, 255, 0.12), transparent 56%),
-        rgba(10, 17, 36, 0.9);
+.page-writing .group-message--tool {
+    --node-accent: #ffd166;
+    --node-border: rgba(255, 209, 102, 0.24);
+    --node-bg: rgba(24, 20, 9, 0.72);
 }
 
-.page-writing .group-message--evidence_plan .group-message__bubble {
-    border-color: rgba(255, 208, 102, 0.28);
-    background:
-        linear-gradient(135deg, rgba(255, 208, 102, 0.12), rgba(104, 232, 255, 0.06)),
-        rgba(12, 20, 36, 0.92);
+.page-writing .group-message--subagent {
+    --node-accent: #68e8ff;
+    --node-border: rgba(104, 232, 255, 0.22);
+    --node-bg: rgba(9, 18, 34, 0.82);
 }
 
-.page-writing .group-message--review_synthesis .group-message__bubble {
-    border-color: rgba(104, 232, 255, 0.28);
-    background:
-        linear-gradient(135deg, rgba(104, 232, 255, 0.12), rgba(155, 131, 255, 0.08)),
-        rgba(10, 19, 36, 0.92);
+.page-writing .group-message--critic {
+    --node-accent: #b79bff;
+    --node-border: rgba(183, 155, 255, 0.24);
+    --node-bg: rgba(18, 13, 34, 0.8);
 }
 
-.page-writing .group-message--final .group-message__bubble {
-    border-color: rgba(124, 255, 199, 0.3);
-    background:
-        linear-gradient(135deg, rgba(124, 255, 199, 0.12), rgba(104, 232, 255, 0.06)),
-        rgba(8, 22, 31, 0.94);
+.page-writing .group-message--result {
+    --node-accent: #7cffc7;
+    --node-border: rgba(124, 255, 199, 0.26);
+    --node-bg: rgba(9, 24, 24, 0.78);
 }
 
-.page-writing .group-message--error .group-message__bubble {
-    border-color: rgba(255, 107, 157, 0.36);
+.page-writing .group-message--error {
+    --node-accent: #ff6b9d;
+    --node-border: rgba(255, 107, 157, 0.28);
+    --node-bg: rgba(34, 12, 24, 0.86);
+}
+
+.page-writing .group-message--status-running .group-message__status-chip {
+    border-color: rgba(255, 209, 102, 0.34);
+    background: rgba(64, 44, 8, 0.84);
+    color: #ffe6a4;
+}
+
+.page-writing .group-message--status-complete .group-message__status-chip {
+    border-color: rgba(124, 255, 199, 0.24);
+    background: rgba(13, 42, 31, 0.76);
+    color: #cffff0;
+}
+
+.page-writing .group-message--status-failed .group-message__status-chip {
+    border-color: rgba(255, 107, 157, 0.34);
+    background: rgba(54, 11, 27, 0.84);
+    color: #ffd4e1;
+}
+
+.page-writing .group-message--command .group-message__bubble {
+    border-color: rgba(142, 203, 255, 0.18);
     background:
-        linear-gradient(135deg, rgba(255, 107, 157, 0.14), transparent 58%),
-        rgba(34, 12, 24, 0.92);
+        linear-gradient(135deg, rgba(142, 203, 255, 0.08), rgba(117, 103, 255, 0.08)),
+        rgba(7, 14, 29, 0.78);
+}
+
+.page-writing .group-message__details {
+    margin-top: 0.12rem;
+    border: 1px solid rgba(126, 221, 255, 0.12);
+    border-radius: 0.96rem;
+    background: rgba(3, 8, 17, 0.58);
+    overflow: hidden;
+}
+
+.page-writing .group-message__details summary {
+    cursor: pointer;
+    padding: 0.72rem 0.9rem;
+    color: var(--writing-muted);
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    list-style: none;
+}
+
+.page-writing .group-message__details summary::-webkit-details-marker {
+    display: none;
+}
+
+.page-writing .group-message__details pre {
+    margin: 0;
+    padding: 0 0.9rem 0.9rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #bdeeff;
+    font-size: 0.78rem;
+    line-height: 1.55;
 }
 
 .page-writing .group-message__bubble > :first-child {
@@ -630,33 +762,6 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
 
 .page-writing .group-message__bubble > :last-child {
     margin-bottom: 0;
-}
-
-.page-writing .group-message__details {
-    margin-top: 0.55rem;
-    border: 1px solid rgba(126, 221, 255, 0.14);
-    border-radius: 1rem;
-    background: rgba(3, 8, 17, 0.58);
-    overflow: hidden;
-}
-
-.page-writing .group-message__details summary {
-    cursor: pointer;
-    padding: 0.7rem 0.86rem;
-    color: var(--writing-muted);
-    font-family: var(--font-mono);
-    font-size: 0.74rem;
-}
-
-.page-writing .group-message__details pre {
-    margin: 0;
-    padding: 0 0.86rem 0.86rem;
-    overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: #bdeeff;
-    font-size: 0.78rem;
-    line-height: 1.55;
 }
 
 .page-writing .writing-composer {
@@ -740,6 +845,153 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
 .page-writing .writing-composer__error {
     margin-top: 0.38rem;
     color: #ff9aba;
+}
+
+/* IDE-style log stream overrides */
+.page-writing .writing-stage::after {
+    display: none;
+}
+
+.page-writing .writing-message-stage {
+    padding: 0.15rem 0.1rem 0.25rem 0;
+    mask-image: none;
+}
+
+.page-writing .writing-message-list {
+    gap: 0.8rem;
+    padding: 0.35rem 0 0.9rem;
+}
+
+.page-writing .group-message {
+    grid-template-columns: 1fr;
+    gap: 0.18rem;
+    animation: none;
+}
+
+.page-writing .group-message__avatar {
+    display: none;
+}
+
+.page-writing .group-message__inner {
+    max-width: min(56rem, 100%);
+}
+
+.page-writing .group-message__panel {
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    overflow: visible;
+    box-shadow: none;
+}
+
+.page-writing .group-message__panel::before {
+    display: none;
+}
+
+.page-writing .group-message__summary {
+    padding: 0;
+}
+
+.page-writing .group-message__panel > summary {
+    padding: 0 1.25rem 0 0;
+}
+
+.page-writing details > .group-message__summary::after {
+    right: 0;
+    top: 0.02rem;
+    font-size: 0.96rem;
+}
+
+.page-writing .group-message__summary-top {
+    align-items: baseline;
+    justify-content: flex-start;
+    gap: 0.65rem;
+}
+
+.page-writing .group-message__headline {
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+}
+
+.page-writing .group-message__headline strong,
+.page-writing .group-message__title {
+    color: #eef6ff;
+    font-size: 0.95rem;
+    font-weight: 600;
+}
+
+.page-writing .group-message__summary-meta {
+    justify-content: flex-start;
+    gap: 0.42rem;
+    font-size: 0.72rem;
+}
+
+.page-writing .group-message__kind-chip,
+.page-writing .group-message__status-chip,
+.page-writing .group-message__metric {
+    min-height: 1.22rem;
+    padding: 0 0.42rem;
+    border-radius: 0.58rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.03em;
+}
+
+.page-writing .group-message__kind-chip {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.page-writing .group-message__status-chip {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.page-writing .group-message__metrics {
+    margin-top: 0.3rem;
+    gap: 0.34rem;
+}
+
+.page-writing .group-message__metric {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.page-writing .group-message__panel-body {
+    gap: 0.35rem;
+    padding: 0.28rem 0 0 0.95rem;
+    border-top: none;
+    border-left: 1px solid color-mix(in srgb, var(--node-accent) 24%, transparent);
+}
+
+.page-writing .group-message__bubble {
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: #d6e4f1;
+    box-shadow: none;
+    line-height: 1.72;
+}
+
+.page-writing .group-message.is-streaming .group-message__panel {
+    box-shadow: none;
+}
+
+.page-writing .group-message__details {
+    margin-top: 0.08rem;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+}
+
+.page-writing .group-message__details summary {
+    padding: 0.3rem 0 0.18rem;
+    color: #8193aa;
+    font-size: 0.72rem;
+}
+
+.page-writing .group-message__details pre {
+    padding: 0.1rem 0 0;
+    color: #9eb6cd;
+    font-size: 0.75rem;
 }
 
 @keyframes writing-scan {
@@ -844,8 +1096,21 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
         white-space: normal;
     }
 
-    .page-writing .group-message--user .group-message__inner {
-        max-width: 100%;
+    .page-writing .group-message {
+        grid-template-columns: 1fr;
+    }
+
+    .page-writing .group-message__avatar {
+        width: 2.6rem;
+        height: 2.6rem;
+    }
+
+    .page-writing .group-message__summary-top {
+        flex-direction: column;
+    }
+
+    .page-writing .group-message__summary-meta {
+        justify-content: flex-start;
     }
 }
 

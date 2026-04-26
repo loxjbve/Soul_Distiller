@@ -15,13 +15,15 @@ if (shell) {
 
     const state = {
         projectId: shell.dataset.projectId,
-        sessions: bootstrap.sessions || [],
+        sessions: Array.isArray(bootstrap.sessions) ? bootstrap.sessions : [],
         currentSessionId: bootstrap.selected_session_id || null,
         currentSession: bootstrap.selected_session || { turns: [] },
         baseline: bootstrap.baseline || { status: "missing_analysis" },
         channelTitle: bootstrap.channel_title || "",
         eventSource: null,
         sending: false,
+        turnElements: new Map(),
+        emptyStateEl: null,
     };
 
     const elements = {
@@ -82,7 +84,10 @@ if (shell) {
             if (!state.currentSessionId) {
                 return;
             }
-            if (!window.confirm(ui.common?.confirm_delete_session || "确定删除这个会话吗？")) {
+            const confirmed = window.confirm(
+                ui.common?.confirm_delete_session || "确定删除这个会话吗？"
+            );
+            if (!confirmed) {
                 return;
             }
             await fetchJson(`/api/projects/${state.projectId}/writing/sessions/${state.currentSessionId}`, {
@@ -100,7 +105,9 @@ if (shell) {
             await loadSession(state.sessions[0].id);
         });
 
-        elements.send?.addEventListener("click", () => sendMessage());
+        elements.send?.addEventListener("click", () => {
+            void sendMessage();
+        });
 
         elements.messageInput?.addEventListener("keydown", (event) => {
             if (event.isComposing) {
@@ -108,8 +115,12 @@ if (shell) {
             }
             if (event.key === "Enter") {
                 event.preventDefault();
-                sendMessage();
+                void sendMessage();
             }
+        });
+
+        elements.messageInput?.addEventListener("input", () => {
+            hideComposerError();
         });
 
         elements.toggleSessions?.addEventListener("click", () => {
@@ -124,12 +135,6 @@ if (shell) {
             return;
         }
 
-        const parsed = parseWritingMessage(message);
-        if (!parsed.ok) {
-            showComposerError(parsed.error || ui.message_parse_error || "请补全字数格式。");
-            return;
-        }
-
         hideComposerError();
         closeStream();
         appendTurn({
@@ -141,9 +146,8 @@ if (shell) {
             actor_role: "user",
             message_kind: "request",
             trace: {
-                topic: parsed.topic,
-                target_word_count: parsed.targetWordCount,
-                extra_requirements: parsed.extraRequirements,
+                topic: message,
+                raw_message: message,
             },
             created_at: new Date().toISOString(),
         });
@@ -175,7 +179,7 @@ if (shell) {
             renderSessions();
             openStream(payload.stream_id);
         } catch (error) {
-            appendLocalError(error.message);
+            appendLocalError(error?.message || String(error));
             restoreComposer();
         }
     }
@@ -188,20 +192,25 @@ if (shell) {
 
         source.addEventListener("status", (event) => {
             const payload = safeParseJson(event.data, {});
-            if (payload.stage === "generation_packet") {
-                state.baseline.status = payload?.baseline_components?.status || (payload?.baseline_components?.rebuild_required ? "requires_rebuild" : "ready");
-                if (payload.baseline_components) {
-                    state.baseline.corpus_ready = Boolean(payload.baseline_components.corpus_ready);
-                    state.baseline.profile_count = Number(payload.baseline_components.profile_count || 0);
-                    state.baseline.author_model_ready = Boolean(payload.baseline_components.author_model_ready);
-                    state.baseline.prototype_index_ready = Boolean(payload.baseline_components.prototype_index_ready);
-                    state.baseline.rebuild_required = Boolean(payload.baseline_components.rebuild_required);
-                    state.baseline.profile_version = payload.baseline_components.profile_version || null;
-                    state.baseline.baseline_version = payload.baseline_components.baseline_version || null;
-                    state.baseline.source_anchor_count = Number(payload.baseline_components.source_anchor_count || 0);
-                }
-                renderBaseline();
+            if (payload.stage !== "generation_packet") {
+                return;
             }
+            state.baseline.status =
+                payload?.baseline_components?.status ||
+                (payload?.baseline_components?.rebuild_required ? "requires_rebuild" : "ready");
+            if (payload.baseline_components) {
+                state.baseline.corpus_ready = Boolean(payload.baseline_components.corpus_ready);
+                state.baseline.profile_count = Number(payload.baseline_components.profile_count || 0);
+                state.baseline.analysis_ready = Boolean(payload.baseline_components.analysis_ready);
+                state.baseline.writing_packet_ready = Boolean(payload.baseline_components.writing_packet_ready);
+                state.baseline.author_model_ready = Boolean(payload.baseline_components.author_model_ready);
+                state.baseline.prototype_index_ready = Boolean(payload.baseline_components.prototype_index_ready);
+                state.baseline.rebuild_required = Boolean(payload.baseline_components.rebuild_required);
+                state.baseline.profile_version = payload.baseline_components.profile_version || null;
+                state.baseline.baseline_version = payload.baseline_components.baseline_version || null;
+                state.baseline.source_anchor_count = Number(payload.baseline_components.source_anchor_count || 0);
+            }
+            renderBaseline();
         });
 
         source.addEventListener("stream_update", (event) => {
@@ -250,7 +259,7 @@ if (shell) {
     async function loadSession(sessionId) {
         const payload = await fetchJson(`/api/projects/${state.projectId}/writing/sessions/${sessionId}`);
         state.currentSessionId = sessionId;
-        state.currentSession = payload;
+        state.currentSession = payload || { turns: [] };
         syncSessionSummary(payload);
         shell.dataset.sessionsOpen = "false";
         restoreComposer();
@@ -270,7 +279,8 @@ if (shell) {
             elements.channelTitle.textContent = state.channelTitle || "";
         }
         if (elements.sessionTitle) {
-            elements.sessionTitle.textContent = state.currentSession?.title || ui.untitled_session || "未命名会话";
+            elements.sessionTitle.textContent =
+                state.currentSession?.title || ui.untitled_session || "未命名会话";
         }
     }
 
@@ -284,24 +294,25 @@ if (shell) {
             const profileCount = Number(state.baseline?.profile_count || 0);
             const sourceAnchorCount = Number(state.baseline?.source_anchor_count || 0);
             if (state.baseline?.corpus_ready) {
-                components.push(`profiles ${profileCount || ""}`.trim());
+                components.push(profileCount > 0 ? `逐篇画像 ${profileCount}` : "逐篇画像");
             }
             if (state.baseline?.author_model_ready) {
-                components.push("author_model");
+                components.push("作者模型");
             }
             if (state.baseline?.prototype_index_ready) {
-                components.push("prototype_index");
+                components.push("原型索引");
             }
             const stats = [];
             if (profileCount > 0) {
-                stats.push(`${profileCount} profiles`);
+                stats.push(`${profileCount} 篇画像`);
             }
             if (sourceAnchorCount > 0) {
-                stats.push(`${sourceAnchorCount} anchors`);
+                stats.push(`${sourceAnchorCount} 个锚点`);
             }
             const componentLabel = components.length ? ` ${components.join(" + ")}` : "";
             const statsLabel = stats.length ? ` (${stats.join(" / ")})` : "";
-            elements.baselineNote.textContent = `${ui.hero_note || ""}${componentLabel}${statsLabel}`.trim() || label;
+            elements.baselineNote.textContent =
+                `${ui.hero_note || ""}${componentLabel}${statsLabel}`.trim() || label;
         }
     }
 
@@ -316,9 +327,11 @@ if (shell) {
             button.className = `writing-session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
             button.innerHTML = `
                 <strong>${escapeHtml(item.title || ui.untitled_session || "未命名会话")}</strong>
-                <small>${escapeHtml(String(item.turn_count || 0))} · ${escapeHtml(formatSessionTime(item.last_active_at || item.created_at))}</small>
+                <small>${escapeHtml(String(item.turn_count || 0))} 条 ${escapeHtml(formatSessionTime(item.last_active_at || item.created_at))}</small>
             `;
-            button.addEventListener("click", () => loadSession(item.id));
+            button.addEventListener("click", () => {
+                void loadSession(item.id);
+            });
             elements.sessionList.appendChild(button);
         });
     }
@@ -327,44 +340,85 @@ if (shell) {
         if (!elements.chatList) {
             return;
         }
+        state.turnElements = new Map();
+        state.emptyStateEl = null;
         elements.chatList.innerHTML = "";
-        const turns = state.currentSession?.turns || [];
+        const turns = Array.isArray(state.currentSession?.turns) ? state.currentSession.turns : [];
         if (!turns.length) {
             const empty = document.createElement("p");
             empty.className = "muted";
-            empty.textContent = ui.empty_turns || "还没有写作消息，先发一条命令开始。";
+            empty.textContent = ui.empty_turns || "还没有执行记录，先输入一条写作指令开始。";
+            state.emptyStateEl = empty;
             elements.chatList.appendChild(empty);
             return;
         }
         turns.forEach((turn) => {
-            elements.chatList.appendChild(renderTurn(turn));
+            const element = createTurnElement(turn);
+            const key = getTurnKey(turn);
+            state.turnElements.set(key, element);
+            elements.chatList.appendChild(element);
         });
     }
 
-    function renderTurn(turn) {
+    function createTurnElement(turn) {
         const row = document.createElement("article");
-        const role = turn.role === "user" ? "user" : "assistant";
-        const kind = turn.message_kind || "update";
-        const liveStateClass = turn.stream_state === "streaming" ? " is-streaming" : "";
-        row.className = `group-message group-message--${role} group-message--${kind}${liveStateClass}`;
-
-        const avatar = document.createElement("div");
-        avatar.className = "group-message__avatar";
-        avatar.textContent = avatarLetter(turn);
-        row.appendChild(avatar);
-
         const inner = document.createElement("div");
         inner.className = "group-message__inner";
 
+        const node = classifyTurn(turn);
+        const panel = document.createElement(node.kind === "command" ? "section" : "details");
+        panel.className = "group-message__panel";
+        if (panel instanceof HTMLDetailsElement) {
+            panel.open = shouldKeepPanelOpen(node, turn);
+            panel.addEventListener("toggle", () => {
+                row.classList.toggle("is-collapsed", !panel.open);
+            });
+        }
+
+        const summary = document.createElement(node.kind === "command" ? "div" : "summary");
+        summary.className = "group-message__summary";
+        if (panel instanceof HTMLDetailsElement) {
+            summary.addEventListener("click", () => {
+                panel.dataset.userToggled = "true";
+            });
+        }
+
+        const metaLine = document.createElement("div");
+        metaLine.className = "group-message__summary-top";
+
+        const headline = document.createElement("div");
+        headline.className = "group-message__headline";
+
+        const kindChip = document.createElement("span");
+        kindChip.className = "group-message__kind-chip";
+        headline.appendChild(kindChip);
+
+        const title = document.createElement("strong");
+        title.className = "group-message__title";
+        headline.appendChild(title);
+
         const meta = document.createElement("div");
-        meta.className = "group-message__meta";
-        meta.innerHTML = `
-            <strong>${escapeHtml(resolveActorName(turn))}</strong>
-            <span>${escapeHtml(formatMessageTime(turn.created_at))}</span>
-            ${turn.label ? `<span class="group-message__meta-state">${escapeHtml(turn.label)}</span>` : ""}
-            ${turn.stream_state === "streaming" ? `<span class="group-message__meta-live">${escapeHtml(ui.streaming || "流式输出中")}</span>` : ""}
-        `;
-        inner.appendChild(meta);
+        meta.className = "group-message__summary-meta";
+
+        const statusChip = document.createElement("span");
+        statusChip.className = "group-message__status-chip";
+        meta.appendChild(statusChip);
+
+        const tail = document.createElement("span");
+        tail.className = "group-message__meta-tail";
+        meta.appendChild(tail);
+
+        metaLine.appendChild(headline);
+        metaLine.appendChild(meta);
+        summary.appendChild(metaLine);
+
+        const metricsWrap = document.createElement("div");
+        metricsWrap.className = "group-message__metrics";
+        summary.appendChild(metricsWrap);
+        panel.appendChild(summary);
+
+        const panelBody = document.createElement("div");
+        panelBody.className = "group-message__panel-body";
 
         const bubble = document.createElement("div");
         bubble.className = "group-message__bubble";
@@ -374,21 +428,111 @@ if (shell) {
         } else {
             renderMarkdownInto(bubble, turn.content || "");
         }
-        inner.appendChild(bubble);
+        panelBody.appendChild(bubble);
 
-        const debugPayload = turn.trace?.debug;
-        if (debugPayload && Object.keys(debugPayload).length) {
-            const details = document.createElement("details");
-            details.className = "group-message__details";
-            details.innerHTML = `
-                <summary>展开详情</summary>
-                <pre>${escapeHtml(JSON.stringify(debugPayload, null, 2))}</pre>
-            `;
-            inner.appendChild(details);
+        const details = document.createElement("details");
+        details.className = "group-message__details";
+        details.hidden = true;
+        details.addEventListener("toggle", () => {
+            details.dataset.userToggled = "true";
+        });
+
+        const detailsSummary = document.createElement("summary");
+        detailsSummary.textContent = "结构化详情";
+        details.appendChild(detailsSummary);
+
+        const detailsPre = document.createElement("pre");
+        details.appendChild(detailsPre);
+        panelBody.appendChild(details);
+
+        panel.appendChild(panelBody);
+
+        inner.appendChild(panel);
+        row.appendChild(inner);
+        row._refs = {
+            panel,
+            summary,
+            kindChip,
+            title,
+            statusChip,
+            tail,
+            metricsWrap,
+            bubble,
+            details,
+            detailsPre,
+            lastContent: null,
+            lastRenderMode: null,
+        };
+        updateTurnElement(row, turn);
+        return row;
+    }
+
+    function renderTurn(turn) {
+        return createTurnElement(turn);
+    }
+
+    function updateTurnElement(row, turn) {
+        const refs = row?._refs;
+        if (!refs) {
+            return;
+        }
+        const node = classifyTurn(turn);
+        row.className = `group-message group-message--${node.kind} group-message--status-${node.status}`;
+        row.classList.toggle("is-streaming", node.status === "running");
+        row.classList.toggle("is-collapsed", refs.panel instanceof HTMLDetailsElement && !refs.panel.open);
+
+        refs.kindChip.textContent = node.kindLabel;
+        refs.title.textContent = resolveTurnLabel(turn, node);
+        refs.statusChip.textContent = node.statusLabel;
+        refs.tail.textContent = `${resolveActorName(turn)} · ${formatMessageTime(turn.created_at)}`;
+
+        if (refs.panel instanceof HTMLDetailsElement && !refs.panel.dataset.userToggled) {
+            refs.panel.open = shouldKeepPanelOpen(node, turn);
         }
 
-        row.appendChild(inner);
-        return row;
+        const keyFacts = buildKeyFacts(turn, node);
+        refs.metricsWrap.innerHTML = keyFacts
+            .map((item) => `<span class="group-message__metric">${escapeHtml(item)}</span>`)
+            .join("");
+        refs.metricsWrap.hidden = !keyFacts.length;
+
+        const shouldRenderPlain =
+            turn.role === "user" ||
+            turn.render_mode === "plain" ||
+            turn.stream_state === "streaming";
+        const content = turn.content || "";
+        const renderSignature = `${shouldRenderPlain ? "plain" : "markdown"}::${content}`;
+        if (refs.lastRenderMode !== renderSignature) {
+            refs.bubble.classList.toggle("group-message__bubble--plain", shouldRenderPlain);
+            if (shouldRenderPlain) {
+                refs.bubble.textContent = content;
+            } else {
+                renderMarkdownInto(refs.bubble, content);
+            }
+            refs.lastRenderMode = renderSignature;
+        }
+
+        const debugPayload = turn.trace?.debug;
+        const hasDebug = Boolean(debugPayload && Object.keys(debugPayload).length);
+        refs.details.hidden = !hasDebug;
+        if (hasDebug) {
+            refs.detailsPre.textContent = JSON.stringify(debugPayload, null, 2);
+            if (!refs.details.dataset.userToggled) {
+                refs.details.open = node.status === "running";
+            }
+        }
+        row.classList.toggle("is-collapsed", refs.panel instanceof HTMLDetailsElement && !refs.panel.open);
+    }
+
+    function getTurnKey(turn) {
+        return String(turn.stream_key || turn.id || "");
+    }
+
+    function clearEmptyState() {
+        if (state.emptyStateEl?.parentNode) {
+            state.emptyStateEl.parentNode.removeChild(state.emptyStateEl);
+        }
+        state.emptyStateEl = null;
     }
 
     function upsertTurn(turn) {
@@ -400,14 +544,19 @@ if (shell) {
         }
         const shouldStick = shouldAutoScroll(elements.liveFeed || elements.chatList);
         let inserted = false;
+        let currentTurn = turn;
+
         if (turn.stream_key) {
-            const index = state.currentSession.turns.findIndex((item) => item.stream_key && item.stream_key === turn.stream_key);
+            const index = state.currentSession.turns.findIndex(
+                (item) => item.stream_key && item.stream_key === turn.stream_key
+            );
             if (index >= 0) {
                 state.currentSession.turns[index] = {
                     ...state.currentSession.turns[index],
                     ...turn,
                     trace: turn.trace || state.currentSession.turns[index].trace || {},
                 };
+                currentTurn = state.currentSession.turns[index];
             } else {
                 state.currentSession.turns.push(turn);
                 inserted = true;
@@ -416,10 +565,21 @@ if (shell) {
             state.currentSession.turns.push(turn);
             inserted = true;
         }
+
         if (inserted && typeof state.currentSession.timeline_turn_count === "number") {
             state.currentSession.timeline_turn_count += 1;
         }
-        renderChat();
+
+        const key = getTurnKey(currentTurn);
+        clearEmptyState();
+        const existingElement = state.turnElements.get(key);
+        if (existingElement) {
+            updateTurnElement(existingElement, currentTurn);
+        } else if (elements.chatList) {
+            const element = createTurnElement(currentTurn);
+            state.turnElements.set(key, element);
+            elements.chatList.appendChild(element);
+        }
         if (shouldStick) {
             scrollToBottom();
         }
@@ -447,7 +607,9 @@ if (shell) {
 
     function normalizeStreamTurn(payload) {
         return {
-            id: payload.stream_key || `${payload.actor_id || "assistant"}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            id:
+                payload.stream_key ||
+                `${payload.actor_id || "assistant"}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             role: "assistant",
             content: payload.body || "",
             actor_id: payload.actor_id || "assistant",
@@ -455,10 +617,13 @@ if (shell) {
             actor_role: payload.actor_role || "assistant",
             message_kind: payload.message_kind || "update",
             label: payload.label || "",
+            stage: payload.stage || payload.message_kind || "",
             stream_key: payload.stream_key || "",
             stream_state: payload.stream_state || "complete",
             render_mode: payload.render_mode || "markdown",
             trace: {
+                stage: payload.stage || payload.message_kind || "",
+                label: payload.label || "",
                 debug: payload.detail || {},
             },
             created_at: payload.created_at || new Date().toISOString(),
@@ -518,54 +683,362 @@ if (shell) {
         if (baseline.status === "ready") {
             return ui.baseline_ready || "当前使用最新 Stone v3 基线。";
         }
+        if (baseline.status === "requires_rebuild") {
+            return ui.baseline_requires_rebuild || "检测到遗留 Stone v2 数据，请重新运行 Stone 预处理以重建 Stone v3 基线。";
+        }
         if (baseline.status === "missing_preprocess") {
-            return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
+            return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
         }
         if (baseline.status === "running_preprocess") {
-            return ui.baseline_running_preprocess || "Stone 预分析仍在运行中。";
+            return ui.baseline_running_preprocess || "Stone 预处理仍在运行中。";
         }
         if (baseline.status === "missing_profiles") {
             return ui.baseline_missing_profiles || "当前还没有 Stone v3 逐篇画像。";
         }
+        if (baseline.status === "missing_analysis") {
+            return ui.baseline_missing_analysis || "请先完成 Stone 分析，再进入写作。";
+        }
+        if (baseline.status === "analysis_incomplete") {
+            return ui.baseline_analysis_incomplete || "Stone 分析还不完整，当前只具备降级写作条件。";
+        }
         if (baseline.status === "incomplete_baseline") {
             return ui.baseline_incomplete_baseline || "Stone v3 基线资产还不完整。";
         }
-        return ui.baseline_missing_preprocess || "请先完成 Stone 预分析。";
+        return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
     }
 
     function resolveActorName(turn) {
         if (turn.role === "user") {
-            return ui.you_label || turn.actor_name || "你";
+            return ui.you_label || normalizeActorName(turn.actor_name) || "你";
         }
-        return turn.actor_name || ui.agent_label || "写作 Agent";
+        return normalizeActorName(turn.actor_name) || ui.agent_label || "写作 Agent";
     }
 
     function avatarLetter(turn) {
         const name = resolveActorName(turn);
-        const first = Array.from(name)[0];
-        return first || "S";
+        return Array.from(name)[0] || "S";
     }
 
-    function parseWritingMessage(message) {
-        const match = String(message || "").match(/(\d+)\s*(字|words)(?=\s|$|[，,。.;；:：!?！？])/i);
-        if (!match) {
-            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+    function normalizeActorName(name) {
+        const value = String(name || "").trim();
+        if (!value) {
+            return "";
         }
-        const targetWordCount = Number(match[1]);
-        if (!Number.isFinite(targetWordCount) || targetWordCount < 100) {
-            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+        if (value === "鍐欎綔 Agent" || value === "鍐" || value === "写作 Agent") {
+            return "写作 Agent";
         }
-        const topicText = message.slice(0, match.index).trim().replace(/^[请帮我麻烦\s]*(写(?:一篇|篇|个)?|来(?:一篇|篇|个)?)/, "").trim();
-        if (!topicText) {
-            return { ok: false, error: ui.message_parse_error || "请在消息里带上明确字数，例如 800字 或 800 words。" };
+        if (value === "浣?" || value === "用户" || value === "你") {
+            return "用户";
         }
-        const extraRequirements = message.slice((match.index || 0) + match[0].length).trim().replace(/^[，,。.;；:：\s]+/, "");
+        if (value.toLowerCase().includes("agent") && (value.includes("鍐") || value.includes("写作"))) {
+            return "写作 Agent";
+        }
+        return value;
+    }
+
+    function classifyTurn(turn) {
+        const messageKind = String(turn.message_kind || "update");
+        const actorRole = String(turn.actor_role || "");
+        const status =
+            messageKind === "error"
+                ? "failed"
+                : turn.stream_state === "streaming"
+                    ? "running"
+                    : "complete";
+
+        if (turn.role === "user") {
+            return {
+                kind: "command",
+                kindLabel: "指令",
+                status,
+                statusLabel: status === "running" ? "运行中" : "已提交",
+                title: "写作指令",
+                avatar: ">_",
+                defaultOpen: true,
+            };
+        }
+
+        if (messageKind === "error") {
+            return {
+                kind: "error",
+                kindLabel: "异常",
+                status,
+                statusLabel: "失败",
+                title: "执行异常",
+                avatar: "!!",
+                defaultOpen: true,
+            };
+        }
+
+        if (messageKind === "final") {
+            return {
+                kind: "result",
+                kindLabel: "成稿",
+                status,
+                statusLabel: status === "running" ? "运行中" : "完成",
+                title: "最终结果",
+                avatar: "OK",
+                defaultOpen: true,
+            };
+        }
+
+        if (
+            actorRole === "reviewer" ||
+            actorRole === "critic" ||
+            messageKind === "critic" ||
+            ["feature_density", "cross_domain_generalization", "rhythm_entropy", "extreme_state_handling", "ending_landing"].includes(messageKind)
+        ) {
+            return {
+                kind: "critic",
+                kindLabel: "审判",
+                status,
+                statusLabel: status === "running" ? "运行中" : "完成",
+                title: "高仿审判",
+                avatar: "CR",
+                defaultOpen: status === "running",
+            };
+        }
+
+        if (["generation_packet", "candidate_shortlist_v3"].includes(messageKind)) {
+            return {
+                kind: "tool",
+                kindLabel: "工具",
+                status,
+                statusLabel: status === "running" ? "运行中" : "完成",
+                title: "工具步骤",
+                avatar: "TL",
+                defaultOpen: status === "running",
+            };
+        }
+
         return {
-            ok: true,
-            topic: topicText,
-            targetWordCount,
-            extraRequirements: extraRequirements || null,
+            kind: "subagent",
+            kindLabel: "子代理",
+            status,
+            statusLabel: status === "running" ? "运行中" : "完成",
+            title: "子代理步骤",
+            avatar: "AG",
+            defaultOpen: status === "running",
         };
+    }
+
+    function summarizeTurn(turn) {
+        const text = String(turn.content || "")
+            .replace(/\s+/g, " ")
+            .trim();
+        if (!text) {
+            return resolveTurnLabel(turn) || turn.message_kind || "等待输出…";
+        }
+        if (text.length <= 180) {
+            return text;
+        }
+        return `${text.slice(0, 177)}...`;
+    }
+
+    function buildNodeMetrics(turn, node) {
+        const debug = turn.trace?.debug || {};
+        const metrics = [];
+        if (node.kind === "subagent" || node.kind === "tool") {
+            if (Array.isArray(debug.selected_documents) && debug.selected_documents.length) {
+                metrics.push(`${debug.selected_documents.length} 文档`);
+            }
+            if (Array.isArray(debug.anchor_ids) && debug.anchor_ids.length) {
+                metrics.push(`${debug.anchor_ids.length} 锚点`);
+            }
+            if (Array.isArray(debug.paragraph_map) && debug.paragraph_map.length) {
+                metrics.push(`${debug.paragraph_map.length} 段落`);
+            }
+            if (debug.axis_map && typeof debug.axis_map === "object") {
+                metrics.push(`${Object.keys(debug.axis_map).length} 轴`);
+            }
+            if (debug.axis_source_map && typeof debug.axis_source_map === "object") {
+                metrics.push(`${Object.keys(debug.axis_source_map).length} 来源`);
+            }
+            if (Array.isArray(debug.coverage_warnings) && debug.coverage_warnings.length) {
+                metrics.push(`${debug.coverage_warnings.length} 告警`);
+            }
+        }
+        if (typeof debug.word_count === "number" && debug.word_count > 0) {
+            metrics.push(`${debug.word_count} 字`);
+        }
+        if (debug.final_assessment && typeof debug.final_assessment === "object") {
+            const reviewCount = Number(debug.final_assessment.critic_total || 0);
+            if (reviewCount > 0) {
+                metrics.push(`${reviewCount} 审判器`);
+            }
+        }
+        return metrics.slice(0, 6);
+    }
+
+    function buildKeyFacts(turn, node) {
+        const debug = turn.trace?.debug || {};
+        const stage = String(turn.stage || turn.message_kind || "");
+        const facts = [];
+
+        const pushFact = (label, value) => {
+            const formatted = formatFactValue(value);
+            if (!formatted) {
+                return;
+            }
+            facts.push(`${label}: ${formatted}`);
+        };
+
+        if (stage === "generation_packet") {
+            pushFact("画像", debug.profile_count);
+            pushFact("锚点", debug.source_anchor_count);
+            pushFact("分析", debug.analysis_ready ? "就绪" : "降级");
+        } else if (stage === "request_adapter_v3") {
+            pushFact("镜头", debug.value_lens);
+            pushFact("距离", debug.distance);
+            pushFact("形式", debug.surface_form);
+        } else if (stage === "candidate_shortlist_v3") {
+            pushFact("候选", debug.shortlist_size);
+            pushFact("形式", debug.surface_form);
+            pushFact("检索词", summarizeTerms(debug.query_terms, 2));
+        } else if (stage === "llm_rerank_v3") {
+            pushFact("文档", countValue(debug.selected_documents));
+            pushFact("锚点", countValue(debug.anchor_ids));
+            pushFact("理由", debug.selection_reason);
+        } else if (stage === "writing_packet_v3") {
+            pushFact("家族", summarizeTerms(debug.family_labels, 2));
+            pushFact("画像切片", countValue(debug.selected_profile_ids));
+            pushFact("告警", countValue(debug.coverage_warnings));
+        } else if (stage === "blueprint_v3") {
+            pushFact("段落", debug.paragraph_count);
+            pushFact("形状", debug.shape_note);
+            pushFact("轴", countValue(debug.axis_map));
+        } else if (node.kind === "critic") {
+            pushFact("结论", translateVerdict(debug.verdict));
+            pushFact("分数", typeof debug.score === "number" ? `${Math.round(debug.score * 100)}` : "");
+            pushFact("锚点", countValue(debug.anchor_ids));
+        } else if (isBodyStage(turn)) {
+            pushFact("字数", debug.word_count);
+            pushFact("审判器", debug.final_assessment?.critic_total);
+        }
+
+        if (!facts.length) {
+            return buildNodeMetrics(turn, node).slice(0, 3);
+        }
+        return facts.slice(0, 3);
+    }
+
+    function shouldKeepPanelOpen(node, turn) {
+        if (node.kind === "error") {
+            return true;
+        }
+        if (node.status === "running") {
+            return true;
+        }
+        if (isBodyStage(turn)) {
+            return true;
+        }
+        return false;
+    }
+
+    function isBodyStage(turn) {
+        const stage = String(turn.stage || turn.message_kind || "");
+        return ["draft_v3", "redraft", "line_edit", "final"].includes(stage);
+    }
+
+    function countValue(value) {
+        if (Array.isArray(value)) {
+            return value.length || "";
+        }
+        if (value && typeof value === "object") {
+            return Object.keys(value).length || "";
+        }
+        return value ?? "";
+    }
+
+    function summarizeTerms(value, limit = 2) {
+        if (!Array.isArray(value) || !value.length) {
+            return "";
+        }
+        return value
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+            .slice(0, limit)
+            .join(" / ");
+    }
+
+    function formatFactValue(value) {
+        if (value === null || value === undefined) {
+            return "";
+        }
+        if (typeof value === "boolean") {
+            return value ? "是" : "否";
+        }
+        const text = String(value).trim();
+        if (!text) {
+            return "";
+        }
+        if (text.length <= 18) {
+            return text;
+        }
+        return `${text.slice(0, 18)}...`;
+    }
+
+    function translateVerdict(value) {
+        const verdict = String(value || "").trim();
+        if (verdict === "approve") {
+            return "通过";
+        }
+        if (verdict === "line_edit") {
+            return "修订";
+        }
+        if (verdict === "redraft") {
+            return "重写";
+        }
+        return verdict;
+    }
+
+    function resolveTurnLabel(turn, node = null) {
+        const label = normalizeStageLabel(turn.label || turn.trace?.label || "", turn.message_kind, turn.stage || turn.trace?.stage);
+        if (label) {
+            return label;
+        }
+        if (node?.title) {
+            return node.title;
+        }
+        return normalizeStageLabel("", turn.message_kind, turn.stage || turn.trace?.stage) || "执行步骤";
+    }
+
+    function normalizeStageLabel(label, messageKind, stage) {
+        const value = String(label || "").trim();
+        const key = String(stage || messageKind || "").trim();
+        const table = {
+            generation_packet: "基线装载",
+            request_adapter_v3: "请求适配",
+            candidate_shortlist_v3: "候选切片",
+            llm_rerank_v3: "证据重排",
+            writing_packet_v3: "写作包",
+            blueprint_v3: "蓝图规划",
+            draft_v3: "正文起草",
+            redraft: "整篇重写",
+            line_edit: "逐句修订",
+            critic: "高仿审判",
+            final: "最终成稿",
+            error: "执行异常",
+        };
+        if (value) {
+            const normalized = {
+                "Stone baseline loaded": "基线装载",
+                "Request adapter v3": "请求适配",
+                "Candidate shortlist v3": "候选切片",
+                "LLM rerank v3": "证据重排",
+                "Writing packet v3": "写作包",
+                "Blueprint v3": "蓝图规划",
+                "Draft v3": "正文起草",
+                "Redraft": "整篇重写",
+                "Line edit": "逐句修订",
+                "Final": "最终成稿",
+            }[value];
+            if (normalized) {
+                return normalized;
+            }
+            return value;
+        }
+        return table[key] || "";
     }
 
     function formatMessageTime(value) {
@@ -600,26 +1073,4 @@ if (shell) {
         }
         scroller.scrollTop = scroller.scrollHeight;
     }
-
-    resolveBaselineLabel = function resolveBaselineLabelV3(baseline) {
-        if (baseline.status === "ready") {
-            return ui.baseline_ready || "当前使用最新 Stone v3 基线。";
-        }
-        if (baseline.status === "requires_rebuild") {
-            return ui.baseline_requires_rebuild || "检测到遗留 Stone v2 数据，请重新运行 Stone 预处理以重建 Stone v3 基线。";
-        }
-        if (baseline.status === "missing_preprocess") {
-            return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
-        }
-        if (baseline.status === "running_preprocess") {
-            return ui.baseline_running_preprocess || "Stone 预处理仍在运行中。";
-        }
-        if (baseline.status === "missing_profiles") {
-            return ui.baseline_missing_profiles || "当前还没有 Stone v3 逐篇画像。";
-        }
-        if (baseline.status === "incomplete_baseline") {
-            return ui.baseline_incomplete_baseline || "Stone v3 基线资产还不完整。";
-        }
-        return ui.baseline_missing_preprocess || "请先完成 Stone 预处理。";
-    };
 }

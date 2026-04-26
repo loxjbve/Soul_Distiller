@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from app.llm.client import OpenAICompatibleClient
+from app.llm.client_runtime import OpenAICompatibleClient
 from app.schemas import ChatCompletionResult, ServiceConfig, ToolRoundResult
 
 

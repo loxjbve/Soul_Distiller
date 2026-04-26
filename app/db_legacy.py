@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import AppConfig, default_config
-from app.models import Base
+from app.db.models import Base
 
 
 class Database:

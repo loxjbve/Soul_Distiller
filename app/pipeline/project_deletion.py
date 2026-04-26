@@ -30,7 +30,6 @@ from app.models import (
 )
 from app.pipeline.ingest_task import IngestTaskManager
 from app.pipeline.rechunk import RechunkTaskManager
-from app.preprocess.service import PreprocessAgentService
 from app.retrieval.vector_store import VectorStoreManager
 from app.storage import repository
 from app.agents.stone.writing_service import WritingAgentService
@@ -50,7 +49,6 @@ class ProjectDeletionManager:
         ingest_task_manager: IngestTaskManager,
         rechunk_manager: RechunkTaskManager,
         analysis_runner,
-        preprocess_service: PreprocessAgentService,
         writing_service: WritingAgentService | None = None,
         telegram_preprocess_manager=None,
         max_workers: int = 1,
@@ -63,7 +61,6 @@ class ProjectDeletionManager:
         self.ingest_task_manager = ingest_task_manager
         self.rechunk_manager = rechunk_manager
         self.analysis_runner = analysis_runner
-        self.preprocess_service = preprocess_service
         self.writing_service = writing_service
         self.telegram_preprocess_manager = telegram_preprocess_manager
         self.batch_size = max(1, batch_size)
@@ -184,7 +181,6 @@ class ProjectDeletionManager:
             self.ingest_task_manager.stop_project_tasks(project_id, wait=False, reset_documents=True)
             self.rechunk_manager.cancel_project(project_id)
             self.analysis_runner.cancel_project(project_id)
-            self.preprocess_service.cancel_project(project_id)
             if self.writing_service:
                 self.writing_service.cancel_project(project_id)
             if self.telegram_preprocess_manager:
@@ -204,7 +200,6 @@ class ProjectDeletionManager:
                 self.ingest_task_manager.has_project_activity(project_id),
                 self.rechunk_manager.has_project_activity(project_id),
                 self.analysis_runner.has_project_activity(project_id),
-                self.preprocess_service.has_project_activity(project_id),
                 self.writing_service.has_project_activity(project_id)
                 if self.writing_service
                 else False,

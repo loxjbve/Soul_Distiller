@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from app.analysis.facets import FACETS
@@ -1222,7 +1223,6 @@ def test_create_app_recovers_stale_active_runs():
             run_id = run.id
     finally:
         first_app.state.analysis_runner.shutdown()
-        first_app.state.preprocess_service.shutdown()
         first_app.state.telegram_preprocess_manager.shutdown()
         first_app.state.rechunk_manager.shutdown()
         first_app.state.db.close()
@@ -1240,7 +1240,6 @@ def test_create_app_recovers_stale_active_runs():
             )
     finally:
         second_app.state.analysis_runner.shutdown()
-        second_app.state.preprocess_service.shutdown()
         second_app.state.telegram_preprocess_manager.shutdown()
         second_app.state.rechunk_manager.shutdown()
         second_app.state.db.close()
@@ -1402,7 +1401,6 @@ def test_pages_render_simplified_chinese_and_lang(client):
         f"/projects/{project_id}/analysis": "分析监控",
         f"/projects/{project_id}/assets?kind=skill": "资产输出工作台",
         f"/projects/{project_id}/playground": "沉浸式对话验证",
-        f"/projects/{project_id}/preprocess": "预分析工作区",
         "/settings": "配置 Chat LLM 与 Embedding 服务",
     }
 
@@ -1413,6 +1411,22 @@ def test_pages_render_simplified_chinese_and_lang(client):
         assert expected_text.encode("utf-8") in response.content
         assert b"\xef\xbf\xbd" not in response.content
         assert b"zh-Hant" not in response.content
+
+
+def test_legacy_preprocess_page_is_removed_for_group_projects(client):
+    project_id = client.post("/api/projects", json={"name": "预分析已移除"}).json()["id"]
+
+    response = client.get(f"/projects/{project_id}/preprocess")
+
+    assert response.status_code == 404
+    assert "removed for this project mode" in response.text
+
+
+def test_repository_rejects_legacy_preprocess_session_kind(app):
+    with app.state.db.session() as session:
+        project = repository.create_project(session, name="Legacy Session Kind")
+        with pytest.raises(ValueError, match="Unsupported chat session kind"):
+            repository.create_chat_session(session, project_id=project.id, session_kind="preprocess")
 
 
 def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
@@ -1427,13 +1441,6 @@ def test_localized_api_messages_and_status_fields(client, app, monkeypatch):
     ).json()
     assert upload_payload["status"] == "ok"
     assert "文档上传完成" in upload_payload["message"]
-
-    session_payload = client.post(
-        f"/api/projects/{project_id}/preprocess/sessions",
-        json={"title": "接口消息会话"},
-    ).json()
-    assert session_payload["status"] == "ok"
-    assert "预分析会话已创建" in session_payload["message"]
 
     with app.state.db.session() as session:
         run = repository.create_analysis_run(

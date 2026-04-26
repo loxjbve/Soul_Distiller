@@ -4,7 +4,7 @@
 {% block title %}{{ channel_title }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260424c">
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260426f">
 {% endblock %}
 
 {% block content %}
@@ -37,7 +37,7 @@
             </div>
             <div class="writing-channel-header__actions">
                 <a class="ghost-button" href="/projects/{{ project.id }}">{{ ui.common.back_to_project }}</a>
-                <a class="ghost-button" href="/projects/{{ project.id }}/analysis">analysis</a>
+                <a class="ghost-button" href="/projects/{{ project.id }}/analysis">分析页</a>
                 <button type="button" class="ghost-button" data-rename-session>{{ writing_ui.rename_session }}</button>
                 <button type="button" class="danger-button" data-delete-session>{{ writing_ui.delete_session }}</button>
             </div>
@@ -76,5 +76,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260424c"></script>
+<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260426f"></script>
 {% endblock %}

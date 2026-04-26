@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
+from app.analysis.facets import get_facets_for_mode
 from app.stone_preprocess import StoneDocumentSnapshot
 from app.stone_v3_checkpoint import load_stone_v3_checkpoint, stone_v3_checkpoint_path
 from app.models import utcnow
@@ -235,9 +236,11 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                             }
                         ],
                         "critic_rubrics": {
-                            "formal_fidelity": ["Match the concrete entry and residue-heavy closure."],
-                            "worldview_translation": ["Translate the topic into lived cost, not labels."],
-                            "syntheticness": ["Reject checklist prose and explanation-heavy lines."],
+                            "feature_density": ["Do not overfit signature ticks or over-stack hallmark phrases."],
+                            "cross_domain_generalization": ["Translate the topic into lived cost, not labels."],
+                            "rhythm_entropy": ["Keep sentence pressure and density uneven in the right places."],
+                            "extreme_state_handling": ["Preserve the author's emotional downgrade mechanism."],
+                            "ending_landing": ["Keep the ending on residue, not explanation."],
                         },
                         "global_evidence": [
                             {
@@ -302,7 +305,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
-        if "Stone v3 request adapter" in system_text:
+        if "Stone v3 request adapter" in system_text or "请求适配器" in system_text:
             return _mock_result(
                 json.dumps(
                     {
@@ -323,7 +326,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
-        if "Stone v3 reranker" in system_text:
+        if "Stone v3 reranker" in system_text or "重排器" in system_text:
             document_ids = []
             for value in re.findall(r'"document_id"\s*:\s*"([^"]+)"', user_text):
                 if value not in document_ids:
@@ -344,7 +347,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
-        if "Stone v3 style packet builder" in system_text:
+        if "Stone v3 style packet builder" in system_text or "写作包组装器" in system_text:
             return _mock_result(
                 json.dumps(
                     {
@@ -364,12 +367,13 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                         ],
                         "do_not_do": ["Do not explain the ritual."],
                         "style_thesis": "Night comfort should carry cost and residue.",
+                        "coverage_warnings": ["Sparse profile mode is active."],
                     },
                     ensure_ascii=False,
                 )
             )
 
-        if "Stone v3 blueprint composer" in system_text:
+        if "Stone v3 blueprint composer" in system_text or "蓝图规划器" in system_text:
             return _mock_result(
                 json.dumps(
                     {
@@ -388,13 +392,23 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                             "Close on residue.",
                         ],
                         "do_not_do": ["Do not explain the process."],
+                        "axis_map": {
+                            "voice_signature": {"goal": "Keep the opening restrained and bodily.", "paragraph_hint": 1, "anchor_ids": []},
+                            "emotional_arc": {"goal": "Let embarrassment rise slowly.", "paragraph_hint": 3, "anchor_ids": []},
+                        },
+                        "paragraph_map": [
+                            {"paragraph_index": 1, "role": "opening", "objective": "Open from the bright door.", "axis_keys": ["voice_signature"], "anchor_ids": []},
+                            {"paragraph_index": 2, "role": "development", "objective": "Accumulate bodily detail.", "axis_keys": ["imagery_theme"], "anchor_ids": []},
+                            {"paragraph_index": 3, "role": "development", "objective": "Surface the cost without thesis.", "axis_keys": ["emotional_arc"], "anchor_ids": []},
+                            {"paragraph_index": 4, "role": "closing", "objective": "Land on residue.", "axis_keys": ["structure_composition"], "anchor_ids": []},
+                        ],
                         "anchor_ids": [],
                     },
                     ensure_ascii=False,
                 )
             )
 
-        if "Stone v3 formal_fidelity critic" in system_text:
+        if "feature_density" in system_text:
             anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
             return _mock_result(
                 json.dumps(
@@ -403,7 +417,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                         "score": 0.95,
                         "verdict": "approve",
                         "anchor_ids": anchor_ids[:3],
-                        "matched_signals": ["concrete opening", "residue-heavy closure"],
+                        "matched_signals": ["特征浓度克制", "没有过拟合堆叠"],
                         "must_keep_spans": [],
                         "line_edits": [],
                         "redraft_reason": "",
@@ -413,7 +427,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
-        if "Stone v3 worldview_translation critic" in system_text:
+        if "cross_domain_generalization" in system_text:
             anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
             return _mock_result(
                 json.dumps(
@@ -422,7 +436,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                         "score": 0.94,
                         "verdict": "approve",
                         "anchor_ids": anchor_ids[:3],
-                        "matched_signals": ["topic translated into cost"],
+                        "matched_signals": ["题目被翻译进成本镜头"],
                         "must_keep_spans": [],
                         "line_edits": [],
                         "redraft_reason": "",
@@ -432,7 +446,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
-        if "Stone v3 syntheticness critic" in system_text:
+        if "rhythm_entropy" in system_text or "extreme_state_handling" in system_text or "ending_landing" in system_text:
             anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
             return _mock_result(
                 json.dumps(
@@ -441,7 +455,7 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                         "score": 0.93,
                         "verdict": "approve",
                         "anchor_ids": anchor_ids[:3],
-                        "matched_signals": ["not checklist prose"],
+                        "matched_signals": ["节奏和收尾都保持稳定"],
                         "must_keep_spans": [],
                         "line_edits": [],
                         "redraft_reason": "",
@@ -457,6 +471,278 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 "Stone v3 drafter",
                 "Stone v3 redrafter",
                 "Stone v3 line editor",
+                "正文起草器",
+                "重写器",
+                "逐句修订器",
+            )
+        ):
+            target = _extract_target_word_count(user_text)
+            return _mock_result(_build_mock_article("KFC", target))
+
+        if "请求适配器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "desired_length_band": "medium",
+                        "surface_form": "scene_vignette",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through lived detail",
+                        "distance": "recycled first person",
+                        "entry_scene": "Start with the walk into the bright store.",
+                        "felt_cost": "Make the comfort feel a little embarrassing and expensive.",
+                        "query_terms": ["kfc", "night", "door", "road"],
+                        "motif_terms": ["night", "door", "road", "grease"],
+                        "anchor_preferences": ["opening", "closing", "signature"],
+                        "hard_constraints": [],
+                        "reasoning": "Use a night ritual and keep the cost bodily.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "重排器" in system_text:
+            document_ids = []
+            for value in re.findall(r'"document_id"\s*:\s*"([^"]+)"', user_text):
+                if value not in document_ids:
+                    document_ids.append(value)
+            anchor_ids = []
+            for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text):
+                if value.startswith("anchor:") and value not in anchor_ids:
+                    anchor_ids.append(value)
+            return _mock_result(
+                json.dumps(
+                    {
+                        "selected_documents": document_ids[:6],
+                        "anchor_ids": anchor_ids[:8],
+                        "selection_reason": "Night ritual anchors match the request and the author's cost lens.",
+                        "rerank_notes": ["Keep the closure unresolved."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "写作包组装器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "entry_scene": "Enter through the bright counter and the warm paper bag.",
+                        "felt_cost": "Comfort should feel useful and a little humiliating at once.",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through repetition",
+                        "distance": "recycled first person",
+                        "family_labels": ["night_cost"],
+                        "lexicon_keep": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "syntax_rules": ["Prefer concrete pressure over explanation."],
+                        "structure_recipe": [
+                            "Open on the walk in.",
+                            "Push pressure through small bodily details.",
+                            "Leave the ending unresolved.",
+                        ],
+                        "do_not_do": ["Do not explain the ritual."],
+                        "style_thesis": "Night comfort should carry cost and residue.",
+                        "coverage_warnings": ["Sparse profile mode is active."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "蓝图规划器" in system_text or "改稿蓝图规划器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "paragraph_count": 4,
+                        "shape_note": "Scene vignettes stacking bodily pressure.",
+                        "entry_move": "Open from the bright door and the walk inside.",
+                        "development_move": "Keep pressure in the body, wallet, and walk home.",
+                        "turning_device": "small recoil after the first bite",
+                        "closure_residue": "End on the road home, not a conclusion.",
+                        "keep_terms": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "steps": [
+                            "Open on action.",
+                            "Accumulate concrete detail.",
+                            "Let the cost surface without thesis.",
+                            "Close on residue.",
+                        ],
+                        "do_not_do": ["Do not explain the process."],
+                        "axis_map": {
+                            "voice_signature": {"goal": "Keep the opening restrained and bodily.", "paragraph_hint": 1, "anchor_ids": []},
+                            "emotional_arc": {"goal": "Let embarrassment rise slowly.", "paragraph_hint": 3, "anchor_ids": []},
+                        },
+                        "paragraph_map": [
+                            {"paragraph_index": 1, "role": "opening", "objective": "Open from the bright door.", "axis_keys": ["voice_signature"], "anchor_ids": []},
+                            {"paragraph_index": 2, "role": "development", "objective": "Accumulate bodily detail.", "axis_keys": ["imagery_theme"], "anchor_ids": []},
+                            {"paragraph_index": 3, "role": "development", "objective": "Surface the cost without thesis.", "axis_keys": ["emotional_arc"], "anchor_ids": []},
+                            {"paragraph_index": 4, "role": "closing", "objective": "Land on residue.", "axis_keys": ["structure_composition"], "anchor_ids": []},
+                        ],
+                        "anchor_ids": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "language_fluency" in system_text or "logic_flow" in system_text:
+            anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
+            return _mock_result(
+                json.dumps(
+                    {
+                        "pass": True,
+                        "score": 0.93,
+                        "verdict": "approve",
+                        "anchor_ids": anchor_ids[:3],
+                        "matched_signals": ["语言与逻辑在改稿后保持顺滑"],
+                        "must_keep_spans": [],
+                        "line_edits": [],
+                        "redraft_reason": "",
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if any(
+            marker in system_text
+            for marker in (
+                "正文起草器",
+                "改稿重写器",
+                "重写器",
+                "逐句修订器",
+            )
+        ):
+            target = _extract_target_word_count(user_text)
+            return _mock_result(_build_mock_article("KFC", target))
+
+        if "请求适配器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "desired_length_band": "medium",
+                        "surface_form": "scene_vignette",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through lived detail",
+                        "distance": "recycled first person",
+                        "entry_scene": "Start with the walk into the bright store.",
+                        "felt_cost": "Make the comfort feel a little embarrassing and expensive.",
+                        "query_terms": ["kfc", "night", "door", "road"],
+                        "motif_terms": ["night", "door", "road", "grease"],
+                        "anchor_preferences": ["opening", "closing", "signature"],
+                        "hard_constraints": [],
+                        "reasoning": "Use a night ritual and keep the cost bodily.",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "重排器" in system_text:
+            document_ids = []
+            for value in re.findall(r'"document_id"\s*:\s*"([^"]+)"', user_text):
+                if value not in document_ids:
+                    document_ids.append(value)
+            anchor_ids = []
+            for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text):
+                if value.startswith("anchor:") and value not in anchor_ids:
+                    anchor_ids.append(value)
+            return _mock_result(
+                json.dumps(
+                    {
+                        "selected_documents": document_ids[:6],
+                        "anchor_ids": anchor_ids[:8],
+                        "selection_reason": "Night ritual anchors match the request and the author's cost lens.",
+                        "rerank_notes": ["Keep the closure unresolved."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "写作包组装器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "entry_scene": "Enter through the bright counter and the warm paper bag.",
+                        "felt_cost": "Comfort should feel useful and a little humiliating at once.",
+                        "value_lens": "cost",
+                        "judgment_mode": "stabilize through repetition",
+                        "distance": "recycled first person",
+                        "family_labels": ["night_cost"],
+                        "lexicon_keep": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "syntax_rules": ["Prefer concrete pressure over explanation."],
+                        "structure_recipe": [
+                            "Open on the walk in.",
+                            "Push pressure through small bodily details.",
+                            "Leave the ending unresolved.",
+                        ],
+                        "do_not_do": ["Do not explain the ritual."],
+                        "style_thesis": "Night comfort should carry cost and residue.",
+                        "coverage_warnings": ["Sparse profile mode is active."],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "蓝图规划器" in system_text or "改稿蓝图规划器" in system_text:
+            return _mock_result(
+                json.dumps(
+                    {
+                        "paragraph_count": 4,
+                        "shape_note": "Scene vignettes stacking bodily pressure.",
+                        "entry_move": "Open from the bright door and the walk inside.",
+                        "development_move": "Keep pressure in the body, wallet, and walk home.",
+                        "turning_device": "small recoil after the first bite",
+                        "closure_residue": "End on the road home, not a conclusion.",
+                        "keep_terms": ["night", "door", "road", "grease"],
+                        "motif_obligations": ["night", "door", "road"],
+                        "steps": [
+                            "Open on action.",
+                            "Accumulate concrete detail.",
+                            "Let the cost surface without thesis.",
+                            "Close on residue.",
+                        ],
+                        "do_not_do": ["Do not explain the process."],
+                        "axis_map": {
+                            "voice_signature": {"goal": "Keep the opening restrained and bodily.", "paragraph_hint": 1, "anchor_ids": []},
+                            "emotional_arc": {"goal": "Let embarrassment rise slowly.", "paragraph_hint": 3, "anchor_ids": []},
+                        },
+                        "paragraph_map": [
+                            {"paragraph_index": 1, "role": "opening", "objective": "Open from the bright door.", "axis_keys": ["voice_signature"], "anchor_ids": []},
+                            {"paragraph_index": 2, "role": "development", "objective": "Accumulate bodily detail.", "axis_keys": ["imagery_theme"], "anchor_ids": []},
+                            {"paragraph_index": 3, "role": "development", "objective": "Surface the cost without thesis.", "axis_keys": ["emotional_arc"], "anchor_ids": []},
+                            {"paragraph_index": 4, "role": "closing", "objective": "Land on residue.", "axis_keys": ["structure_composition"], "anchor_ids": []},
+                        ],
+                        "anchor_ids": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if "写作包审判器" in system_text or "packet critic" in system_text:
+            anchor_ids = [value for value in re.findall(r'"id"\s*:\s*"([^"]+)"', user_text) if value.startswith("anchor:")]
+            return _mock_result(
+                json.dumps(
+                    {
+                        "pass": True,
+                        "score": 0.91,
+                        "verdict": "approve",
+                        "anchor_ids": anchor_ids[:3],
+                        "matched_signals": ["关键字段基本贴住了画像切片和锚点"],
+                        "unsupported_fields": [],
+                        "defaulted_fields": [],
+                        "overfit_risks": [],
+                        "repair_instructions": [],
+                        "risks": [],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if any(
+            marker in system_text
+            for marker in (
+                "正文起草器",
+                "改稿重写器",
+                "重写器",
+                "逐句修订器",
             )
         ):
             target = _extract_target_word_count(user_text)
@@ -512,6 +798,12 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
 
 
 def _create_v3_preprocessed_project(client, app, monkeypatch, *, name: str) -> tuple[str, dict]:
+    project_id, preprocess_payload = _create_v3_preprocessed_project_without_analysis(client, app, monkeypatch, name=name)
+    _seed_stone_analysis_run(app, project_id)
+    return project_id, preprocess_payload
+
+
+def _create_v3_preprocessed_project_without_analysis(client, app, monkeypatch, *, name: str) -> tuple[str, dict]:
     create_response = client.post("/api/projects", json={"name": name, "mode": "stone"})
     assert create_response.status_code == 200
     project_id = create_response.json()["id"]
@@ -534,6 +826,46 @@ def _create_v3_preprocessed_project(client, app, monkeypatch, *, name: str) -> t
     preprocess_payload = _wait_for_stone_preprocess(client, project_id, preprocess_response.json()["id"])
     assert preprocess_payload["status"] == "completed"
     return project_id, preprocess_payload
+
+
+def _seed_stone_analysis_run(app, project_id: str) -> str:
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id=project_id,
+            status="completed",
+            summary_json={"analysis_ready": True},
+        )
+        run.started_at = utcnow()
+        run.finished_at = run.started_at
+        for facet in get_facets_for_mode("stone"):
+            repository.upsert_facet(
+                session,
+                run.id,
+                facet.key,
+                status="completed",
+                confidence=0.92,
+                findings_json={
+                    "summary": f"{facet.label} stays stable across the sampled Stone corpus.",
+                    "bullets": [
+                        f"{facet.label} remains reusable.",
+                        f"{facet.label} can be traced back to concrete evidence.",
+                    ],
+                    "anchor_ids": ["anchor:seed:opening", "anchor:seed:closing"],
+                },
+                evidence_json=[
+                    {
+                        "id": f"evidence:{facet.key}:1",
+                        "document_id": "seed",
+                        "document_title": "seed",
+                        "quote": "A bright door, a walk home, and cost residue.",
+                        "expression": facet.label,
+                        "reason": facet.purpose,
+                    }
+                ],
+                conflicts_json=[],
+            )
+        return run.id
 
 
 def _seed_legacy_v2_fallback(app) -> str:
@@ -839,6 +1171,9 @@ def test_stone_writing_status_flags_legacy_v2_data_as_requires_rebuild(client, a
     assert v3_status["status"] == "ready"
     assert v3_status["profile_version"] == "v3"
     assert v3_status["baseline_version"] == "v3"
+    assert v3_status["analysis_ready"] is True
+    assert v3_status["writing_packet_ready"] is True
+    assert v3_status["analysis_run_id"] is not None
     assert v3_status["author_model_v3_ready"] is True
     assert v3_status["prototype_index_v3_ready"] is True
     assert "legacy_fallback_active" not in v3_status
@@ -847,6 +1182,60 @@ def test_stone_writing_status_flags_legacy_v2_data_as_requires_rebuild(client, a
     assert legacy_status["profile_version"] is None
     assert legacy_status["baseline_version"] is None
     assert legacy_status["rebuild_required"] is True
+
+
+def test_stone_writing_status_requires_analysis_before_ready(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project_without_analysis(
+        client,
+        app,
+        monkeypatch,
+        name="Stone V3 Missing Analysis",
+    )
+
+    with app.state.db.session() as session:
+        status = _resolve_stone_writing_status(session, project_id)
+
+    assert status["status"] == "missing_analysis"
+    assert status["analysis_ready"] is False
+    assert status["writing_packet_ready"] is False
+    assert status["analysis_run_id"] is None
+
+
+def test_stone_writing_status_flags_incomplete_analysis(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project_without_analysis(
+        client,
+        app,
+        monkeypatch,
+        name="Stone V3 Incomplete Analysis",
+    )
+
+    with app.state.db.session() as session:
+        run = repository.create_analysis_run(
+            session,
+            project_id=project_id,
+            status="completed",
+            summary_json={"analysis_ready": False},
+        )
+        run.started_at = utcnow()
+        run.finished_at = run.started_at
+        facets = get_facets_for_mode("stone")
+        for facet in facets[:-1]:
+            repository.upsert_facet(
+                session,
+                run.id,
+                facet.key,
+                status="completed",
+                confidence=0.9,
+                findings_json={"summary": facet.label, "bullets": [facet.purpose]},
+                evidence_json=[],
+                conflicts_json=[],
+            )
+        status = _resolve_stone_writing_status(session, project_id)
+
+    assert status["status"] == "analysis_incomplete"
+    assert status["analysis_ready"] is False
+    assert status["writing_packet_ready"] is False
+    assert status["analysis_run_id"] == run.id
 
 
 def test_invalid_latest_v3_drafts_do_not_block_writing(client, app, monkeypatch):
@@ -876,6 +1265,8 @@ def test_invalid_latest_v3_drafts_do_not_block_writing(client, app, monkeypatch)
         status = _resolve_stone_writing_status(session, project_id)
 
     assert status["status"] == "ready"
+    assert status["analysis_ready"] is True
+    assert status["writing_packet_ready"] is True
     assert status["author_model_v3_ready"] is True
     assert status["prototype_index_v3_ready"] is True
 
@@ -945,14 +1336,18 @@ def test_writing_service_uses_v3_pipeline_by_default(client, app, monkeypatch):
     stage_names = [payload.get("stage") for name, payload in events if name == "stage"]
 
     assert "request_adapter_v3" in stage_names
+    assert "profile_selection_v3" in stage_names
     assert "candidate_shortlist_v3" in stage_names
     assert "llm_rerank_v3" in stage_names
-    assert "style_packet_v3" in stage_names
+    assert "writing_packet_v3" in stage_names
+    assert "packet_critic" in stage_names
     assert "blueprint_v3" in stage_names
     assert "draft_v3" in stage_names
-    assert "formal_fidelity" in stage_names
-    assert "worldview_translation" in stage_names
-    assert "syntheticness" in stage_names
+    assert "feature_density" in stage_names
+    assert "cross_domain_generalization" in stage_names
+    assert "rhythm_entropy" in stage_names
+    assert "extreme_state_handling" in stage_names
+    assert "ending_landing" in stage_names
     assert "sample_routing" not in stage_names
     assert "local_decomposition" not in stage_names
 
@@ -963,14 +1358,122 @@ def test_writing_service_uses_v3_pipeline_by_default(client, app, monkeypatch):
 
     assert trace["baseline_source"] == "stone_v3_baseline"
     assert trace["generation_packet"]["baseline"]["stone_v3"] is True
+    assert trace["generation_packet"]["baseline"]["analysis_ready"] is True
+    assert trace["generation_packet"]["baseline"]["writing_packet_ready"] is True
     assert trace["generation_packet"]["baseline"]["author_model_v3_ready"] is True
     assert trace["generation_packet"]["baseline"]["prototype_index_v3_ready"] is True
     assert "request_adapter_v3" in trace
+    assert "profile_selection_v3" in trace
     assert "candidate_shortlist_v3" in trace
     assert "llm_rerank_v3" in trace
-    assert "style_packet_v3" in trace
+    assert "writing_packet_v3" in trace
+    assert "packet_critic_v3" in trace
     assert "blueprint_v3" in trace
+    assert "coverage_warnings" in trace
+    assert "axis_source_map" in trace
     assert "local_router" not in trace
+
+
+def test_writing_message_accepts_freeform_topic_without_explicit_word_count(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Freeform Writing")
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Freeform"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    freeform_message = "写雨夜车站，克制一点，别解释太多，让情绪停在回家路上。"
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": freeform_message},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    user_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "user"]
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+
+    assert user_turns[-1]["content"] == freeform_message
+    assert assistant_turns[-1]["trace"]["topic"] == freeform_message
+    assert assistant_turns[-1]["trace"]["raw_message"] == freeform_message
+
+
+def test_follow_up_feedback_uses_revision_pipeline_from_blueprint_down(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Revision Flow")
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Revision"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    first_message = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert first_message.status_code == 200
+    first_stream_id = first_message.json()["stream_id"]
+
+    first_events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{first_stream_id}",
+    )
+    assert not [payload for name, payload in first_events if name == "error"]
+
+    revision_message = "把结尾再收一点，语言更顺一点，逻辑更清楚，不要解释得太满。"
+    second_message = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": revision_message},
+    )
+    assert second_message.status_code == 200
+    second_stream_id = second_message.json()["stream_id"]
+
+    second_events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{second_stream_id}",
+    )
+    assert not [payload for name, payload in second_events if name == "error"]
+    second_stage_names = [payload.get("stage") for name, payload in second_events if name == "stage"]
+
+    assert "blueprint_v3" in second_stage_names
+    assert "redraft" in second_stage_names
+    assert "language_fluency" in second_stage_names
+    assert "logic_flow" in second_stage_names
+    assert "request_adapter_v3" not in second_stage_names
+    assert "candidate_shortlist_v3" not in second_stage_names
+    assert "llm_rerank_v3" not in second_stage_names
+    assert "writing_packet_v3" not in second_stage_names
+    assert "draft_v3" not in second_stage_names
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    result_turns = [
+        turn
+        for turn in detail_payload["turns"]
+        if turn["role"] == "assistant" and isinstance(turn.get("trace"), dict) and turn["trace"].get("kind") == "writing_result"
+    ]
+    assert len(result_turns) >= 2
+
+    first_result_turn = result_turns[-2]
+    latest_result_turn = result_turns[-1]
+    first_trace = first_result_turn["trace"]
+    latest_trace = latest_result_turn["trace"]
+
+    assert first_trace.get("request_mode", "draft") == "draft"
+    assert latest_trace["request_mode"] == "revision"
+    assert latest_trace["revision_mode"] is True
+    assert latest_trace["revision_source_turn_id"]
+    assert latest_trace["revision_source"]["turn_id"] == latest_trace["revision_source_turn_id"]
+    assert latest_trace["revision_request"] == revision_message
+    assert latest_trace["target_word_count"] == 400
+    assert latest_trace["revision_source"]["final_text"] == first_result_turn["content"]
+    assert latest_trace["writing_packet_v3"]
+    critic_keys = {critic["critic_key"] for critic in latest_trace["critics"]}
+    assert "language_fluency" in critic_keys
+    assert "logic_flow" in critic_keys
 
 
 def test_v3_writing_tolerates_string_translation_rules_in_author_model(client, app, monkeypatch):

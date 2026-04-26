@@ -6,14 +6,13 @@ from dataclasses import dataclass
 
 from fastapi import FastAPI
 
-from app.agents.preprocess.orchestrator import PreprocessAgentOrchestrator
 from app.agents.stone.orchestrator import StoneAgentOrchestrator
 from app.agents.telegram.orchestrator import TelegramAgentOrchestrator
-from app.analysis.engine import AnalysisEngine
+from app.analysis.engine_runtime import AnalysisEngine
 from app.analysis.runner import AnalysisTaskRunner
 from app.analysis.streaming import AnalysisStreamHub
-from app.analysis.synthesizer import AssetSynthesizer
-from app.analysis.stone_v3 import StoneV3BaselineSynthesizer
+from app.analysis.synthesizer_runtime import AssetSynthesizer
+from app.analysis.stone_v3_runtime import StoneV3BaselineSynthesizer
 from app.core.config import AppConfig, default_config
 from app.db import Database
 from app.models import utcnow
@@ -21,7 +20,6 @@ from app.pipeline.ingest import DocumentIngestService
 from app.pipeline.ingest_task import IngestTaskManager
 from app.pipeline.project_deletion import ProjectDeletionManager
 from app.pipeline.rechunk import RechunkTaskManager
-from app.preprocess.service import PreprocessAgentService
 from app.retrieval.service import RetrievalService
 from app.retrieval.vector_store import VectorStoreManager
 from app.schemas import DEFAULT_ANALYSIS_CONCURRENCY
@@ -68,15 +66,12 @@ class AppContainer:
     rechunk_manager: RechunkTaskManager
     asset_synthesizer: AssetSynthesizer
     stone_v3_synthesizer: StoneV3BaselineSynthesizer
-    preprocess_service: PreprocessAgentService
     writing_service: WritingAgentService
     telegram_preprocess_manager: TelegramPreprocessManager
     stone_preprocess_worker: StonePreprocessWorker
     project_deletion_manager: ProjectDeletionManager
     stone_agents: StoneAgentOrchestrator
     telegram_agents: TelegramAgentOrchestrator
-    preprocess_agents: PreprocessAgentOrchestrator
-
     @classmethod
     def build(cls, config: AppConfig | None = None) -> "AppContainer":
         config = config or default_config()
@@ -118,7 +113,6 @@ class AppContainer:
         )
         asset_synthesizer = AssetSynthesizer(log_path=str(config.llm_log_path))
         stone_v3_synthesizer = StoneV3BaselineSynthesizer(log_path=str(config.llm_log_path))
-        preprocess_service = PreprocessAgentService(database, config, retrieval, max_workers=4)
         writing_service = WritingAgentService(database, config, max_workers=4)
         telegram_preprocess_manager = TelegramPreprocessManager(
             database,
@@ -138,13 +132,11 @@ class AppContainer:
             ingest_task_manager=ingest_task_manager,
             rechunk_manager=rechunk_manager,
             analysis_runner=analysis_runner,
-            preprocess_service=preprocess_service,
             writing_service=writing_service,
             telegram_preprocess_manager=telegram_preprocess_manager,
         )
         stone_agents = StoneAgentOrchestrator(retrieval_service=retrieval)
         telegram_agents = TelegramAgentOrchestrator()
-        preprocess_agents = PreprocessAgentOrchestrator()
 
         _recover_interrupted_analysis_runs(database)
         telegram_preprocess_manager.resume_interrupted_runs()
@@ -165,14 +157,12 @@ class AppContainer:
             rechunk_manager=rechunk_manager,
             asset_synthesizer=asset_synthesizer,
             stone_v3_synthesizer=stone_v3_synthesizer,
-            preprocess_service=preprocess_service,
             writing_service=writing_service,
             telegram_preprocess_manager=telegram_preprocess_manager,
             stone_preprocess_worker=stone_preprocess_worker,
             project_deletion_manager=project_deletion_manager,
             stone_agents=stone_agents,
             telegram_agents=telegram_agents,
-            preprocess_agents=preprocess_agents,
         )
 
     def attach_to_app(self, app: FastAPI) -> None:
@@ -191,7 +181,6 @@ class AppContainer:
         app.state.asset_synthesizer = self.asset_synthesizer
         app.state.skill_synthesizer = self.asset_synthesizer
         app.state.stone_v3_synthesizer = self.stone_v3_synthesizer
-        app.state.preprocess_service = self.preprocess_service
         app.state.writing_service = self.writing_service
         app.state.telegram_preprocess_manager = self.telegram_preprocess_manager
         app.state.project_deletion_manager = self.project_deletion_manager
@@ -199,8 +188,6 @@ class AppContainer:
         app.state.stone_preprocess_worker = self.stone_preprocess_worker
         app.state.stone_agents = self.stone_agents
         app.state.telegram_agents = self.telegram_agents
-        app.state.preprocess_agents = self.preprocess_agents
-
     @asynccontextmanager
     async def lifespan(self, _: FastAPI):
         self.stone_preprocess_worker.bind_loop(asyncio.get_running_loop())
@@ -210,7 +197,6 @@ class AppContainer:
         finally:
             self.project_deletion_manager.shutdown()
             self.analysis_runner.shutdown()
-            self.preprocess_service.shutdown()
             self.writing_service.shutdown()
             self.telegram_preprocess_manager.shutdown()
             await self.stone_preprocess_worker.shutdown()

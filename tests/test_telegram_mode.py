@@ -1105,6 +1105,7 @@ def test_telegram_analysis_uses_preprocess_tables_and_skips_retrieval(client, ap
     assert payload["summary"]["preprocess_run_id"] == preprocess_run_id
     assert payload["summary"]["telegram_message_count"] == 4
     assert payload["summary"]["telegram_participant_count"] == 3
+    assert "telegram_report_count" not in payload["summary"]
     assert payload["summary"]["topic_count_used"] == 1
     assert payload["summary"]["weekly_candidate_count"] == 1
     assert payload["summary"]["weekly_topic_count"] == 1

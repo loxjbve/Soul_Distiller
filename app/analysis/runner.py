@@ -6,7 +6,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Lock
 
-from app.analysis.engine import AnalysisCancelledError, AnalysisEngine
+from app.analysis.engine_runtime import AnalysisCancelledError, AnalysisEngine
 from app.db import Database
 from app.models import utcnow
 from app.runtime_limits import background_task_slot

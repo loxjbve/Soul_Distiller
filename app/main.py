@@ -13,8 +13,9 @@ if __package__ in {None, ""}:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-from app.api.router import router
+from app.api.router import router as api_router
 from app.core import AppConfig, AppContainer, default_config
+from app.web.routes import router as web_router
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
@@ -24,7 +25,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
 
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    app.include_router(router)
+    app.include_router(web_router)
+    app.include_router(api_router)
     return app
 
 
