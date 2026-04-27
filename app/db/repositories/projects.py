@@ -32,6 +32,46 @@ from app.db.models import (
 PROJECT_LIFECYCLE_ACTIVE = "active"
 PROJECT_LIFECYCLE_DELETING = "deleting"
 PROJECT_LIFECYCLE_DELETE_FAILED = "delete_failed"
+STONE_WRITING_METADATA_KEY = "stone_writing"
+STONE_WRITING_DEFAULT_MAX_CONCURRENCY = 4
+STONE_WRITING_MIN_MAX_CONCURRENCY = 1
+STONE_WRITING_MAX_MAX_CONCURRENCY = 8
+
+
+def normalize_stone_writing_max_concurrency(value: Any, *, default: int = STONE_WRITING_DEFAULT_MAX_CONCURRENCY) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = int(default)
+    return max(STONE_WRITING_MIN_MAX_CONCURRENCY, min(STONE_WRITING_MAX_MAX_CONCURRENCY, normalized))
+
+
+def normalize_stone_writing_settings(payload: Any) -> dict[str, Any]:
+    raw = payload if isinstance(payload, dict) else {}
+    return {
+        "max_concurrency": normalize_stone_writing_max_concurrency(raw.get("max_concurrency")),
+    }
+
+
+def get_project_stone_writing_settings(project: Project | None) -> dict[str, Any]:
+    metadata = dict(getattr(project, "metadata_json", None) or {})
+    return normalize_stone_writing_settings(metadata.get(STONE_WRITING_METADATA_KEY))
+
+
+def update_project_stone_writing_settings(
+    session: Session,
+    project: Project,
+    *,
+    max_concurrency: int | None = None,
+) -> dict[str, Any]:
+    metadata = dict(project.metadata_json or {})
+    current = normalize_stone_writing_settings(metadata.get(STONE_WRITING_METADATA_KEY))
+    if max_concurrency is not None:
+        current["max_concurrency"] = normalize_stone_writing_max_concurrency(max_concurrency)
+    metadata[STONE_WRITING_METADATA_KEY] = current
+    project.metadata_json = metadata
+    session.flush()
+    return dict(current)
 
 
 def list_projects(session: Session) -> list[Project]:

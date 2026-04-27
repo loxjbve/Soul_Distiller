@@ -690,7 +690,7 @@ def _select_profile_slices_for_request_v3(
 
     summary = _summarize_profile_selection_v3(selected_profiles)
     selection_notes = [
-        "画像切片按当前题目动态重排，不再只复用全库代表性样本。",
+        "画像切片已按当前题目重新排序，不再只复用全库代表性样本。",
     ]
     if not selected_profiles:
         selection_notes.append("动态画像检索没有选出有效结果，已退回代表性样本。")
@@ -712,7 +712,6 @@ def _select_profile_slices_for_request_v3(
         "selection_notes": selection_notes,
         "summary": summary,
     }
-
 
 def _build_source_map_v3(
     *,
@@ -905,33 +904,25 @@ def _normalize_request_adapter_v3(
     if desired_length_band not in {"micro", "short", "medium", "long"}:
         desired_length_band = _resolve_length_band_v3(state.target_word_count)
     surface_form = str(payload.get("surface_form") or "").strip().lower() or "scene_vignette"
-    query_terms = _unique_preserve_order(
-        [
-            *_normalize_string_list(payload.get("query_terms"), limit=10),
-            *_v3_keyword_units(state.topic, state.extra_requirements, limit=10),
-        ]
-    )[:10]
-    motif_terms = _unique_preserve_order(
-        [
-            *_normalize_string_list(payload.get("motif_terms"), limit=8),
-            *_normalize_string_list(first_rule.get("preferred_motifs"), limit=6),
-            *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
-        ]
-    )[:8]
-    anchor_preferences = _unique_preserve_order(
-        [
-            *_normalize_string_list(payload.get("anchor_preferences"), limit=6),
-            "opening",
-            "closing",
-        ]
-    )[:6]
-    hard_constraints = _unique_preserve_order(
-        [
-            "全文必须使用简体中文，避免英文句子或整段英文表达。",
-            *_normalize_string_list(payload.get("hard_constraints"), limit=6),
-            *_normalize_string_list(state.extra_requirements, limit=4),
-        ]
-    )[:6]
+    query_terms = _unique_preserve_order([
+        *_normalize_string_list(payload.get("query_terms"), limit=10),
+        *_v3_keyword_units(state.topic, state.extra_requirements, limit=10),
+    ])[:10]
+    motif_terms = _unique_preserve_order([
+        *_normalize_string_list(payload.get("motif_terms"), limit=8),
+        *_normalize_string_list(first_rule.get("preferred_motifs"), limit=6),
+        *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
+    ])[:8]
+    anchor_preferences = _unique_preserve_order([
+        *_normalize_string_list(payload.get("anchor_preferences"), limit=6),
+        "opening",
+        "closing",
+    ])[:6]
+    hard_constraints = _unique_preserve_order([
+        "全文必须使用简体中文，避免整句英文或整段英文表达。",
+        *_normalize_string_list(payload.get("hard_constraints"), limit=6),
+        *_normalize_string_list(state.extra_requirements, limit=4),
+    ])[:6]
     value_lens, value_lens_source = _first_supported_signal_v3(
         ("llm", payload.get("value_lens")),
         ("author_model", first_rule.get("value_lens")),
@@ -941,7 +932,7 @@ def _normalize_request_adapter_v3(
     judgment_mode, judgment_mode_source = _first_supported_signal_v3(
         ("llm", payload.get("judgment_mode")),
         ("corpus_prior", corpus_judgment_modes[0] if corpus_judgment_modes else ""),
-        ("generic", "通过贴身细节稳定判断"),
+        ("generic", "通过贴身细节稳住判断"),
     )
     distance, distance_source = _first_supported_signal_v3(
         ("llm", payload.get("distance")),
@@ -956,7 +947,7 @@ def _normalize_request_adapter_v3(
     )
     felt_cost, felt_cost_source = _first_supported_signal_v3(
         ("llm", payload.get("felt_cost")),
-        ("generic", "先把压力落成体感代价，再进入解释。"),
+        ("generic", "先把压力落成身体能感到的代价，再进入解释。"),
     )
     source_support = {
         "value_lens": value_lens_source,
@@ -986,7 +977,6 @@ def _normalize_request_adapter_v3(
         "defaulted_fields": defaulted_fields,
         "support_score": round((5 - len(defaulted_fields)) / 5, 3),
     }
-
 
 def _score_v3_shortlist_candidate(
     document: dict[str, Any],
@@ -1235,6 +1225,175 @@ def _selected_anchor_records_v3(bundle: StoneWritingAnalysisBundle, rerank: dict
     return bundle.source_anchors[:8]
 
 
+def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, Any]:
+    fingerprint = dict(author_model.get("style_fingerprint") or {})
+    narrator_profile = dict(fingerprint.get("narrator_profile") or {})
+    lexicon_profile = dict(fingerprint.get("lexicon_profile") or {})
+    rhythm_profile = dict(fingerprint.get("rhythm_profile") or {})
+    closure_profile = dict(fingerprint.get("closure_profile") or {})
+    extreme_state_profile = dict(fingerprint.get("extreme_state_profile") or {})
+    person = str(narrator_profile.get("person") or "first").strip() or "first"
+    self_reference_terms = _normalize_string_list(narrator_profile.get("self_reference_terms"), limit=4, item_limit=12)
+    connective_keep = _normalize_string_list(lexicon_profile.get("connective_keep"), limit=6, item_limit=16)
+    overfit_terms = _normalize_string_list(lexicon_profile.get("overfit_risk_terms"), limit=6, item_limit=16)
+    punctuation_habits = _normalize_string_list(rhythm_profile.get("punctuation_habits"), limit=6, item_limit=8)
+    closure_moves = _normalize_string_list(closure_profile.get("closure_moves"), limit=4, item_limit=36)
+    signature_closures = _normalize_string_list(closure_profile.get("signature_closures"), limit=3, item_limit=80)
+    return {
+        "narrator_profile": {
+            "person": person,
+            "self_reference_terms": self_reference_terms,
+            "self_position": _trim_text(narrator_profile.get("self_position"), 40),
+            "narrative_distance": _trim_text(narrator_profile.get("narrative_distance"), 40),
+        },
+        "lexicon_profile": {
+            "high_frequency_terms": _normalize_string_list(lexicon_profile.get("high_frequency_terms"), limit=8, item_limit=16),
+            "connective_keep": connective_keep,
+            "overfit_risk_terms": overfit_terms,
+        },
+        "rhythm_profile": {
+            "cadence": _trim_text(rhythm_profile.get("cadence"), 40),
+            "sentence_shape": _trim_text(rhythm_profile.get("sentence_shape"), 40),
+            "sentence_length_buckets": dict(rhythm_profile.get("sentence_length_buckets") or {}),
+            "punctuation_habits": punctuation_habits,
+        },
+        "closure_profile": {
+            "opening_moves": _normalize_string_list(closure_profile.get("opening_moves"), limit=4, item_limit=36),
+            "turning_devices": _normalize_string_list(closure_profile.get("turning_devices"), limit=4, item_limit=36),
+            "closure_moves": closure_moves,
+            "signature_closures": signature_closures,
+        },
+        "extreme_state_profile": {
+            "pressure_translation": _normalize_string_list(extreme_state_profile.get("pressure_translation"), limit=4, item_limit=48),
+            "judgment_modes": _normalize_string_list(extreme_state_profile.get("judgment_modes"), limit=4, item_limit=36),
+            "defense_moves": _normalize_string_list(extreme_state_profile.get("defense_moves"), limit=6, item_limit=48),
+        },
+        "self_reference_rules": _unique_preserve_order([
+            f"人称保持：{person}",
+            f"自称优先使用：{', '.join(self_reference_terms)}" if self_reference_terms else "",
+            _trim_text(narrator_profile.get("self_position"), 40),
+        ])[:3],
+        "connective_keep": connective_keep,
+        "connective_avoid": overfit_terms[:4],
+        "cadence_rules": _unique_preserve_order([
+            _trim_text(rhythm_profile.get("cadence"), 40),
+            _trim_text(rhythm_profile.get("sentence_shape"), 40),
+            f"标点倾向：{', '.join(punctuation_habits)}" if punctuation_habits else "",
+        ])[:3],
+        "closure_guardrails": _unique_preserve_order([
+            *closure_moves[:3],
+            "结尾不要改写成总结或立论。",
+            f"可参考收口：{signature_closures[0]}" if signature_closures else "",
+        ])[:4],
+        "overfit_limits": _unique_preserve_order([
+            *overfit_terms[:4],
+            "不要把作者高频词堆成标签墙。",
+        ])[:5],
+    }
+
+
+def _split_text_sentences_v3(text: str) -> list[str]:
+    parts = re.split(r"(?<=[。！？!?])\s+|\n+", normalize_whitespace(text))
+    return [str(item).strip() for item in parts if str(item).strip()]
+
+
+def _draft_pronoun_stats_v3(text: str) -> dict[str, int]:
+    return {
+        "first": sum(text.count(token) for token in ("我", "我们", "自己")),
+        "second": sum(text.count(token) for token in ("你", "你们")),
+        "third": sum(text.count(token) for token in ("他", "她", "它", "他们", "她们", "它们")),
+    }
+
+
+def _build_v3_draft_fingerprint_report(
+    draft: str,
+    writing_packet: dict[str, Any],
+    blueprint: dict[str, Any],
+) -> dict[str, Any]:
+    text = normalize_whitespace(draft)
+    brief = dict(writing_packet.get("style_fingerprint_brief") or {})
+    narrator = dict(brief.get("narrator_profile") or {})
+    lexicon_profile = dict(brief.get("lexicon_profile") or {})
+    rhythm_profile = dict(brief.get("rhythm_profile") or {})
+    closure_profile = dict(brief.get("closure_profile") or {})
+    pronoun_stats = _draft_pronoun_stats_v3(text)
+    expected_person = str(narrator.get("person") or "first").strip() or "first"
+    dominant_pronoun = max(pronoun_stats, key=lambda key: pronoun_stats.get(key, 0)) if pronoun_stats else "first"
+    pronoun_hard_fail = (
+        expected_person in {"first", "second", "third"}
+        and pronoun_stats.get(expected_person, 0) == 0
+        and sum(pronoun_stats.values()) > 0
+    )
+    sentences = _split_text_sentences_v3(text)
+    sentence_sizes = [estimate_word_count(item) for item in sentences]
+    draft_buckets = {
+        "short": sum(1 for size in sentence_sizes if size <= 18),
+        "medium": sum(1 for size in sentence_sizes if 18 < size <= 36),
+        "long": sum(1 for size in sentence_sizes if size > 36),
+    }
+    target_buckets = dict(rhythm_profile.get("sentence_length_buckets") or {})
+    target_bucket = max(target_buckets, key=lambda key: int(target_buckets.get(key) or 0)) if target_buckets else "medium"
+    draft_bucket = max(draft_buckets, key=lambda key: int(draft_buckets.get(key) or 0)) if draft_buckets else "medium"
+    punctuation_targets = _normalize_string_list(rhythm_profile.get("punctuation_habits"), limit=6, item_limit=8)
+    punctuation_hits = [token for token in punctuation_targets if token and token in text]
+    connective_keep = _normalize_string_list(writing_packet.get("connective_keep"), limit=8, item_limit=16)
+    lexicon_keep = _normalize_string_list(writing_packet.get("lexicon_keep"), limit=8, item_limit=16)
+    expected_lexicon = _unique_preserve_order([*connective_keep, *lexicon_keep])[:10]
+    lexicon_hits = [token for token in expected_lexicon if token and token in text]
+    closing_sentence = sentences[-1] if sentences else text
+    summary_markers = ("总之", "总而言之", "说到底", "归根结底", "最后", "于是")
+    closure_hard_fail = any(marker in closing_sentence for marker in summary_markers)
+    overfit_terms = _normalize_string_list(writing_packet.get("overfit_limits"), limit=8, item_limit=16)
+    repeated_overfit_terms = [term for term in overfit_terms if term and text.count(term) >= 3]
+    overfit_hard_fail = len(repeated_overfit_terms) >= 2
+    hard_failures: list[str] = []
+    if pronoun_hard_fail:
+        hard_failures.append("pronoun_drift")
+    if closure_hard_fail:
+        hard_failures.append("closure_summary")
+    if overfit_hard_fail:
+        hard_failures.append("overfit_stack")
+    return {
+        "pronoun_match": {
+            "expected_person": expected_person,
+            "dominant_pronoun": dominant_pronoun,
+            "counts": pronoun_stats,
+            "score": 1.0 if not pronoun_hard_fail else 0.25,
+            "hard_fail": pronoun_hard_fail,
+        },
+        "lexicon_match": {
+            "expected_terms": expected_lexicon,
+            "matched_terms": lexicon_hits,
+            "score": round(len(lexicon_hits) / max(1, min(len(expected_lexicon), 6)), 3),
+        },
+        "cadence_match": {
+            "target_bucket": target_bucket,
+            "draft_bucket": draft_bucket,
+            "sentence_length_buckets": draft_buckets,
+            "score": 1.0 if draft_bucket == target_bucket else 0.6,
+        },
+        "punctuation_match": {
+            "target_punctuation": punctuation_targets,
+            "matched_punctuation": punctuation_hits,
+            "score": round(len(punctuation_hits) / max(1, len(punctuation_targets)), 3) if punctuation_targets else 1.0,
+        },
+        "closure_match": {
+            "closure_move_targets": _normalize_string_list(closure_profile.get("closure_moves"), limit=4, item_limit=36),
+            "closure_residue": _trim_text(blueprint.get("closure_residue"), 80),
+            "closing_sentence": _trim_text(closing_sentence, 120),
+            "hard_fail": closure_hard_fail,
+            "score": 1.0 if not closure_hard_fail else 0.2,
+        },
+        "overfit_risk": {
+            "risk_terms": overfit_terms,
+            "repeated_terms": repeated_overfit_terms,
+            "hard_fail": overfit_hard_fail,
+            "score": 0.2 if overfit_hard_fail else 0.85,
+        },
+        "hard_failures": hard_failures,
+        "style_fingerprint_brief": brief,
+    }
+
 def _normalize_style_packet_v3(
     payload: dict[str, Any],
     *,
@@ -1245,6 +1404,7 @@ def _normalize_style_packet_v3(
     selected_docs = rerank.get("selected_documents") or []
     family_labels = _unique_preserve_order([item.get("family_label") for item in selected_docs if isinstance(item, dict)])
     request_support = dict(request_adapter.get("source_support") or {})
+    style_fingerprint_brief = _build_style_fingerprint_brief(bundle.author_model)
     entry_scene = _repair_stone_signal_text(payload.get("entry_scene") or request_adapter.get("entry_scene"))
     felt_cost = _repair_stone_signal_text(payload.get("felt_cost") or request_adapter.get("felt_cost"))
     value_lens = _repair_stone_signal_text(payload.get("value_lens") or request_adapter.get("value_lens"))
@@ -1260,23 +1420,20 @@ def _normalize_style_packet_v3(
     defaulted_fields = [field for field, source in source_support.items() if source == "generic"]
     return {
         "entry_scene": entry_scene or "从一个具体物件或动作进入。",
-        "felt_cost": felt_cost or "把压力翻译成能被身体感到的代价。",
+        "felt_cost": felt_cost or "把压力翻译成身体能感到的代价。",
         "value_lens": value_lens or "代价",
-        "judgment_mode": judgment_mode or "稳住判断，不要解释过量",
+        "judgment_mode": judgment_mode or "稳住判断，不要解释过满。",
         "distance": distance or "回收式第一人称",
         "family_labels": family_labels[:6],
-        "lexicon_keep": _unique_preserve_order(
-            [
-                *_normalize_string_list(payload.get("lexicon_keep"), limit=8),
-                *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
-            ]
-        )[:8],
-        "motif_obligations": _unique_preserve_order(
-            [
-                *_normalize_string_list(payload.get("motif_obligations"), limit=6),
-                *_normalize_string_list(request_adapter.get("motif_terms"), limit=6),
-            ]
-        )[:6],
+        "lexicon_keep": _unique_preserve_order([
+            *_normalize_string_list(payload.get("lexicon_keep"), limit=8),
+            *_normalize_string_list((style_fingerprint_brief.get("lexicon_profile") or {}).get("high_frequency_terms"), limit=8),
+            *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
+        ])[:8],
+        "motif_obligations": _unique_preserve_order([
+            *_normalize_string_list(payload.get("motif_obligations"), limit=6),
+            *_normalize_string_list(request_adapter.get("motif_terms"), limit=6),
+        ])[:6],
         "syntax_rules": _normalize_string_list(payload.get("syntax_rules"), limit=6)
         or _normalize_string_list(bundle.author_model.get("stable_moves"), limit=6),
         "structure_recipe": _normalize_string_list(payload.get("structure_recipe"), limit=8)
@@ -1285,13 +1442,33 @@ def _normalize_style_packet_v3(
             "通过可见细节把压力往前推。",
             "让结尾留下余韵。",
         ],
-        "do_not_do": _unique_preserve_order(
-            [
-                *_normalize_string_list(payload.get("do_not_do"), limit=8),
-                *_normalize_string_list(bundle.author_model.get("forbidden_moves"), limit=8),
-            ]
-        )[:8],
+        "do_not_do": _unique_preserve_order([
+            *_normalize_string_list(payload.get("do_not_do"), limit=8),
+            *_normalize_string_list(bundle.author_model.get("forbidden_moves"), limit=8),
+        ])[:8],
         "anchor_ids": list(rerank.get("anchor_ids") or [])[:8],
+        "style_fingerprint_brief": style_fingerprint_brief,
+        "self_reference_rules": list(style_fingerprint_brief.get("self_reference_rules") or [])[:4],
+        "connective_keep": _unique_preserve_order([
+            *_normalize_string_list(payload.get("connective_keep"), limit=6),
+            *_normalize_string_list(style_fingerprint_brief.get("connective_keep"), limit=6),
+        ])[:6],
+        "connective_avoid": _unique_preserve_order([
+            *_normalize_string_list(payload.get("connective_avoid"), limit=4),
+            *_normalize_string_list(style_fingerprint_brief.get("connective_avoid"), limit=4),
+        ])[:4],
+        "cadence_rules": _unique_preserve_order([
+            *_normalize_string_list(payload.get("cadence_rules"), limit=4),
+            *_normalize_string_list(style_fingerprint_brief.get("cadence_rules"), limit=4),
+        ])[:4],
+        "closure_guardrails": _unique_preserve_order([
+            *_normalize_string_list(payload.get("closure_guardrails"), limit=4),
+            *_normalize_string_list(style_fingerprint_brief.get("closure_guardrails"), limit=4),
+        ])[:4],
+        "overfit_limits": _unique_preserve_order([
+            *_normalize_string_list(payload.get("overfit_limits"), limit=6),
+            *_normalize_string_list(style_fingerprint_brief.get("overfit_limits"), limit=6),
+        ])[:6],
         "style_thesis": _trim_text(payload.get("style_thesis"), 220),
         "source_support": source_support,
         "defaulted_fields": defaulted_fields,
@@ -1310,36 +1487,32 @@ def _normalize_blueprint_v3(
         minimum=2,
         maximum=6,
     )
-    anchor_ids = _unique_preserve_order(
-        [*_normalize_string_list(payload.get("anchor_ids"), limit=8), *(style_packet.get("anchor_ids") or [])]
-    )[:8]
+    anchor_ids = _unique_preserve_order([
+        *_normalize_string_list(payload.get("anchor_ids"), limit=8),
+        *(style_packet.get("anchor_ids") or []),
+    ])[:8]
     return {
         "paragraph_count": paragraph_count,
         "shape_note": str(payload.get("shape_note") or "").strip() or "通过选中的原型动作建立克制的压力。",
-        "entry_move": str(payload.get("entry_move") or style_packet.get("entry_scene") or "").strip()
-        or "从一个可见动作起笔。",
-        "development_move": str(payload.get("development_move") or "").strip()
-        or "让压力沿着反复出现的具体细节慢慢抬升。",
-        "turning_device": str(payload.get("turning_device") or "").strip() or "轻微转向，不要上升成论点。",
-        "closure_residue": str(payload.get("closure_residue") or "").strip()
-        or "收在余味上，不要写成总结。",
-        "keep_terms": _unique_preserve_order(
-            [*_normalize_string_list(payload.get("keep_terms"), limit=8), *(style_packet.get("lexicon_keep") or [])]
-        )[:8],
-        "motif_obligations": _unique_preserve_order(
-            [
-                *_normalize_string_list(payload.get("motif_obligations"), limit=6),
-                *(style_packet.get("motif_obligations") or []),
-            ]
-        )[:6],
-        "steps": _normalize_string_list(payload.get("steps"), limit=8)
-        or list(style_packet.get("structure_recipe") or [])[:8],
-        "do_not_do": _unique_preserve_order(
-            [*_normalize_string_list(payload.get("do_not_do"), limit=8), *(style_packet.get("do_not_do") or [])]
-        )[:8],
+        "entry_move": str(payload.get("entry_move") or style_packet.get("entry_scene") or "").strip() or "从一个可见动作起笔。",
+        "development_move": str(payload.get("development_move") or "").strip() or "让压力沿着反复出现的具体细节慢慢抬升。",
+        "turning_device": str(payload.get("turning_device") or "").strip() or "轻微转向，不要上升成立论。",
+        "closure_residue": str(payload.get("closure_residue") or "").strip() or "收在余味上，不要写成总结。",
+        "keep_terms": _unique_preserve_order([
+            *_normalize_string_list(payload.get("keep_terms"), limit=8),
+            *(style_packet.get("lexicon_keep") or []),
+        ])[:8],
+        "motif_obligations": _unique_preserve_order([
+            *_normalize_string_list(payload.get("motif_obligations"), limit=6),
+            *(style_packet.get("motif_obligations") or []),
+        ])[:6],
+        "steps": _normalize_string_list(payload.get("steps"), limit=8) or list(style_packet.get("structure_recipe") or [])[:8],
+        "do_not_do": _unique_preserve_order([
+            *_normalize_string_list(payload.get("do_not_do"), limit=8),
+            *(style_packet.get("do_not_do") or []),
+        ])[:8],
         "anchor_ids": anchor_ids,
     }
-
 
 def _normalize_blueprint_axis_map_v3(
     payload: Any,
@@ -1411,9 +1584,10 @@ def _normalize_blueprint_packet_v3(
         minimum=2,
         maximum=6,
     )
-    anchor_ids = _unique_preserve_order(
-        [*_normalize_string_list(payload.get("anchor_ids"), limit=8), *(writing_packet.get("anchor_ids") or [])]
-    )[:8]
+    anchor_ids = _unique_preserve_order([
+        *_normalize_string_list(payload.get("anchor_ids"), limit=8),
+        *(writing_packet.get("anchor_ids") or []),
+    ])[:8]
     steps = _normalize_string_list(payload.get("steps"), limit=8) or list(writing_packet.get("structure_recipe") or [])[:8]
     axis_map = _normalize_blueprint_axis_map_v3(
         payload.get("axis_map"),
@@ -1457,26 +1631,25 @@ def _normalize_blueprint_packet_v3(
         "shape_note": str(payload.get("shape_note") or "").strip() or "通过选中的原型动作建立克制的压力。",
         "entry_move": str(payload.get("entry_move") or writing_packet.get("entry_scene") or "").strip() or "从一个可见动作起笔。",
         "development_move": str(payload.get("development_move") or "").strip() or "让压力沿着反复出现的具体细节慢慢抬升。",
-        "turning_device": str(payload.get("turning_device") or "").strip() or "轻微转向，不要上升成论点。",
+        "turning_device": str(payload.get("turning_device") or "").strip() or "轻微转向，不要上升成立论。",
         "closure_residue": str(payload.get("closure_residue") or "").strip() or "收在余味上，不要写成总结。",
-        "keep_terms": _unique_preserve_order(
-            [*_normalize_string_list(payload.get("keep_terms"), limit=8), *(writing_packet.get("lexicon_keep") or [])]
-        )[:8],
-        "motif_obligations": _unique_preserve_order(
-            [
-                *_normalize_string_list(payload.get("motif_obligations"), limit=6),
-                *(writing_packet.get("motif_obligations") or []),
-            ]
-        )[:6],
+        "keep_terms": _unique_preserve_order([
+            *_normalize_string_list(payload.get("keep_terms"), limit=8),
+            *(writing_packet.get("lexicon_keep") or []),
+        ])[:8],
+        "motif_obligations": _unique_preserve_order([
+            *_normalize_string_list(payload.get("motif_obligations"), limit=6),
+            *(writing_packet.get("motif_obligations") or []),
+        ])[:6],
         "steps": steps,
-        "do_not_do": _unique_preserve_order(
-            [*_normalize_string_list(payload.get("do_not_do"), limit=8), *(writing_packet.get("do_not_do") or [])]
-        )[:8],
+        "do_not_do": _unique_preserve_order([
+            *_normalize_string_list(payload.get("do_not_do"), limit=8),
+            *(writing_packet.get("do_not_do") or []),
+        ])[:8],
         "axis_map": axis_map,
         "paragraph_map": paragraph_map,
         "anchor_ids": anchor_ids,
     }
-
 
 def _normalize_v3_critic_payload(
     payload: dict[str, Any],
@@ -1513,6 +1686,7 @@ def _normalize_v3_critic_payload(
 def _build_v3_author_floor(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
     return {
         "author_core": dict(bundle.author_model.get("author_core") or {}),
+        "style_fingerprint": dict(bundle.author_model.get("style_fingerprint") or {}),
         "stable_moves": list(bundle.author_model.get("stable_moves") or [])[:8],
         "forbidden_moves": list(bundle.author_model.get("forbidden_moves") or [])[:8],
         "critic_rubrics": dict(bundle.author_model.get("critic_rubrics") or {}),
@@ -1521,9 +1695,21 @@ def _build_v3_author_floor(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]
 
 def _build_v3_draft_guardrails(writing_packet: dict[str, Any], blueprint: dict[str, Any]) -> dict[str, Any]:
     return {
-        "language_constraint": "全文必须使用简体中文，必要专有名词或用户明确要求保留的引用除外。",
+        "language_constraint": "全文必须使用自然、完整的简体中文，不要输出整句英文或提示词式表达。",
         "entry_scene": writing_packet.get("entry_scene"),
         "felt_cost": writing_packet.get("felt_cost"),
+        "style_fingerprint_brief": dict(writing_packet.get("style_fingerprint_brief") or {}),
+        "hard_constraints": [
+            "人称和自称不能漂。",
+            "结尾姿态不能跑成总结或立论。",
+            "不要把作者高频词堆成标签墙。",
+        ],
+        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "connective_keep": list(writing_packet.get("connective_keep") or [])[:6],
+        "connective_avoid": list(writing_packet.get("connective_avoid") or [])[:4],
+        "cadence_rules": list(writing_packet.get("cadence_rules") or [])[:4],
+        "closure_guardrails": list(writing_packet.get("closure_guardrails") or [])[:4],
+        "overfit_limits": list(writing_packet.get("overfit_limits") or [])[:6],
         "motif_obligations": list(blueprint.get("motif_obligations") or [])[:6],
         "movement_steps": list(blueprint.get("steps") or [])[:8],
         "negative_constraints": list(writing_packet.get("do_not_do") or [])[:8],
@@ -1537,31 +1723,38 @@ def _build_v3_line_edit_brief(
     critics: list[dict[str, Any]],
     blueprint: dict[str, Any],
     target_word_count: int,
+    writing_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    writing_packet = writing_packet or {}
     return {
         "target_word_count": target_word_count,
         "current_word_count": estimate_word_count(draft),
-        "language_constraint": "保留全文简体中文；不要改成英文或中英混写。",
-        "must_keep_spans": _unique_preserve_order(
-            [span for critic in critics for span in (critic.get("must_keep_spans") or [])]
-        )[:6],
-        "line_edits": _unique_preserve_order(
-            [edit for critic in critics for edit in (critic.get("line_edits") or [])]
-        )[:8],
+        "language_constraint": "保持全文为自然简体中文，不要混入整句英文或分析说明。",
+        "style_fingerprint_brief": dict(writing_packet.get("style_fingerprint_brief") or {}),
+        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "cadence_rules": list(writing_packet.get("cadence_rules") or [])[:4],
+        "closure_guardrails": list(writing_packet.get("closure_guardrails") or [])[:4],
+        "overfit_limits": list(writing_packet.get("overfit_limits") or [])[:6],
+        "must_keep_spans": _unique_preserve_order([span for critic in critics for span in (critic.get("must_keep_spans") or [])])[:6],
+        "line_edits": _unique_preserve_order([edit for critic in critics for edit in (critic.get("line_edits") or [])])[:8],
         "shape_note": blueprint.get("shape_note"),
         "closure_residue": blueprint.get("closure_residue"),
         "axis_map": dict(blueprint.get("axis_map") or {}),
         "paragraph_map": list(blueprint.get("paragraph_map") or [])[:6],
     }
 
-
-def _revision_action_v3(critics: list[dict[str, Any]]) -> str:
+def _revision_action_v3(
+    critics: list[dict[str, Any]],
+    draft_fingerprint_report: dict[str, Any] | None = None,
+) -> str:
+    hard_failures = list((draft_fingerprint_report or {}).get("hard_failures") or [])
     if any(str(item.get("verdict") or "") == "redraft" for item in critics):
         return "redraft"
+    if hard_failures:
+        return "line_edit"
     if any((not item.get("pass")) or item.get("line_edits") for item in critics):
         return "line_edit"
     return "none"
-
 
 def _stone_json_chinese_instruction(*, preserve_tokens: str | None = None) -> str:
     base = (
@@ -1576,9 +1769,8 @@ def _stone_json_chinese_instruction(*, preserve_tokens: str | None = None) -> st
 _STONE_BODY_CHINESE_ONLY = (
     "正文必须只使用自然、完整的简体中文。\n"
     "不要输出英文句子、双语复述、提示词字段名或分析术语。\n"
-    "除非用户明确要求，只有无法翻译的专有名词或引用才保留原文。"
+    "除非用户明确要求，只有无法翻译的专有名词或引文才保留原文。"
 )
-
 
 def _render_request_adapter_v3(payload: dict[str, Any]) -> str:
     lines = [
@@ -1668,6 +1860,15 @@ def _render_style_packet_v3(payload: dict[str, Any]) -> str:
         "",
         "lexicon_keep:",
         *[f"- {item}" for item in (payload.get("lexicon_keep") or [])[:8]],
+        "",
+        "self_reference_rules:",
+        *[f"- {item}" for item in (payload.get("self_reference_rules") or [])[:4]],
+        "",
+        "connective_keep:",
+        *[f"- {item}" for item in (payload.get("connective_keep") or [])[:6]],
+        "",
+        "closure_guardrails:",
+        *[f"- {item}" for item in (payload.get("closure_guardrails") or [])[:4]],
     ]
     return "\n".join(lines).strip()
 
@@ -1967,15 +2168,18 @@ def _call_writer_json_stage_v3(
     if not client:
         raise WritingPipelineError(stage, f"{label} requires a configured writing model.")
     last_error: Exception | None = None
+    stream_key = self._stream_key(state, stage, suffix=stream_suffix)
     for attempt in range(1, 4):
         stream_handler, finalize_stream = self._make_stage_stream_handler(
             state,
             message_kind=stage,
             label=label,
             stage=stage,
-            stream_key=self._stream_key(state, stage, suffix=stream_suffix),
+            stream_key=stream_key,
             render_mode="plain",
         )
+        response = None
+        started_at = time.perf_counter()
         try:
             response = client.chat_completion_result(
                 messages,
@@ -1988,9 +2192,30 @@ def _call_writer_json_stage_v3(
             payload = parse_json_response(response.content, fallback=True)
             if not isinstance(payload, dict):
                 raise ValueError(f"{stage} did not return a JSON object.")
+            self._record_llm_usage(
+                state,
+                stage=stage,
+                label=label,
+                stream_key=stream_key,
+                attempt=attempt,
+                success=True,
+                usage=getattr(response, "usage", None),
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+            )
             return payload
         except Exception as exc:  # noqa: BLE001
             finalize_stream()
+            if response is not None:
+                self._record_llm_usage(
+                    state,
+                    stage=stage,
+                    label=label,
+                    stream_key=stream_key,
+                    attempt=attempt,
+                    success=False,
+                    usage=getattr(response, "usage", None),
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                )
             last_error = exc
             if attempt < 3:
                 self._emit_live_writer_message(
@@ -2018,14 +2243,17 @@ def _call_writer_text_stage_v3(
     if not client:
         raise WritingPipelineError(stage, f"{label} requires a configured writing model.")
     last_error: Exception | None = None
+    stream_key = self._stream_key(state, stage)
     for attempt in range(1, 4):
         stream_handler, finalize_stream = self._make_stage_stream_handler(
             state,
             message_kind=stage,
             label=label,
             stage=stage,
-            stream_key=self._stream_key(state, stage),
+            stream_key=stream_key,
         )
+        response = None
+        started_at = time.perf_counter()
         try:
             response = client.chat_completion_result(
                 messages,
@@ -2040,9 +2268,30 @@ def _call_writer_text_stage_v3(
                 raise ValueError(f"{stage} returned empty text.")
             if _contains_banned_meta(candidate):
                 raise ValueError(f"{stage} leaked backstage prompt language.")
+            self._record_llm_usage(
+                state,
+                stage=stage,
+                label=label,
+                stream_key=stream_key,
+                attempt=attempt,
+                success=True,
+                usage=getattr(response, "usage", None),
+                duration_ms=int((time.perf_counter() - started_at) * 1000),
+            )
             return _light_trim_to_word_count(candidate, state.target_word_count)
         except Exception as exc:  # noqa: BLE001
             finalize_stream()
+            if response is not None:
+                self._record_llm_usage(
+                    state,
+                    stage=stage,
+                    label=label,
+                    stream_key=stream_key,
+                    attempt=attempt,
+                    success=False,
+                    usage=getattr(response, "usage", None),
+                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                )
             last_error = exc
             if attempt < 3:
                 self._emit_live_writer_message(
@@ -2116,3 +2365,4 @@ __all__ = [
     "build_profile_index",
     "normalize_writing_packet",
 ]
+

@@ -54,6 +54,8 @@ def upgrade_schema(engine) -> None:
     with engine.begin() as connection:
         if "projects" in tables:
             project_columns = {column["name"] for column in inspector.get_columns("projects")}
+            if "metadata_json" not in project_columns:
+                connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN metadata_json JSON")
             if "mode" not in project_columns:
                 connection.exec_driver_sql("ALTER TABLE projects ADD COLUMN mode VARCHAR(32) DEFAULT 'group'")
             if "parent_id" not in project_columns:

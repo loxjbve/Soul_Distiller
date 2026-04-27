@@ -16,6 +16,7 @@ class Project(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     mode: Mapped[str] = mapped_column(String(32), default="group")
     parent_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     lifecycle_state: Mapped[str] = mapped_column(String(32), default="active", index=True)

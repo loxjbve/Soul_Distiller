@@ -44,8 +44,38 @@
         </header>
 
         <section class="writing-pinned">
-            <div class="writing-pinned__label">{{ writing_ui.pinned_label }}</div>
-            <p data-baseline-note>{{ writing_ui.hero_note }}</p>
+            <div class="writing-pinned__primary">
+                <div class="writing-pinned__label">{{ writing_ui.pinned_label }}</div>
+                <p data-baseline-note>{{ writing_ui.hero_note }}</p>
+            </div>
+            <div class="writing-pinned__side">
+                <div class="writing-pinned__usage">
+                    <div class="writing-pinned__meta">{{ writing_ui.token_total_label or "本次总账" }}</div>
+                    <div class="writing-pinned__usage-chips">
+                        <span class="group-message__metric" data-usage-input>{{ writing_ui.token_input_label or "输入" }} 0</span>
+                        <span class="group-message__metric" data-usage-output>{{ writing_ui.token_output_label or "输出" }} 0</span>
+                        <span class="group-message__metric" data-usage-total>{{ writing_ui.token_combined_label or "总计" }} 0</span>
+                    </div>
+                </div>
+                <div class="writing-pinned__settings">
+                    <label class="writing-stepper">
+                        <span class="writing-pinned__meta">{{ writing_ui.max_concurrency or "最大并发" }}</span>
+                        <span class="writing-stepper__controls">
+                            <button type="button" class="ghost-button writing-stepper__button" data-concurrency-step="-1">-</button>
+                            <input
+                                type="number"
+                                min="1"
+                                max="8"
+                                step="1"
+                                class="writing-stepper__input"
+                                data-concurrency-input
+                            >
+                            <button type="button" class="ghost-button writing-stepper__button" data-concurrency-step="1">+</button>
+                        </span>
+                    </label>
+                    <p class="muted writing-pinned__status" data-settings-status>{{ writing_ui.project_scope_hint or "项目级保存" }}</p>
+                </div>
+            </div>
         </section>
 
         <section class="writing-message-stage" data-live-feed>

@@ -207,6 +207,48 @@ def _extract_keyword_candidates(*values: Any, limit: int = 12) -> list[str]:
     return [token for token, _ in tokens.most_common(limit)]
 
 
+_STYLE_PRONOUN_TERMS = ("我", "我们", "自己", "你", "你们", "他", "她", "他们", "她们")
+_STYLE_CONNECTIVE_TERMS = ("但是", "不过", "其实", "只是", "所以", "因为", "如果", "可是", "然后", "后来")
+_STYLE_PUNCTUATION_TERMS = ("，", "。", "！", "？", "；", "：", "、", "…")
+
+
+def _derive_style_stats(text: str) -> dict[str, Any]:
+    source = normalize_whitespace(str(text or ""))
+    sentences = _split_sentences(source)
+    sentence_lengths = [estimate_word_count(item) for item in sentences if item]
+    sentence_length_buckets = {
+        "short": sum(1 for size in sentence_lengths if size <= 18),
+        "medium": sum(1 for size in sentence_lengths if 18 < size <= 36),
+        "long": sum(1 for size in sentence_lengths if size > 36),
+    }
+    punctuation_counts = {
+        mark: source.count(mark)
+        for mark in _STYLE_PUNCTUATION_TERMS
+        if source.count(mark) > 0
+    }
+    pronoun_counts = {
+        term: source.count(term)
+        for term in _STYLE_PRONOUN_TERMS
+        if source.count(term) > 0
+    }
+    connective_counts = {
+        term: source.count(term)
+        for term in _STYLE_CONNECTIVE_TERMS
+        if source.count(term) > 0
+    }
+    word_count = max(1, estimate_word_count(source))
+    self_reference_total = sum(pronoun_counts.get(term, 0) for term in ("我", "我们", "自己"))
+    return {
+        "pronoun_counts": pronoun_counts,
+        "connective_counts": connective_counts,
+        "sentence_length_buckets": sentence_length_buckets,
+        "avg_sentence_length": round(sum(sentence_lengths) / max(1, len(sentence_lengths)), 1),
+        "punctuation_counts": punctuation_counts,
+        "self_reference_ratio": round(self_reference_total / word_count, 4),
+        "sentence_count": len(sentence_lengths),
+    }
+
+
 def _derive_anchor_windows(text: str) -> dict[str, Any]:
     sentences = _split_sentences(text)
     if not sentences:
@@ -326,6 +368,7 @@ def normalize_stone_profile_v3(
     structure_moves = (raw.get("structure_moves") if isinstance(raw.get("structure_moves"), dict) else {})
     prototype_affordances = (raw.get("prototype_affordances") if isinstance(raw.get("prototype_affordances"), dict) else {})
     retrieval_handles = (raw.get("retrieval_handles") if isinstance(raw.get("retrieval_handles"), dict) else {})
+    style_stats = _derive_style_stats(text)
     normalized = {
         "document_id": _normalize_short_text(document_id or raw.get("document_id"), limit=80),
         "title": title,
@@ -430,6 +473,7 @@ def normalize_stone_profile_v3(
                 "motif_tags": motif_tags[:4],
             },
         },
+        "style_stats": style_stats,
         "anti_patterns": _normalize_string_list(raw.get("anti_patterns"), limit=8, item_limit=48)
         or ["Do not explain the writing process.", "Do not flatten the piece into summary prose."],
         "evidence_trace": {
@@ -575,6 +619,166 @@ def build_stone_profile_v3_merge_messages(
     ]
 
 
+def _aggregate_style_counter(profiles: list[dict[str, Any]], key: str) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        stats = dict(profile.get("style_stats") or {})
+        source = dict(stats.get(key) or {})
+        for token, count in source.items():
+            normalized = _normalize_short_text(token, limit=40)
+            if not normalized:
+                continue
+            try:
+                counter[normalized] += int(count or 0)
+            except (TypeError, ValueError):
+                continue
+    return counter
+
+
+def _aggregate_style_fingerprint(
+    profiles: list[dict[str, Any]],
+    *,
+    stable_moves: list[str],
+    forbidden_moves: list[str],
+) -> dict[str, Any]:
+    person_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("person")), limit=24)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("person")), limit=24)
+    )
+    address_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("address_target")), limit=24)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("address_target")), limit=24)
+    )
+    self_position_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("self_position")), limit=24)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("self_position")), limit=24)
+    )
+    distance_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("distance")), limit=24)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("distance")), limit=24)
+    )
+    cadence_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("cadence")), limit=32)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("cadence")), limit=32)
+    )
+    sentence_shape_counter = Counter(
+        _normalize_short_text(((profile.get("voice_contract") or {}).get("sentence_shape")), limit=32)
+        for profile in profiles
+        if _normalize_short_text(((profile.get("voice_contract") or {}).get("sentence_shape")), limit=32)
+    )
+    lexicon_counter = Counter(
+        token
+        for profile in profiles
+        for token in _normalize_string_list(((profile.get("motif_and_scene_bank") or {}).get("lexicon_markers")), limit=8, item_limit=24)
+    )
+    connective_counter = _aggregate_style_counter(profiles, "connective_counts")
+    pronoun_counter = _aggregate_style_counter(profiles, "pronoun_counts")
+    punctuation_counter = _aggregate_style_counter(profiles, "punctuation_counts")
+    sentence_bucket_counter = _aggregate_style_counter(profiles, "sentence_length_buckets")
+    opening_moves = _unique_preserve_order(
+        [
+            _normalize_short_text(((profile.get("structure_moves") or {}).get("opening_move")), limit=80)
+            for profile in profiles
+            if _normalize_short_text(((profile.get("structure_moves") or {}).get("opening_move")), limit=80)
+        ]
+    )[:4]
+    turning_moves = _unique_preserve_order(
+        [
+            _normalize_short_text(((profile.get("structure_moves") or {}).get("turning_move")), limit=80)
+            for profile in profiles
+            if _normalize_short_text(((profile.get("structure_moves") or {}).get("turning_move")), limit=80)
+        ]
+    )[:4]
+    closure_moves = _unique_preserve_order(
+        [
+            _normalize_short_text(((profile.get("structure_moves") or {}).get("closure_move")), limit=80)
+            for profile in profiles
+            if _normalize_short_text(((profile.get("structure_moves") or {}).get("closure_move")), limit=80)
+        ]
+    )[:4]
+    closing_lines = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("anchor_windows") or {}).get("closing")), 160)
+            for profile in profiles
+            if _trim_text(((profile.get("anchor_windows") or {}).get("closing")), 160)
+        ]
+    )[:4]
+    felt_costs = _unique_preserve_order(
+        [
+            _normalize_short_text(((profile.get("value_and_judgment") or {}).get("felt_cost")), limit=120)
+            for profile in profiles
+            if _normalize_short_text(((profile.get("value_and_judgment") or {}).get("felt_cost")), limit=120)
+        ]
+    )[:4]
+    judgment_modes = _unique_preserve_order(
+        [
+            _normalize_short_text(((profile.get("value_and_judgment") or {}).get("judgment_mode")), limit=40)
+            for profile in profiles
+            if _normalize_short_text(((profile.get("value_and_judgment") or {}).get("judgment_mode")), limit=40)
+        ]
+    )[:4]
+    self_reference_ratios = [
+        float((profile.get("style_stats") or {}).get("self_reference_ratio") or 0.0)
+        for profile in profiles
+    ]
+    avg_sentence_lengths = [
+        float((profile.get("style_stats") or {}).get("avg_sentence_length") or 0.0)
+        for profile in profiles
+        if float((profile.get("style_stats") or {}).get("avg_sentence_length") or 0.0) > 0
+    ]
+    self_reference_terms = [
+        term
+        for term, _count in pronoun_counter.most_common(6)
+        if term in {"我", "我们", "自己", "你", "你们"}
+    ]
+    overfit_terms = _unique_preserve_order(
+        [term for term, _count in lexicon_counter.most_common(6)] + self_reference_terms
+    )[:6]
+    return {
+        "narrator_profile": {
+            "person": person_counter.most_common(1)[0][0] if person_counter else "first",
+            "address_target": address_counter.most_common(1)[0][0] if address_counter else "self",
+            "self_position": self_position_counter.most_common(1)[0][0] if self_position_counter else "none",
+            "narrative_distance": distance_counter.most_common(1)[0][0] if distance_counter else "回收",
+            "self_reference_terms": self_reference_terms,
+            "self_reference_ratio": round(sum(self_reference_ratios) / max(1, len(self_reference_ratios)), 4),
+        },
+        "lexicon_profile": {
+            "high_frequency_terms": [term for term, _count in lexicon_counter.most_common(8)],
+            "connective_keep": [term for term, _count in connective_counter.most_common(6)],
+            "self_reference_terms": self_reference_terms,
+            "overfit_risk_terms": overfit_terms,
+        },
+        "rhythm_profile": {
+            "cadence": cadence_counter.most_common(1)[0][0] if cadence_counter else "restrained",
+            "sentence_shape": sentence_shape_counter.most_common(1)[0][0] if sentence_shape_counter else "mixed",
+            "sentence_length_buckets": {
+                "short": int(sentence_bucket_counter.get("short", 0)),
+                "medium": int(sentence_bucket_counter.get("medium", 0)),
+                "long": int(sentence_bucket_counter.get("long", 0)),
+            },
+            "avg_sentence_length": round(sum(avg_sentence_lengths) / max(1, len(avg_sentence_lengths)), 1),
+            "punctuation_habits": [token for token, _count in punctuation_counter.most_common(6)],
+        },
+        "closure_profile": {
+            "opening_moves": opening_moves,
+            "turning_devices": turning_moves,
+            "closure_moves": closure_moves,
+            "signature_closures": closing_lines,
+        },
+        "extreme_state_profile": {
+            "pressure_translation": felt_costs,
+            "judgment_modes": judgment_modes,
+            "defense_moves": _unique_preserve_order([*stable_moves[:4], *forbidden_moves[:4]])[:6],
+        },
+    }
+
+
 def normalize_stone_author_model_v3(
     payload: dict[str, Any] | None,
     *,
@@ -643,6 +847,21 @@ def normalize_stone_author_model_v3(
         )
     author_core = raw.get("author_core") if isinstance(raw.get("author_core"), dict) else {}
     critic_rubrics = raw.get("critic_rubrics") if isinstance(raw.get("critic_rubrics"), dict) else {}
+    stable_moves = _normalize_string_list(raw.get("stable_moves"), limit=8, item_limit=72) or [
+        "Open from a concrete action, object, or scene.",
+        "Let pressure rise from visible detail.",
+        "Keep closure unresolved when possible.",
+    ]
+    forbidden_moves = _normalize_string_list(raw.get("forbidden_moves"), limit=8, item_limit=72) or [
+        "Do not turn the piece into explanation.",
+        "Do not flatten the ending into summary or thesis.",
+        "Do not leak backstage prompt language.",
+    ]
+    style_fingerprint = _aggregate_style_fingerprint(
+        profiles,
+        stable_moves=stable_moves,
+        forbidden_moves=forbidden_moves,
+    )
     normalized = {
         "asset_kind": "stone_author_model_v3",
         "version": "v3",
@@ -659,19 +878,10 @@ def normalize_stone_author_model_v3(
             "signature_motifs": _normalize_string_list(author_core.get("signature_motifs"), limit=6, item_limit=24)
             or [motif for motif, _ in top_motifs.most_common(6)],
         },
+        "style_fingerprint": style_fingerprint,
         "translation_rules": list(raw.get("translation_rules") or [])[:8] or translation_rules,
-        "stable_moves": _normalize_string_list(raw.get("stable_moves"), limit=8, item_limit=72)
-        or [
-            "Open from a concrete action, object, or scene.",
-            "Let pressure rise from visible detail.",
-            "Keep closure unresolved when possible.",
-        ],
-        "forbidden_moves": _normalize_string_list(raw.get("forbidden_moves"), limit=8, item_limit=72)
-        or [
-            "Do not turn the piece into explanation.",
-            "Do not flatten the ending into summary or thesis.",
-            "Do not leak backstage prompt language.",
-        ],
+        "stable_moves": stable_moves,
+        "forbidden_moves": forbidden_moves,
         "family_map": family_map,
         "critic_rubrics": {
             "formal_fidelity": _normalize_string_list(critic_rubrics.get("formal_fidelity"), limit=6, item_limit=72)
@@ -899,6 +1109,25 @@ def render_stone_author_model_v3_markdown(payload: dict[str, Any]) -> str:
     signature_motifs = list(author_core.get("signature_motifs") or [])
     if signature_motifs:
         lines.append(f"- signature_motifs: {', '.join(signature_motifs)}")
+    style_fingerprint = dict(payload.get("style_fingerprint") or {})
+    if style_fingerprint:
+        narrator_profile = dict(style_fingerprint.get("narrator_profile") or {})
+        lexicon_profile = dict(style_fingerprint.get("lexicon_profile") or {})
+        rhythm_profile = dict(style_fingerprint.get("rhythm_profile") or {})
+        closure_profile = dict(style_fingerprint.get("closure_profile") or {})
+        extreme_state_profile = dict(style_fingerprint.get("extreme_state_profile") or {})
+        lines.extend(["", "## Style Fingerprint"])
+        lines.append(
+            f"- narrator: {narrator_profile.get('person') or ''} | "
+            f"distance={narrator_profile.get('narrative_distance') or ''} | "
+            f"self_position={narrator_profile.get('self_position') or ''}"
+        )
+        lines.append(f"- self_reference_terms: {', '.join(narrator_profile.get('self_reference_terms') or [])}")
+        lines.append(f"- connective_keep: {', '.join(lexicon_profile.get('connective_keep') or [])}")
+        lines.append(f"- high_frequency_terms: {', '.join(lexicon_profile.get('high_frequency_terms') or [])}")
+        lines.append(f"- punctuation_habits: {', '.join(rhythm_profile.get('punctuation_habits') or [])}")
+        lines.append(f"- closure_moves: {', '.join(closure_profile.get('closure_moves') or [])}")
+        lines.append(f"- defense_moves: {', '.join(extreme_state_profile.get('defense_moves') or [])}")
     lines.extend(["", "## Translation Rules"])
     for item in (payload.get("translation_rules") or [])[:8]:
         if not isinstance(item, dict):

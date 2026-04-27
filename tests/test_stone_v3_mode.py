@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -93,6 +94,16 @@ def _collect_sse_events(client, url: str, *, method: str = "GET", json_payload: 
             elif line.startswith("data: "):
                 data_lines.append(line[6:])
     return events
+
+
+def _extract_writing_bootstrap_payload(html: str) -> dict:
+    match = re.search(
+        r'<script type="application/json" id="writing-bootstrap">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert match, "writing bootstrap payload not found"
+    return json.loads(match.group(1))
 
 
 def _extract_target_word_count(text: str) -> int:
@@ -959,6 +970,27 @@ def test_stone_preprocess_generates_v3_profiles_and_baseline(client, app, monkey
         assert repository.get_latest_asset_draft(session, project_id, asset_kind="stone_prototype_index_v3") is not None
 
 
+def test_stone_author_model_v3_includes_style_fingerprint(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Style Fingerprint")
+
+    with app.state.db.session() as session:
+        draft = repository.get_latest_asset_draft(session, project_id, asset_kind="stone_author_model_v3")
+        assert draft is not None
+        payload = dict(draft.json_payload or {})
+        fingerprint = dict(payload.get("style_fingerprint") or {})
+
+    assert set(fingerprint) >= {
+        "narrator_profile",
+        "lexicon_profile",
+        "rhythm_profile",
+        "closure_profile",
+        "extreme_state_profile",
+    }
+    assert isinstance(fingerprint["narrator_profile"], dict)
+    assert isinstance(fingerprint["lexicon_profile"], dict)
+    assert isinstance(fingerprint["rhythm_profile"], dict)
+
+
 def test_stone_preprocess_defaults_to_analysis_concurrency(client, app, monkeypatch):
     project_id, preprocess_payload = _create_v3_preprocessed_project(
         client,
@@ -1374,6 +1406,142 @@ def test_writing_service_uses_v3_pipeline_by_default(client, app, monkeypatch):
     assert "local_router" not in trace
 
 
+def test_stone_writing_settings_persist_and_bootstrap(client, app):
+    create_response = client.post("/api/projects", json={"name": "Stone V3 Settings", "mode": "stone"})
+    assert create_response.status_code == 200
+    project_id = create_response.json()["id"]
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        assert repository.get_project_stone_writing_settings(project)["max_concurrency"] == 4
+
+    update_response = client.patch(
+        f"/api/projects/{project_id}/writing/settings",
+        json={"max_concurrency": 6},
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["stone_writing"]["max_concurrency"] == 6
+
+    with app.state.db.session() as session:
+        project = repository.get_project(session, project_id)
+        assert project is not None
+        assert dict(project.metadata_json or {}).get("stone_writing", {}).get("max_concurrency") == 6
+        assert repository.get_project_stone_writing_settings(project)["max_concurrency"] == 6
+
+    page_response = client.get(f"/projects/{project_id}/writing")
+    assert page_response.status_code == 200
+    bootstrap = _extract_writing_bootstrap_payload(page_response.text)
+    assert bootstrap["writing_settings"]["max_concurrency"] == 6
+
+
+def test_writing_trace_exposes_usage_summary_and_project_concurrency(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Usage Ledger")
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Usage"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words", "max_concurrency": 3},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+    request_stage = next(
+        payload
+        for name, payload in events
+        if name == "stage" and payload.get("stage") == "request_adapter_v3"
+    )
+    assert request_stage["usage"]["prompt_tokens"] == 32
+    assert request_stage["usage"]["completion_tokens"] == 16
+    assert request_stage["usage"]["total_tokens"] == 48
+    assert request_stage["detail"]["usage"]["total_tokens"] == 48
+    assert request_stage["detail"]["billed_usage_total"]["total_tokens"] == 48
+    assert request_stage["detail"]["attempt_count"] == 1
+    assert request_stage["detail"]["retry_count"] == 0
+
+    done_payload = next(payload for name, payload in events if name == "done")
+    assert done_payload["resolved_max_concurrency"] == 3
+    assert done_payload["usage_summary"]["billed_total"]["total_tokens"] > 0
+    assert done_payload["usage_summary"]["successful_stage_total"]["total_tokens"] > 0
+    assert done_payload["usage_summary"]["llm_call_count"] >= 1
+    assert isinstance(done_payload["style_fingerprint_brief"], dict)
+    assert isinstance(done_payload["draft_fingerprint_report"], dict)
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    trace = assistant_turns[-1]["trace"]
+    timeline_request = next(item for item in trace["timeline"] if item.get("stage") == "request_adapter_v3")
+
+    assert trace["resolved_max_concurrency"] == 3
+    assert trace["usage_summary"]["billed_total"]["total_tokens"] > 0
+    assert isinstance(trace["style_fingerprint_brief"], dict)
+    assert isinstance(trace["draft_fingerprint_report"], dict)
+    assert timeline_request["detail"]["usage"]["total_tokens"] == 48
+    assert timeline_request["detail"]["attempt_count"] == 1
+
+
+def test_writing_usage_summary_counts_retries_in_billed_total(client, app, monkeypatch):
+    import app.agents.stone.writing.packet_builder as packet_builder_module
+
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Retry Usage")
+
+    original_chat_completion_result = OpenAICompatibleClient.chat_completion_result
+    original_parse_json_response = packet_builder_module.parse_json_response
+    call_counts = {"request_adapter": 0}
+
+    def flaky_chat_completion_result(self, messages, **kwargs):
+        system_text = str(messages[0].get("content") or "") if messages else ""
+        if "Stone v3 request adapter" in system_text:
+            call_counts["request_adapter"] += 1
+            if call_counts["request_adapter"] == 1:
+                return _mock_result("not valid json")
+        return original_chat_completion_result(self, messages, **kwargs)
+
+    def flaky_parse_json_response(text: str, fallback: bool = False):
+        if text == "not valid json":
+            raise ValueError("forced retry")
+        return original_parse_json_response(text, fallback=fallback)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", flaky_chat_completion_result)
+    monkeypatch.setattr(packet_builder_module, "parse_json_response", flaky_parse_json_response)
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Retry"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+    request_stage = next(
+        payload
+        for name, payload in events
+        if name == "stage" and payload.get("stage") == "request_adapter_v3"
+    )
+    assert call_counts["request_adapter"] == 2
+    assert request_stage["detail"]["attempt_count"] == 2
+    assert request_stage["detail"]["retry_count"] == 1
+    assert request_stage["detail"]["usage"]["total_tokens"] == 48
+    assert request_stage["detail"]["billed_usage_total"]["total_tokens"] == 96
+
+
 def test_writing_message_accepts_freeform_topic_without_explicit_word_count(client, app, monkeypatch):
     project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Freeform Writing")
 
@@ -1515,6 +1683,119 @@ def test_v3_writing_tolerates_string_translation_rules_in_author_model(client, a
     assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
     trace = assistant_turns[-1]["trace"]
     assert trace["request_adapter_v3"]["value_lens"] == "cost"
+
+
+def test_v3_revision_action_uses_balance_mode_hard_failures_only():
+    from app.agents.stone.writing.packet_builder import _build_v3_draft_fingerprint_report, _revision_action_v3
+
+    writing_packet = {
+        "style_fingerprint_brief": {
+            "narrator_profile": {"person": "first"},
+            "rhythm_profile": {"sentence_length_buckets": {"short": 3, "medium": 1, "long": 0}},
+            "closure_profile": {"closure_moves": ["Leave residue instead of summary."]},
+        },
+        "connective_keep": ["可是", "然后"],
+        "lexicon_keep": ["夜里", "门口", "路上"],
+        "overfit_limits": ["夜里", "门口", "路上"],
+    }
+    blueprint = {"closure_residue": "End on the walk home, not a conclusion."}
+    critics = [{"critic_key": "feature_density", "pass": True, "verdict": "approve", "line_edits": []}]
+
+    mild_report = _build_v3_draft_fingerprint_report(
+        "我夜里走回去，门口的灯还是亮着。可是我没有再解释什么，只是继续往前走。",
+        writing_packet,
+        blueprint,
+    )
+    hard_report = _build_v3_draft_fingerprint_report(
+        "他们最后总而言之都明白了。夜里夜里夜里，门口门口门口，路上路上路上。",
+        writing_packet,
+        blueprint,
+    )
+
+    assert mild_report["hard_failures"] == []
+    assert _revision_action_v3(critics, mild_report) == "none"
+    assert "pronoun_drift" in hard_report["hard_failures"]
+    assert "closure_summary" in hard_report["hard_failures"]
+    assert "overfit_stack" in hard_report["hard_failures"]
+    assert _revision_action_v3(critics, hard_report) == "line_edit"
+
+
+def test_v3_critics_respect_max_concurrency_and_preserve_order(monkeypatch):
+    import app.agents.stone.writing.critics as critics_module
+    from app.agents.stone.writing.service import WritingStreamState
+
+    expected_keys = [
+        "feature_density",
+        "cross_domain_generalization",
+        "rhythm_entropy",
+        "extreme_state_handling",
+        "ending_landing",
+        "language_fluency",
+        "logic_flow",
+    ]
+
+    def run_with_limit(limit: int) -> tuple[list[dict], int]:
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+
+        def fake_review(
+            self,
+            state,
+            critic_key,
+            draft,
+            analysis_bundle,
+            request_adapter,
+            rerank,
+            writing_packet,
+            blueprint,
+            client,
+            **kwargs,
+        ):
+            del self, state, draft, analysis_bundle, request_adapter, rerank, writing_packet, blueprint, client, kwargs
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return {"critic_key": critic_key, "pass": True, "verdict": "approve", "line_edits": []}
+
+        monkeypatch.setattr(critics_module, "_review_with_v3_critic", fake_review)
+        state = WritingStreamState(
+            id=f"stream-{limit}",
+            project_id="project-1",
+            session_id="session-1",
+            user_turn_id="turn-1",
+            topic="topic",
+            target_word_count=400,
+            extra_requirements=None,
+            raw_message=None,
+            resolved_max_concurrency=limit,
+        )
+        results = critics_module._run_v3_critics(
+            object(),
+            state,
+            None,
+            "draft text",
+            {},
+            {},
+            {},
+            {},
+            None,
+            previous_final_text="previous draft",
+            revision_request="tighten the ending",
+        )
+        return results, max_active
+
+    serial_results, serial_max_active = run_with_limit(1)
+    parallel_results, parallel_max_active = run_with_limit(4)
+
+    assert [item["critic_key"] for item in serial_results] == expected_keys
+    assert [item["critic_key"] for item in parallel_results] == expected_keys
+    assert serial_max_active == 1
+    assert 2 <= parallel_max_active <= 4
 
 
 def test_partial_preprocess_still_allows_author_analysis(client, app, monkeypatch):

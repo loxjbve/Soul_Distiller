@@ -400,9 +400,10 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
 .page-writing .writing-pinned {
     position: relative;
     display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    min-height: 2.7rem;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 1rem;
+    min-height: 3.6rem;
     padding: 0.62rem 0.95rem 0.62rem 2.3rem;
     border: 1px solid rgba(126, 221, 255, 0.18);
     border-radius: 1rem;
@@ -442,9 +443,85 @@ html[data-shell-mode="fixed"] .page-writing .writing-shell {
     margin: 0;
     color: #cfe4f5;
     min-width: 0;
+}
+
+.page-writing .writing-pinned__primary {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.page-writing .writing-pinned__primary p {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.page-writing .writing-pinned__side {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 1rem;
+    flex: 0 0 auto;
+}
+
+.page-writing .writing-pinned__usage,
+.page-writing .writing-pinned__settings {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.page-writing .writing-pinned__usage-chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+}
+
+.page-writing .writing-pinned__meta,
+.page-writing .writing-pinned__status {
+    color: var(--writing-muted);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.page-writing .writing-stepper {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+}
+
+.page-writing .writing-stepper__controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.page-writing .writing-stepper__button {
+    min-width: 2rem;
+    padding-inline: 0;
+}
+
+.page-writing .writing-stepper__input {
+    width: 3rem;
+    min-height: 2rem;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid rgba(126, 221, 255, 0.2);
+    border-radius: 999px;
+    background: rgba(8, 18, 36, 0.74);
+    color: var(--writing-text);
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+.page-writing .writing-stepper__input::-webkit-outer-spin-button,
+.page-writing .writing-stepper__input::-webkit-inner-spin-button {
+    margin: 0;
+    -webkit-appearance: none;
 }
 
 .page-writing .writing-message-stage {

@@ -38,10 +38,13 @@ class WritingStreamState:
     extra_requirements: str | None
     raw_message: str | None
     request_mode: str = "draft"
+    resolved_max_concurrency: int = 4
     revision_source_turn_id: str | None = None
     revision_source_text: str | None = None
     revision_source_trace: dict[str, Any] = field(default_factory=dict)
     events: Queue[dict[str, Any]] = field(default_factory=Queue)
+    usage_records: list[dict[str, Any]] = field(default_factory=list)
+    ledger_lock: Lock = field(default_factory=Lock)
     done: Event = field(default_factory=Event)
     cancelled: Event = field(default_factory=Event)
 
@@ -139,6 +142,7 @@ class WritingAgentService:
         target_word_count: int,
         extra_requirements: str | None,
         raw_message: str | None = None,
+        max_concurrency: int | None = None,
         target_word_count_source: str = "explicit",
     ) -> dict[str, str]:
         normalized_topic = str(topic or "").strip()
@@ -152,6 +156,11 @@ class WritingAgentService:
             chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
             if not chat_session or chat_session.project_id != project_id:
                 raise ValueError("Writing session not found.")
+            project = repository.get_project(session, project_id)
+            resolved_writing_settings = repository.get_project_stone_writing_settings(project)
+            resolved_max_concurrency = repository.normalize_stone_writing_max_concurrency(
+                max_concurrency if max_concurrency is not None else resolved_writing_settings.get("max_concurrency")
+            )
             revision_source_turn, revision_source_trace = _find_latest_completed_writing_result(session, session_id)
             if (
                 revision_source_turn
@@ -174,6 +183,8 @@ class WritingAgentService:
                     "raw_message": normalized_message,
                     "request_mode": "revision" if revision_source_turn and revision_source_trace else "draft",
                     "revision_source_turn_id": revision_source_turn.id if revision_source_turn else None,
+                    "max_concurrency": resolved_max_concurrency,
+                    "project_writing_settings": resolved_writing_settings,
                 },
             )
             if not chat_session.title:
@@ -189,6 +200,7 @@ class WritingAgentService:
                 extra_requirements=normalized_extra,
                 raw_message=normalized_message,
                 request_mode="revision" if revision_source_turn and revision_source_trace else "draft",
+                resolved_max_concurrency=resolved_max_concurrency,
                 revision_source_turn_id=revision_source_turn.id if revision_source_turn else None,
                 revision_source_text=str((revision_source_trace or {}).get("final_text") or "").strip() or None,
                 revision_source_trace=dict(revision_source_trace or {}),
@@ -289,6 +301,122 @@ class WritingAgentService:
     def _emit(self, state: WritingStreamState, event_type: str, payload: dict[str, Any]) -> None:
         self._ensure_stream_active(state)
         state.events.put({"type": event_type, "payload": payload})
+
+    def _normalize_usage(self, usage: Any) -> dict[str, int]:
+        raw = usage if isinstance(usage, dict) else {}
+        normalized: dict[str, int] = {}
+        for key in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+            "cache_creation_tokens",
+            "cache_read_tokens",
+        ):
+            try:
+                normalized[key] = max(0, int(raw.get(key) or 0))
+            except (TypeError, ValueError):
+                normalized[key] = 0
+        if not normalized["total_tokens"]:
+            normalized["total_tokens"] = normalized["prompt_tokens"] + normalized["completion_tokens"]
+        return normalized
+
+    def _sum_usage(self, usages: list[dict[str, int]]) -> dict[str, int]:
+        total = self._normalize_usage({})
+        for usage in usages:
+            normalized = self._normalize_usage(usage)
+            for key, value in normalized.items():
+                total[key] = int(total.get(key) or 0) + int(value or 0)
+        return total
+
+    def _record_llm_usage(
+        self,
+        state: WritingStreamState,
+        *,
+        stage: str,
+        label: str,
+        stream_key: str,
+        attempt: int,
+        success: bool,
+        usage: Any,
+        duration_ms: int,
+    ) -> None:
+        normalized_usage = self._normalize_usage(usage)
+        record = {
+            "stage": stage,
+            "label": label,
+            "stream_key": stream_key,
+            "attempt": int(attempt),
+            "success": bool(success),
+            "usage": normalized_usage,
+            "duration_ms": max(0, int(duration_ms or 0)),
+        }
+        with state.ledger_lock:
+            state.usage_records.append(record)
+
+    def _stage_usage_snapshot(self, state: WritingStreamState, stream_key: str | None) -> dict[str, Any]:
+        zero_usage = self._normalize_usage({})
+        key = str(stream_key or "").strip()
+        with state.ledger_lock:
+            records = [dict(item) for item in state.usage_records if str(item.get("stream_key") or "") == key] if key else []
+        if not records:
+            return {
+                "usage": zero_usage,
+                "billed_usage_total": zero_usage,
+                "attempt_count": 0,
+                "retry_count": 0,
+                "duration_ms": 0,
+            }
+        successful = next((item for item in reversed(records) if item.get("success")), records[-1])
+        billed_total = self._sum_usage([dict(item.get("usage") or {}) for item in records])
+        return {
+            "usage": self._normalize_usage(successful.get("usage")),
+            "billed_usage_total": billed_total,
+            "attempt_count": len(records),
+            "retry_count": max(0, len(records) - 1),
+            "duration_ms": sum(max(0, int(item.get("duration_ms") or 0)) for item in records),
+        }
+
+    def _build_usage_summary(self, state: WritingStreamState) -> dict[str, Any]:
+        with state.ledger_lock:
+            records = [dict(item) for item in state.usage_records]
+        by_stage: dict[str, Any] = {}
+        stream_keys: list[str] = []
+        for record in records:
+            stream_key = str(record.get("stream_key") or "").strip()
+            if stream_key and stream_key not in stream_keys:
+                stream_keys.append(stream_key)
+        for stream_key in stream_keys:
+            by_stage[stream_key] = self._stage_usage_snapshot(state, stream_key)
+        billed_total = self._sum_usage([dict(item.get("usage") or {}) for item in records])
+        successful_total = self._sum_usage(
+            [dict(item.get("usage") or {}) for item in records if item.get("success")]
+        )
+        return {
+            "billed_total": billed_total,
+            "successful_stage_total": successful_total,
+            "by_stage": by_stage,
+            "llm_call_count": len(records),
+        }
+
+    def _finalize_stage_payload(self, state: WritingStreamState, payload: dict[str, Any]) -> dict[str, Any]:
+        stream_key = str(payload.get("stream_key") or "").strip() or None
+        stage_usage = self._stage_usage_snapshot(state, stream_key)
+        detail = dict(payload.get("detail") or {})
+        detail["usage"] = dict(stage_usage["usage"])
+        detail["billed_usage_total"] = dict(stage_usage["billed_usage_total"])
+        detail["attempt_count"] = int(stage_usage["attempt_count"])
+        detail["retry_count"] = int(stage_usage["retry_count"])
+        detail["duration_ms"] = int(stage_usage["duration_ms"])
+        payload["detail"] = detail
+        payload["usage"] = dict(stage_usage["usage"])
+        payload["usage_summary"] = self._build_usage_summary(state)
+        return payload
+
+    def _emit_stage_payload(self, state: WritingStreamState, payload: dict[str, Any]) -> None:
+        self._emit(state, "stage", self._finalize_stage_payload(state, payload))
+
+    def _emit_done_payload(self, state: WritingStreamState, payload: dict[str, Any]) -> None:
+        self._emit(state, "done", self._finalize_stage_payload(state, payload))
 
     def _build_client(self, config) -> OpenAICompatibleClient | None:
         if not config:

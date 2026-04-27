@@ -182,6 +182,11 @@ class WritingMessagePayload(BaseModel):
     topic: str | None = None
     target_word_count: int | None = Field(default=None, ge=100)
     extra_requirements: str | None = None
+    max_concurrency: int | None = Field(default=None, ge=1, le=8)
+
+
+class StoneWritingSettingsPayload(BaseModel):
+    max_concurrency: int = Field(default=4, ge=1, le=8)
 
 
 class TelegramPreprocessRunCreatePayload(BaseModel):
@@ -316,6 +321,7 @@ def _resolve_writing_request_payload(payload: WritingMessagePayload) -> dict[str
                 explicit_target=payload.target_word_count,
             ),
             "extra_requirements": str(payload.extra_requirements or "").strip() or None,
+            "max_concurrency": payload.max_concurrency,
             "target_word_count_source": "explicit" if explicit_in_message or payload.target_word_count is not None else "inferred",
         }
 
@@ -327,8 +333,13 @@ def _resolve_writing_request_payload(payload: WritingMessagePayload) -> dict[str
         "topic": topic,
         "target_word_count": _infer_writing_target_word_count(topic, explicit_target=payload.target_word_count),
         "extra_requirements": str(payload.extra_requirements or "").strip() or None,
+        "max_concurrency": payload.max_concurrency,
         "target_word_count_source": "explicit" if payload.target_word_count is not None else "inferred",
     }
+
+
+def _resolve_project_stone_writing_settings(project) -> dict[str, Any]:
+    return repository.get_project_stone_writing_settings(project)
 
 
 def _ok_response(message: str, **payload: Any) -> dict[str, Any]:
@@ -980,6 +991,7 @@ def writing_page(
         "selected_session_id": selected_session.id,
         "selected_session": _serialize_writing_session_detail(selected_session),
         "baseline": _resolve_stone_writing_status(session, project_id),
+        "writing_settings": _resolve_project_stone_writing_settings(project),
         "channel_title": channel_title,
         "locale": locale,
         "ui_strings": writing_ui,

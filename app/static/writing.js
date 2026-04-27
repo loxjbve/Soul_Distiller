@@ -19,6 +19,9 @@ if (shell) {
         currentSessionId: bootstrap.selected_session_id || null,
         currentSession: bootstrap.selected_session || { turns: [] },
         baseline: bootstrap.baseline || { status: "missing_analysis" },
+        writingSettings: normalizeWritingSettings(bootstrap.writing_settings),
+        usageSummary: null,
+        settingsStatus: "idle",
         channelTitle: bootstrap.channel_title || "",
         eventSource: null,
         sending: false,
@@ -32,6 +35,12 @@ if (shell) {
         channelTitle: shell.querySelector("[data-channel-title]"),
         baselinePill: shell.querySelector("[data-baseline-pill]"),
         baselineNote: shell.querySelector("[data-baseline-note]"),
+        usageInput: shell.querySelector("[data-usage-input]"),
+        usageOutput: shell.querySelector("[data-usage-output]"),
+        usageTotal: shell.querySelector("[data-usage-total]"),
+        concurrencyInput: shell.querySelector("[data-concurrency-input]"),
+        concurrencyButtons: shell.querySelectorAll("[data-concurrency-step]"),
+        settingsStatus: shell.querySelector("[data-settings-status]"),
         chatList: shell.querySelector("[data-chat-list]"),
         liveFeed: shell.querySelector("[data-live-feed]"),
         messageInput: shell.querySelector("[data-message-input]"),
@@ -127,6 +136,17 @@ if (shell) {
             const next = shell.dataset.sessionsOpen !== "true";
             shell.dataset.sessionsOpen = String(next);
         });
+
+        elements.concurrencyButtons?.forEach((button) => {
+            button.addEventListener("click", () => {
+                const delta = Number(button.dataset.concurrencyStep || 0);
+                void saveWritingSettings((state.writingSettings?.max_concurrency || 4) + delta);
+            });
+        });
+
+        elements.concurrencyInput?.addEventListener("change", () => {
+            void saveWritingSettings(elements.concurrencyInput?.value);
+        });
     }
 
     async function sendMessage() {
@@ -163,7 +183,10 @@ if (shell) {
                 `/api/projects/${state.projectId}/writing/sessions/${state.currentSessionId}/messages`,
                 {
                     method: "POST",
-                    body: JSON.stringify({ message }),
+                    body: JSON.stringify({
+                        message,
+                        max_concurrency: state.writingSettings?.max_concurrency || 4,
+                    }),
                 }
             );
             if (elements.messageInput) {
@@ -215,16 +238,25 @@ if (shell) {
 
         source.addEventListener("stream_update", (event) => {
             const payload = safeParseJson(event.data, {});
+            if (payload.usage_summary) {
+                updateUsageSummary(payload.usage_summary);
+            }
             upsertTurn(normalizeStreamTurn(payload));
         });
 
         source.addEventListener("stage", (event) => {
             const payload = safeParseJson(event.data, {});
+            if (payload.usage_summary) {
+                updateUsageSummary(payload.usage_summary);
+            }
             upsertTurn(normalizeStreamTurn(payload));
         });
 
         source.addEventListener("done", (event) => {
             const payload = safeParseJson(event.data, {});
+            if (payload.usage_summary) {
+                updateUsageSummary(payload.usage_summary);
+            }
             upsertTurn(normalizeStreamTurn(payload));
             syncSessionSummary({
                 id: state.currentSessionId,
@@ -260,6 +292,7 @@ if (shell) {
         const payload = await fetchJson(`/api/projects/${state.projectId}/writing/sessions/${sessionId}`);
         state.currentSessionId = sessionId;
         state.currentSession = payload || { turns: [] };
+        syncCurrentUsageSummary();
         syncSessionSummary(payload);
         shell.dataset.sessionsOpen = "false";
         restoreComposer();
@@ -268,8 +301,11 @@ if (shell) {
     }
 
     function renderAll() {
+        syncCurrentUsageSummary();
         renderHeader();
         renderBaseline();
+        renderUsageSummary();
+        renderWritingSettings();
         renderSessions();
         renderChat();
     }
@@ -314,6 +350,86 @@ if (shell) {
             elements.baselineNote.textContent =
                 `${ui.hero_note || ""}${componentLabel}${statsLabel}`.trim() || label;
         }
+    }
+
+    function normalizeWritingSettings(payload) {
+        const raw = payload && typeof payload === "object" ? payload : {};
+        const next = Number(raw.max_concurrency || 4);
+        return {
+            max_concurrency: Math.max(1, Math.min(8, Number.isFinite(next) ? next : 4)),
+        };
+    }
+
+    function updateUsageSummary(summary) {
+        state.usageSummary = summary && typeof summary === "object" ? summary : null;
+        renderUsageSummary();
+    }
+
+    function syncCurrentUsageSummary() {
+        const turns = Array.isArray(state.currentSession?.turns) ? state.currentSession.turns : [];
+        for (let index = turns.length - 1; index >= 0; index -= 1) {
+            const trace = turns[index]?.trace || {};
+            if (trace.usage_summary) {
+                state.usageSummary = trace.usage_summary;
+                return;
+            }
+        }
+        state.usageSummary = null;
+    }
+
+    function formatTokenCount(value) {
+        const count = Number(value || 0);
+        return Number.isFinite(count) ? count.toLocaleString("en-US") : "0";
+    }
+
+    function renderUsageSummary() {
+        const billed = state.usageSummary?.billed_total || {};
+        if (elements.usageInput) {
+            elements.usageInput.textContent = `${ui.token_input_label || "输入"} ${formatTokenCount(billed.prompt_tokens)}`;
+        }
+        if (elements.usageOutput) {
+            elements.usageOutput.textContent = `${ui.token_output_label || "输出"} ${formatTokenCount(billed.completion_tokens)}`;
+        }
+        if (elements.usageTotal) {
+            elements.usageTotal.textContent = `${ui.token_combined_label || "总计"} ${formatTokenCount(billed.total_tokens)}`;
+        }
+    }
+
+    function renderWritingSettings() {
+        if (elements.concurrencyInput) {
+            elements.concurrencyInput.value = String(state.writingSettings?.max_concurrency || 4);
+        }
+        if (elements.settingsStatus) {
+            const statusText =
+                state.settingsStatus === "saving"
+                    ? (ui.settings_saving || "保存中...")
+                    : state.settingsStatus === "saved"
+                        ? (ui.settings_saved || "已保存")
+                        : state.settingsStatus === "error"
+                            ? (ui.settings_failed || "保存失败")
+                            : (ui.project_scope_hint || "项目级保存");
+            elements.settingsStatus.textContent = statusText;
+        }
+    }
+
+    async function saveWritingSettings(value) {
+        const previous = normalizeWritingSettings(state.writingSettings);
+        const next = normalizeWritingSettings({ max_concurrency: value });
+        state.writingSettings = next;
+        state.settingsStatus = "saving";
+        renderWritingSettings();
+        try {
+            const payload = await fetchJson(`/api/projects/${state.projectId}/writing/settings`, {
+                method: "PATCH",
+                body: JSON.stringify(next),
+            });
+            state.writingSettings = normalizeWritingSettings(payload.stone_writing);
+            state.settingsStatus = "saved";
+        } catch (_error) {
+            state.writingSettings = previous;
+            state.settingsStatus = "error";
+        }
+        renderWritingSettings();
     }
 
     function renderSessions() {
@@ -624,6 +740,7 @@ if (shell) {
             trace: {
                 stage: payload.stage || payload.message_kind || "",
                 label: payload.label || "",
+                usage_summary: payload.usage_summary || null,
                 debug: payload.detail || {},
             },
             created_at: payload.created_at || new Date().toISOString(),
@@ -855,7 +972,7 @@ if (shell) {
                 metrics.push(`${Object.keys(debug.axis_source_map).length} 来源`);
             }
             if (Array.isArray(debug.coverage_warnings) && debug.coverage_warnings.length) {
-                metrics.push(`${debug.coverage_warnings.length} 告警`);
+                metrics.push(`${debug.coverage_warnings.length} 警告`);
             }
         }
         if (typeof debug.word_count === "number" && debug.word_count > 0) {
@@ -867,6 +984,7 @@ if (shell) {
                 metrics.push(`${reviewCount} 审判器`);
             }
         }
+        appendUsageFacts(metrics, debug);
         return metrics.slice(0, 6);
     }
 
@@ -902,7 +1020,7 @@ if (shell) {
         } else if (stage === "writing_packet_v3") {
             pushFact("家族", summarizeTerms(debug.family_labels, 2));
             pushFact("画像切片", countValue(debug.selected_profile_ids));
-            pushFact("告警", countValue(debug.coverage_warnings));
+            pushFact("警告", countValue(debug.coverage_warnings));
         } else if (stage === "blueprint_v3") {
             pushFact("段落", debug.paragraph_count);
             pushFact("形状", debug.shape_note);
@@ -916,10 +1034,12 @@ if (shell) {
             pushFact("审判器", debug.final_assessment?.critic_total);
         }
 
+        appendUsageFacts(facts, debug);
+
         if (!facts.length) {
             return buildNodeMetrics(turn, node).slice(0, 3);
         }
-        return facts.slice(0, 3);
+        return facts.slice(0, 6);
     }
 
     function shouldKeepPanelOpen(node, turn) {
@@ -976,6 +1096,29 @@ if (shell) {
             return text;
         }
         return `${text.slice(0, 18)}...`;
+    }
+
+    function appendUsageFacts(target, debug) {
+        const usage = debug?.usage && typeof debug.usage === "object" ? debug.usage : null;
+        if (!usage) {
+            return;
+        }
+        const promptTokens = Number(usage.prompt_tokens || 0);
+        const completionTokens = Number(usage.completion_tokens || 0);
+        const totalTokens = Number(usage.total_tokens || promptTokens + completionTokens || 0);
+        const retryCount = Number(debug.retry_count || 0);
+        if (promptTokens > 0) {
+            target.push(`In: ${formatTokenCount(promptTokens)}`);
+        }
+        if (completionTokens > 0) {
+            target.push(`Out: ${formatTokenCount(completionTokens)}`);
+        }
+        if (totalTokens > 0) {
+            target.push(`Total: ${formatTokenCount(totalTokens)}`);
+        }
+        if (retryCount > 0) {
+            target.push(`重试 x${retryCount}`);
+        }
     }
 
     function translateVerdict(value) {

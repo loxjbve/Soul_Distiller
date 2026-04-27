@@ -12,7 +12,7 @@ from app.api.schemas.projects import (
     TextDocumentCreatePayload,
 )
 from app.api.schemas.settings import ServiceSettingConfigPayload, ServiceSettingsBundlePayload
-from app.api.schemas.writing import WritingMessagePayload
+from app.api.schemas.writing import StoneWritingSettingsPayload, WritingMessagePayload
 
 __all__ = [
     "AnalysisRequestPayload",
@@ -25,6 +25,7 @@ __all__ = [
     "ProjectCreatePayload",
     "ServiceSettingConfigPayload",
     "ServiceSettingsBundlePayload",
+    "StoneWritingSettingsPayload",
     "TelegramPreprocessRunCreatePayload",
     "TextDocumentCreatePayload",
     "WritingMessagePayload",
