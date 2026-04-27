@@ -897,6 +897,7 @@ def _normalize_request_adapter_v3(
 ) -> dict[str, Any]:
     translation_rules = list(bundle.author_model.get("translation_rules") or [])
     first_rule = next((dict(item) for item in translation_rules if isinstance(item, dict)), {})
+    corpus_motifs = list((bundle.profile_index or {}).get("top_motifs") or [])
     corpus_value_lenses = list((bundle.profile_index or {}).get("top_value_lenses") or [])
     corpus_judgment_modes = list((bundle.profile_index or {}).get("top_judgment_modes") or [])
     corpus_distances = list((bundle.profile_index or {}).get("top_distances") or [])
@@ -910,7 +911,7 @@ def _normalize_request_adapter_v3(
     ])[:10]
     motif_terms = _unique_preserve_order([
         *_normalize_string_list(payload.get("motif_terms"), limit=8),
-        *_normalize_string_list(first_rule.get("preferred_motifs"), limit=6),
+        *_normalize_string_list(corpus_motifs, limit=6),
         *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
     ])[:8]
     anchor_preferences = _unique_preserve_order([
@@ -925,8 +926,8 @@ def _normalize_request_adapter_v3(
     ])[:6]
     value_lens, value_lens_source = _first_supported_signal_v3(
         ("llm", payload.get("value_lens")),
-        ("author_model", first_rule.get("value_lens")),
         ("corpus_prior", corpus_value_lenses[0] if corpus_value_lenses else ""),
+        ("author_model", first_rule.get("value_lens")),
         ("generic", "代价"),
     )
     judgment_mode, judgment_mode_source = _first_supported_signal_v3(
@@ -941,8 +942,6 @@ def _normalize_request_adapter_v3(
     )
     entry_scene, entry_scene_source = _first_supported_signal_v3(
         ("llm", payload.get("entry_scene")),
-        ("author_model", (first_rule.get("opening_moves") or [None])[0]),
-        ("author_model", (bundle.author_model.get("stable_moves") or [None])[0]),
         ("generic", "从一个具体动作或物件进入。"),
     )
     felt_cost, felt_cost_source = _first_supported_signal_v3(
@@ -1225,6 +1224,413 @@ def _selected_anchor_records_v3(bundle: StoneWritingAnalysisBundle, rerank: dict
     return bundle.source_anchors[:8]
 
 
+_LOCAL_PERSONA_MARKERS_V3 = (
+    "\u9119\u4eba",
+    "\u5728\u4e0b",
+    "\u672c\u4eba",
+    "\u5c0f\u53ef",
+)
+_LOCAL_RHETORICAL_MARKERS_V3 = (
+    "\u53e4\u8bed\u6709\u4e91",
+    "\u65e0\u4ed6",
+    "\u552f\u624b\u719f\u8033",
+    "\u8a00\u91cd",
+    "\u53cd\u89c2",
+    "\u76f8\u8f83\u4e8e",
+    "\u6bcf\u5f53",
+    "\u65e0\u4e0d",
+    "\u5b9e\u5728\u662f\u9ad8",
+    "\u4e0d\u80fd\u5426\u8ba4",
+)
+_LOCAL_THESIS_MARKERS_V3 = (
+    "\u7d20\u8d28",
+    "\u54c1\u5473",
+    "\u4fee\u517b",
+    "\u827a\u672f",
+    "\u6863\u6b21",
+    "\u9ad8\u7aef\u4eba\u58eb",
+    "\u826f\u5e08\u8bde\u53cb",
+    "\u5272\u5e2d",
+)
+
+
+def _aggregate_profile_style_counter_v3(profiles: list[dict[str, Any]], key: str) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        source = dict((profile.get("style_stats") or {}).get(key) or {})
+        for token, count in source.items():
+            normalized = _trim_text(token, 40)
+            if not normalized:
+                continue
+            try:
+                counter[normalized] += int(count or 0)
+            except (TypeError, ValueError):
+                continue
+    return counter
+
+
+def _selected_full_profiles_v3(
+    bundle: StoneWritingAnalysisBundle,
+    selected_profile_ids: list[str] | None,
+    rerank: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    preferred_ids = {
+        str(item).strip()
+        for item in list(selected_profile_ids or [])
+        if str(item).strip()
+    }
+    if not preferred_ids:
+        preferred_ids = {
+            str((item or {}).get("document_id") or "").strip()
+            for item in list((rerank or {}).get("selected_documents") or [])
+            if isinstance(item, dict) and str((item or {}).get("document_id") or "").strip()
+        }
+    if not preferred_ids:
+        return list(bundle.stone_profiles or [])[:6]
+    return [
+        profile
+        for profile in list(bundle.stone_profiles or [])
+        if str(profile.get("document_id") or "").strip() in preferred_ids
+    ][:6]
+
+
+def _collect_profile_signature_texts_v3(profile: dict[str, Any]) -> list[str]:
+    anchor_windows = dict(profile.get("anchor_windows") or {})
+    structure_moves = dict(profile.get("structure_moves") or {})
+    document_core = dict(profile.get("document_core") or {})
+    lines = [
+        _trim_text(document_core.get("summary"), 180),
+        _trim_text(anchor_windows.get("opening"), 180),
+        _trim_text(anchor_windows.get("pivot"), 180),
+        _trim_text(anchor_windows.get("closing"), 180),
+        _trim_text(structure_moves.get("opening_move"), 120),
+        _trim_text(structure_moves.get("development_move"), 120),
+        _trim_text(structure_moves.get("turning_move"), 120),
+        _trim_text(structure_moves.get("closure_move"), 120),
+    ]
+    lines.extend(_normalize_string_list(anchor_windows.get("signature_lines"), limit=4, item_limit=180))
+    return [item for item in lines if item]
+
+
+def _aggregate_marker_counts_v3(texts: list[str], markers: tuple[str, ...]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for text in texts:
+        source = normalize_whitespace(str(text or ""))
+        for marker in markers:
+            hits = source.count(marker)
+            if hits > 0:
+                counter[marker] += hits
+    return counter
+
+
+def _build_selected_sample_style_context_v3(
+    bundle: StoneWritingAnalysisBundle,
+    selected_profile_ids: list[str] | None,
+    rerank: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profiles = _selected_full_profiles_v3(bundle, selected_profile_ids, rerank)
+    if not profiles:
+        return {}
+
+    person_counter = Counter(
+        _trim_text(((profile.get("voice_contract") or {}).get("person")), 24)
+        for profile in profiles
+        if _trim_text(((profile.get("voice_contract") or {}).get("person")), 24)
+    )
+    self_position_counter = Counter(
+        _trim_text(((profile.get("voice_contract") or {}).get("self_position")), 24)
+        for profile in profiles
+        if _trim_text(((profile.get("voice_contract") or {}).get("self_position")), 24)
+    )
+    distance_counter = Counter(
+        _trim_text(((profile.get("voice_contract") or {}).get("distance")), 24)
+        for profile in profiles
+        if _trim_text(((profile.get("voice_contract") or {}).get("distance")), 24)
+    )
+    cadence_counter = Counter(
+        _trim_text(((profile.get("voice_contract") or {}).get("cadence")), 32)
+        for profile in profiles
+        if _trim_text(((profile.get("voice_contract") or {}).get("cadence")), 32)
+    )
+    sentence_shape_counter = Counter(
+        _trim_text(((profile.get("voice_contract") or {}).get("sentence_shape")), 32)
+        for profile in profiles
+        if _trim_text(((profile.get("voice_contract") or {}).get("sentence_shape")), 32)
+    )
+    value_lens_counter = Counter(
+        _trim_text(((profile.get("value_and_judgment") or {}).get("value_lens")), 40)
+        for profile in profiles
+        if _trim_text(((profile.get("value_and_judgment") or {}).get("value_lens")), 40)
+    )
+    judgment_mode_counter = Counter(
+        _trim_text(((profile.get("value_and_judgment") or {}).get("judgment_mode")), 40)
+        for profile in profiles
+        if _trim_text(((profile.get("value_and_judgment") or {}).get("judgment_mode")), 40)
+    )
+    lexicon_counter = Counter(
+        token
+        for profile in profiles
+        for token in _normalize_string_list(
+            ((profile.get("motif_and_scene_bank") or {}).get("lexicon_markers")),
+            limit=8,
+            item_limit=24,
+        )
+    )
+    connective_counter = _aggregate_profile_style_counter_v3(profiles, "connective_counts")
+    pronoun_counter = _aggregate_profile_style_counter_v3(profiles, "pronoun_counts")
+    punctuation_counter = _aggregate_profile_style_counter_v3(profiles, "punctuation_counts")
+    sentence_bucket_counter = _aggregate_profile_style_counter_v3(profiles, "sentence_length_buckets")
+    signature_texts = [text for profile in profiles for text in _collect_profile_signature_texts_v3(profile)]
+    persona_counter = _aggregate_marker_counts_v3(signature_texts, _LOCAL_PERSONA_MARKERS_V3)
+    rhetorical_counter = _aggregate_marker_counts_v3(signature_texts, _LOCAL_RHETORICAL_MARKERS_V3)
+    thesis_counter = _aggregate_marker_counts_v3(signature_texts, _LOCAL_THESIS_MARKERS_V3)
+    for marker in _LOCAL_THESIS_MARKERS_V3:
+        if lexicon_counter.get(marker):
+            thesis_counter[marker] += int(lexicon_counter.get(marker) or 0)
+    persona_markers = [term for term, _count in persona_counter.most_common(4)]
+    rhetorical_markers = [term for term, _count in rhetorical_counter.most_common(6)]
+    thesis_markers = [term for term, _count in thesis_counter.most_common(6)]
+    pronoun_terms = [
+        term
+        for term, _count in pronoun_counter.most_common(6)
+        if term in {"\u6211", "\u6211\u4eec", "\u81ea\u5df1", "\u4f60", "\u4f60\u4eec"}
+    ]
+    self_reference_terms = _unique_preserve_order([*persona_markers, *pronoun_terms])[:6]
+    opening_moves = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("structure_moves") or {}).get("opening_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("opening_move")), 80)
+        ]
+    )[:4]
+    turning_moves = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("structure_moves") or {}).get("turning_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("turning_move")), 80)
+        ]
+    )[:4]
+    closure_moves = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("structure_moves") or {}).get("closure_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("closure_move")), 80)
+        ]
+    )[:4]
+    signature_closures = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("anchor_windows") or {}).get("closing")), 160)
+            for profile in profiles
+            if _trim_text(((profile.get("anchor_windows") or {}).get("closing")), 160)
+        ]
+    )[:4]
+    pressure_translation = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("value_and_judgment") or {}).get("felt_cost")), 120)
+            for profile in profiles
+            if _trim_text(((profile.get("value_and_judgment") or {}).get("felt_cost")), 120)
+        ]
+    )[:4]
+    stable_moves = _unique_preserve_order(
+        [
+            _trim_text(((profile.get("structure_moves") or {}).get("opening_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("opening_move")), 80)
+        ]
+        + [
+            _trim_text(((profile.get("structure_moves") or {}).get("development_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("development_move")), 80)
+        ]
+        + [
+            _trim_text(((profile.get("structure_moves") or {}).get("closure_move")), 80)
+            for profile in profiles
+            if _trim_text(((profile.get("structure_moves") or {}).get("closure_move")), 80)
+        ]
+    )[:8]
+    forbidden_moves = _unique_preserve_order(
+        [
+            item
+            for profile in profiles
+            for item in _normalize_string_list(profile.get("anti_patterns"), limit=8, item_limit=80)
+        ]
+    )[:8]
+    style_fingerprint = {
+        "narrator_profile": {
+            "person": person_counter.most_common(1)[0][0] if person_counter else "first",
+            "self_reference_terms": self_reference_terms,
+            "self_position": self_position_counter.most_common(1)[0][0] if self_position_counter else "",
+            "narrative_distance": distance_counter.most_common(1)[0][0] if distance_counter else "",
+            "persona_markers": persona_markers,
+        },
+        "lexicon_profile": {
+            "high_frequency_terms": [term for term, _count in lexicon_counter.most_common(8)],
+            "connective_keep": [term for term, _count in connective_counter.most_common(6)],
+            "overfit_risk_terms": _unique_preserve_order(
+                [term for term, _count in lexicon_counter.most_common(6)] + thesis_markers + persona_markers
+            )[:8],
+            "rhetorical_markers": rhetorical_markers,
+            "thesis_markers": thesis_markers,
+        },
+        "rhythm_profile": {
+            "cadence": cadence_counter.most_common(1)[0][0] if cadence_counter else "mixed",
+            "sentence_shape": sentence_shape_counter.most_common(1)[0][0] if sentence_shape_counter else "mixed",
+            "sentence_length_buckets": {
+                "short": int(sentence_bucket_counter.get("short", 0)),
+                "medium": int(sentence_bucket_counter.get("medium", 0)),
+                "long": int(sentence_bucket_counter.get("long", 0)),
+            },
+            "punctuation_habits": [term for term, _count in punctuation_counter.most_common(6)],
+        },
+        "closure_profile": {
+            "opening_moves": opening_moves,
+            "turning_devices": turning_moves,
+            "closure_moves": closure_moves,
+            "signature_closures": signature_closures,
+        },
+        "extreme_state_profile": {
+            "pressure_translation": pressure_translation,
+            "judgment_modes": [term for term, _count in judgment_mode_counter.most_common(4)],
+            "defense_moves": stable_moves[:6],
+        },
+    }
+    style_fingerprint_brief = _build_style_fingerprint_brief({"style_fingerprint": style_fingerprint})
+    style_fingerprint_brief["persona_markers"] = persona_markers[:4]
+    style_fingerprint_brief["rhetorical_devices"] = rhetorical_markers[:6]
+    style_fingerprint_brief["thesis_refrains"] = thesis_markers[:6]
+    style_fingerprint_brief["argument_rules"] = _unique_preserve_order(
+        [
+            "\u4f18\u5148\u4fdd\u4f4f\u4f5c\u8005\u7684\u81ea\u79f0\u9762\u5177\uff0c\u4e0d\u8981\u6539\u5199\u6210\u4e2d\u6027\u65c1\u89c2\u53e3\u6c14\u3002"
+            if persona_markers
+            else "",
+            "\u5141\u8bb8\u4f2a\u5e84\u91cd\u3001\u5f15\u8bed\u3001\u5938\u5f20\u62ac\u4e3e\u540e\u518d\u5ba1\u5224\u56de\u843d\u3002"
+            if rhetorical_markers
+            else "",
+            "\u8ba9\u6838\u5fc3\u5224\u65ad\u8bcd\u5728\u7bc7\u4e2d\u56de\u73af\uff0c\u4e0d\u8981\u53ea\u5728\u5f00\u5934\u51fa\u73b0\u4e00\u6b21\u3002"
+            if thesis_markers
+            else "",
+        ]
+    )[:4]
+    style_fingerprint_brief["self_reference_rules"] = _unique_preserve_order(
+        list(style_fingerprint_brief.get("self_reference_rules") or [])
+        + [
+            f"\u81ea\u79f0\u9762\u5177\u4f18\u5148\uff1a{', '.join(persona_markers[:3])}" if persona_markers else "",
+        ]
+    )[:4]
+    style_fingerprint_brief["overfit_limits"] = _unique_preserve_order(
+        list(style_fingerprint_brief.get("overfit_limits") or [])
+        + [
+            "\u4e0d\u8981\u628a\u4f2a\u5e84\u91cd\u53e3\u7656\u5806\u6210\u53f0\u8bcd\u5899\u3002" if rhetorical_markers else "",
+        ]
+    )[:6]
+    sample_titles = [
+        str(profile.get("title") or profile.get("document_id") or "").strip()
+        for profile in profiles
+        if str(profile.get("title") or profile.get("document_id") or "").strip()
+    ][:6]
+    return {
+        "style_fingerprint": style_fingerprint,
+        "style_fingerprint_brief": style_fingerprint_brief,
+        "dominant_signals": {
+            "value_lens": value_lens_counter.most_common(1)[0][0] if value_lens_counter else "",
+            "judgment_mode": judgment_mode_counter.most_common(1)[0][0] if judgment_mode_counter else "",
+            "distance": distance_counter.most_common(1)[0][0] if distance_counter else "",
+            "entry_scene": opening_moves[0] if opening_moves else "",
+            "felt_cost": pressure_translation[0] if pressure_translation else "",
+        },
+        "sample_local_floor": {
+            "author_core": {
+                "voice_summary": _trim_text(
+                    " | ".join(
+                        item
+                        for item in [
+                            person_counter.most_common(1)[0][0] if person_counter else "",
+                            distance_counter.most_common(1)[0][0] if distance_counter else "",
+                            self_position_counter.most_common(1)[0][0] if self_position_counter else "",
+                        ]
+                        if item
+                    ),
+                    180,
+                ),
+                "worldview_summary": _trim_text(
+                    " | ".join(
+                        item
+                        for item in [
+                            value_lens_counter.most_common(1)[0][0] if value_lens_counter else "",
+                            judgment_mode_counter.most_common(1)[0][0] if judgment_mode_counter else "",
+                        ]
+                        if item
+                    ),
+                    180,
+                ),
+                "tone_summary": _trim_text(
+                    " | ".join(
+                        item
+                        for item in [
+                            cadence_counter.most_common(1)[0][0] if cadence_counter else "",
+                            sentence_shape_counter.most_common(1)[0][0] if sentence_shape_counter else "",
+                            ", ".join(rhetorical_markers[:3]) if rhetorical_markers else "",
+                        ]
+                        if item
+                    ),
+                    180,
+                ),
+                "signature_motifs": _unique_preserve_order(
+                    thesis_markers + [term for term, _count in lexicon_counter.most_common(6)]
+                )[:6],
+            },
+            "style_fingerprint": style_fingerprint,
+            "stable_moves": stable_moves,
+            "forbidden_moves": forbidden_moves,
+            "signal_source": "selected_samples",
+            "sample_titles": sample_titles,
+        },
+        "sample_titles": sample_titles,
+    }
+
+
+def _build_local_sample_packet_context_v3(
+    bundle: StoneWritingAnalysisBundle,
+    selected_profile_ids: list[str] | None,
+    rerank: dict[str, Any],
+) -> dict[str, Any]:
+    profiles = _selected_full_profiles_v3(bundle, selected_profile_ids, rerank)
+    style_context = _build_selected_sample_style_context_v3(bundle, selected_profile_ids, rerank)
+    samples = []
+    for profile in profiles[:6]:
+        voice_contract = dict(profile.get("voice_contract") or {})
+        value_and_judgment = dict(profile.get("value_and_judgment") or {})
+        anchor_windows = dict(profile.get("anchor_windows") or {})
+        samples.append(
+            {
+                "document_id": profile.get("document_id"),
+                "title": profile.get("title"),
+                "summary": _trim_text(((profile.get("document_core") or {}).get("summary")), 180),
+                "voice_contract": {
+                    "person": voice_contract.get("person"),
+                    "distance": voice_contract.get("distance"),
+                    "self_position": voice_contract.get("self_position"),
+                },
+                "value_and_judgment": {
+                    "value_lens": value_and_judgment.get("value_lens"),
+                    "judgment_mode": value_and_judgment.get("judgment_mode"),
+                    "felt_cost": _trim_text(value_and_judgment.get("felt_cost"), 120),
+                },
+                "opening": _trim_text(anchor_windows.get("opening"), 180),
+                "closing": _trim_text(anchor_windows.get("closing"), 180),
+                "signature_lines": _normalize_string_list(anchor_windows.get("signature_lines"), limit=3, item_limit=180),
+            }
+        )
+    return {
+        "signal_source": "selected_samples",
+        "sample_count": len(samples),
+        "sample_titles": list((style_context.get("sample_titles") or []))[:6],
+        "local_style_brief": dict(style_context.get("style_fingerprint_brief") or {}),
+        "samples": samples,
+        "selected_anchors": _selected_anchor_records_v3(bundle, rerank),
+    }
+
+
 def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, Any]:
     fingerprint = dict(author_model.get("style_fingerprint") or {})
     narrator_profile = dict(fingerprint.get("narrator_profile") or {})
@@ -1234,22 +1640,33 @@ def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, An
     extreme_state_profile = dict(fingerprint.get("extreme_state_profile") or {})
     person = str(narrator_profile.get("person") or "first").strip() or "first"
     self_reference_terms = _normalize_string_list(narrator_profile.get("self_reference_terms"), limit=4, item_limit=12)
+    persona_markers = _normalize_string_list(narrator_profile.get("persona_markers"), limit=4, item_limit=12)
     connective_keep = _normalize_string_list(lexicon_profile.get("connective_keep"), limit=6, item_limit=16)
     overfit_terms = _normalize_string_list(lexicon_profile.get("overfit_risk_terms"), limit=6, item_limit=16)
+    rhetorical_markers = _normalize_string_list(lexicon_profile.get("rhetorical_markers"), limit=6, item_limit=16)
+    thesis_markers = _normalize_string_list(lexicon_profile.get("thesis_markers"), limit=6, item_limit=16)
     punctuation_habits = _normalize_string_list(rhythm_profile.get("punctuation_habits"), limit=6, item_limit=8)
     closure_moves = _normalize_string_list(closure_profile.get("closure_moves"), limit=4, item_limit=36)
     signature_closures = _normalize_string_list(closure_profile.get("signature_closures"), limit=3, item_limit=80)
+    argument_rules = _normalize_string_list(
+        author_model.get("argument_rules") or fingerprint.get("argument_rules"),
+        limit=4,
+        item_limit=48,
+    )
     return {
         "narrator_profile": {
             "person": person,
             "self_reference_terms": self_reference_terms,
             "self_position": _trim_text(narrator_profile.get("self_position"), 40),
             "narrative_distance": _trim_text(narrator_profile.get("narrative_distance"), 40),
+            "persona_markers": persona_markers,
         },
         "lexicon_profile": {
             "high_frequency_terms": _normalize_string_list(lexicon_profile.get("high_frequency_terms"), limit=8, item_limit=16),
             "connective_keep": connective_keep,
             "overfit_risk_terms": overfit_terms,
+            "rhetorical_markers": rhetorical_markers,
+            "thesis_markers": thesis_markers,
         },
         "rhythm_profile": {
             "cadence": _trim_text(rhythm_profile.get("cadence"), 40),
@@ -1271,8 +1688,9 @@ def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, An
         "self_reference_rules": _unique_preserve_order([
             f"人称保持：{person}",
             f"自称优先使用：{', '.join(self_reference_terms)}" if self_reference_terms else "",
+            f"优先保留作者自称面具：{', '.join(persona_markers)}" if persona_markers else "",
             _trim_text(narrator_profile.get("self_position"), 40),
-        ])[:3],
+        ])[:4],
         "connective_keep": connective_keep,
         "connective_avoid": overfit_terms[:4],
         "cadence_rules": _unique_preserve_order([
@@ -1289,6 +1707,10 @@ def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, An
             *overfit_terms[:4],
             "不要把作者高频词堆成标签墙。",
         ])[:5],
+        "persona_markers": persona_markers,
+        "rhetorical_devices": rhetorical_markers,
+        "thesis_refrains": thesis_markers,
+        "argument_rules": argument_rules,
     }
 
 
@@ -1338,14 +1760,25 @@ def _build_v3_draft_fingerprint_report(
     punctuation_hits = [token for token in punctuation_targets if token and token in text]
     connective_keep = _normalize_string_list(writing_packet.get("connective_keep"), limit=8, item_limit=16)
     lexicon_keep = _normalize_string_list(writing_packet.get("lexicon_keep"), limit=8, item_limit=16)
-    expected_lexicon = _unique_preserve_order([*connective_keep, *lexicon_keep])[:10]
+    persona_markers = _normalize_string_list(
+        brief.get("persona_markers") or narrator.get("persona_markers"),
+        limit=4,
+        item_limit=12,
+    )
+    rhetorical_devices = _normalize_string_list(brief.get("rhetorical_devices"), limit=6, item_limit=16)
+    thesis_refrains = _normalize_string_list(brief.get("thesis_refrains"), limit=6, item_limit=16)
+    expected_lexicon = _unique_preserve_order([*connective_keep, *lexicon_keep, *thesis_refrains[:4]])[:12]
     lexicon_hits = [token for token in expected_lexicon if token and token in text]
+    persona_hits = [token for token in persona_markers if token and token in text]
+    rhetorical_hits = [token for token in rhetorical_devices if token and token in text]
+    thesis_hits = [token for token in thesis_refrains if token and token in text]
     closing_sentence = sentences[-1] if sentences else text
     summary_markers = ("总之", "总而言之", "说到底", "归根结底", "最后", "于是")
     closure_hard_fail = any(marker in closing_sentence for marker in summary_markers)
     overfit_terms = _normalize_string_list(writing_packet.get("overfit_limits"), limit=8, item_limit=16)
     repeated_overfit_terms = [term for term in overfit_terms if term and text.count(term) >= 3]
     overfit_hard_fail = len(repeated_overfit_terms) >= 2
+    persona_hard_fail = bool(persona_markers) and not persona_hits
     hard_failures: list[str] = []
     if pronoun_hard_fail:
         hard_failures.append("pronoun_drift")
@@ -1353,6 +1786,8 @@ def _build_v3_draft_fingerprint_report(
         hard_failures.append("closure_summary")
     if overfit_hard_fail:
         hard_failures.append("overfit_stack")
+    if persona_hard_fail:
+        hard_failures.append("persona_drop")
     return {
         "pronoun_match": {
             "expected_person": expected_person,
@@ -1361,10 +1796,26 @@ def _build_v3_draft_fingerprint_report(
             "score": 1.0 if not pronoun_hard_fail else 0.25,
             "hard_fail": pronoun_hard_fail,
         },
+        "persona_match": {
+            "expected_markers": persona_markers,
+            "matched_markers": persona_hits,
+            "score": 1.0 if not persona_markers else round(len(persona_hits) / max(1, len(persona_markers)), 3),
+            "hard_fail": persona_hard_fail,
+        },
         "lexicon_match": {
             "expected_terms": expected_lexicon,
             "matched_terms": lexicon_hits,
             "score": round(len(lexicon_hits) / max(1, min(len(expected_lexicon), 6)), 3),
+        },
+        "rhetorical_match": {
+            "expected_devices": rhetorical_devices,
+            "matched_devices": rhetorical_hits,
+            "score": round(len(rhetorical_hits) / max(1, len(rhetorical_devices)), 3) if rhetorical_devices else 1.0,
+        },
+        "thesis_match": {
+            "expected_refrains": thesis_refrains,
+            "matched_refrains": thesis_hits,
+            "score": round(len(thesis_hits) / max(1, len(thesis_refrains)), 3) if thesis_refrains else 1.0,
         },
         "cadence_match": {
             "target_bucket": target_bucket,
@@ -1400,41 +1851,91 @@ def _normalize_style_packet_v3(
     bundle: StoneWritingAnalysisBundle,
     request_adapter: dict[str, Any],
     rerank: dict[str, Any],
+    selected_profile_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     selected_docs = rerank.get("selected_documents") or []
     family_labels = _unique_preserve_order([item.get("family_label") for item in selected_docs if isinstance(item, dict)])
     request_support = dict(request_adapter.get("source_support") or {})
-    style_fingerprint_brief = _build_style_fingerprint_brief(bundle.author_model)
-    entry_scene = _repair_stone_signal_text(payload.get("entry_scene") or request_adapter.get("entry_scene"))
-    felt_cost = _repair_stone_signal_text(payload.get("felt_cost") or request_adapter.get("felt_cost"))
-    value_lens = _repair_stone_signal_text(payload.get("value_lens") or request_adapter.get("value_lens"))
-    judgment_mode = _repair_stone_signal_text(payload.get("judgment_mode") or request_adapter.get("judgment_mode"))
-    distance = _repair_stone_signal_text(payload.get("distance") or request_adapter.get("distance"))
+    local_style_context = _build_selected_sample_style_context_v3(bundle, selected_profile_ids, rerank)
+    dominant_signals = dict(local_style_context.get("dominant_signals") or {})
+    sample_local_floor = dict(local_style_context.get("sample_local_floor") or {})
+    style_fingerprint_brief = (
+        dict(local_style_context.get("style_fingerprint_brief") or {})
+        or _build_style_fingerprint_brief(bundle.author_model)
+    )
+    global_translation_rules = list(bundle.author_model.get("translation_rules") or [])
+    global_first_rule = next((dict(item) for item in global_translation_rules if isinstance(item, dict)), {})
+
+    def _resolve_signal(*candidates: tuple[str, Any]) -> tuple[str, str]:
+        value, source = _first_supported_signal_v3(*candidates)
+        return _repair_stone_signal_text(value), source
+
+    entry_scene, entry_scene_source = _resolve_signal(
+        ("packet_llm", payload.get("entry_scene")),
+        ("selected_samples", dominant_signals.get("entry_scene")),
+        ("request_adapter", request_adapter.get("entry_scene")),
+        ("author_model", (global_first_rule.get("opening_moves") or [None])[0]),
+        ("generic", "从一个具体物件或动作进入。"),
+    )
+    felt_cost, felt_cost_source = _resolve_signal(
+        ("packet_llm", payload.get("felt_cost")),
+        ("selected_samples", dominant_signals.get("felt_cost")),
+        ("request_adapter", request_adapter.get("felt_cost")),
+        ("generic", "先把压力落成身体能感到的代价，再进入解释。"),
+    )
+    value_lens, value_lens_source = _resolve_signal(
+        ("packet_llm", payload.get("value_lens")),
+        ("selected_samples", dominant_signals.get("value_lens")),
+        ("request_adapter", request_adapter.get("value_lens")),
+        ("author_model", global_first_rule.get("value_lens")),
+        ("generic", "代价"),
+    )
+    judgment_mode, judgment_mode_source = _resolve_signal(
+        ("packet_llm", payload.get("judgment_mode")),
+        ("selected_samples", dominant_signals.get("judgment_mode")),
+        ("request_adapter", request_adapter.get("judgment_mode")),
+        ("generic", "通过贴身细节稳住判断"),
+    )
+    distance, distance_source = _resolve_signal(
+        ("packet_llm", payload.get("distance")),
+        ("selected_samples", dominant_signals.get("distance")),
+        ("request_adapter", request_adapter.get("distance")),
+        ("generic", "回收式第一人称"),
+    )
     source_support = {
-        "entry_scene": "packet_llm" if str(payload.get("entry_scene") or "").strip() else str(request_support.get("entry_scene") or "generic"),
-        "felt_cost": "packet_llm" if str(payload.get("felt_cost") or "").strip() else str(request_support.get("felt_cost") or "generic"),
-        "value_lens": "packet_llm" if str(payload.get("value_lens") or "").strip() else str(request_support.get("value_lens") or "generic"),
-        "judgment_mode": "packet_llm" if str(payload.get("judgment_mode") or "").strip() else str(request_support.get("judgment_mode") or "generic"),
-        "distance": "packet_llm" if str(payload.get("distance") or "").strip() else str(request_support.get("distance") or "generic"),
+        "entry_scene": entry_scene_source or str(request_support.get("entry_scene") or "generic"),
+        "felt_cost": felt_cost_source or str(request_support.get("felt_cost") or "generic"),
+        "value_lens": value_lens_source or str(request_support.get("value_lens") or "generic"),
+        "judgment_mode": judgment_mode_source or str(request_support.get("judgment_mode") or "generic"),
+        "distance": distance_source or str(request_support.get("distance") or "generic"),
     }
     defaulted_fields = [field for field, source in source_support.items() if source == "generic"]
+    local_author_core = dict(sample_local_floor.get("author_core") or {})
+    persona_markers = _normalize_string_list(style_fingerprint_brief.get("persona_markers"), limit=4, item_limit=12)
+    rhetorical_devices = _normalize_string_list(style_fingerprint_brief.get("rhetorical_devices"), limit=6, item_limit=16)
+    thesis_refrains = _normalize_string_list(style_fingerprint_brief.get("thesis_refrains"), limit=6, item_limit=16)
+    argument_rules = _normalize_string_list(style_fingerprint_brief.get("argument_rules"), limit=4, item_limit=48)
+    style_signal_source = "selected_samples" if local_style_context else "author_model_fallback"
     return {
         "entry_scene": entry_scene or "从一个具体物件或动作进入。",
-        "felt_cost": felt_cost or "把压力翻译成身体能感到的代价。",
+        "felt_cost": felt_cost or "先把压力落成身体能感到的代价，再进入解释。",
         "value_lens": value_lens or "代价",
-        "judgment_mode": judgment_mode or "稳住判断，不要解释过满。",
+        "judgment_mode": judgment_mode or "通过贴身细节稳住判断",
         "distance": distance or "回收式第一人称",
         "family_labels": family_labels[:6],
         "lexicon_keep": _unique_preserve_order([
             *_normalize_string_list(payload.get("lexicon_keep"), limit=8),
             *_normalize_string_list((style_fingerprint_brief.get("lexicon_profile") or {}).get("high_frequency_terms"), limit=8),
-            *_normalize_string_list((bundle.author_model.get("author_core") or {}).get("signature_motifs"), limit=6),
-        ])[:8],
+            *_normalize_string_list(local_author_core.get("signature_motifs"), limit=6),
+            *thesis_refrains[:4],
+        ])[:10],
         "motif_obligations": _unique_preserve_order([
             *_normalize_string_list(payload.get("motif_obligations"), limit=6),
             *_normalize_string_list(request_adapter.get("motif_terms"), limit=6),
-        ])[:6],
+            *_normalize_string_list(local_author_core.get("signature_motifs"), limit=6),
+        ])[:8],
         "syntax_rules": _normalize_string_list(payload.get("syntax_rules"), limit=6)
+        or _normalize_string_list(sample_local_floor.get("stable_moves"), limit=6)
         or _normalize_string_list(bundle.author_model.get("stable_moves"), limit=6),
         "structure_recipe": _normalize_string_list(payload.get("structure_recipe"), limit=8)
         or [
@@ -1444,6 +1945,7 @@ def _normalize_style_packet_v3(
         ],
         "do_not_do": _unique_preserve_order([
             *_normalize_string_list(payload.get("do_not_do"), limit=8),
+            *_normalize_string_list(sample_local_floor.get("forbidden_moves"), limit=8),
             *_normalize_string_list(bundle.author_model.get("forbidden_moves"), limit=8),
         ])[:8],
         "anchor_ids": list(rerank.get("anchor_ids") or [])[:8],
@@ -1469,6 +1971,13 @@ def _normalize_style_packet_v3(
             *_normalize_string_list(payload.get("overfit_limits"), limit=6),
             *_normalize_string_list(style_fingerprint_brief.get("overfit_limits"), limit=6),
         ])[:6],
+        "persona_markers": persona_markers,
+        "rhetorical_devices": rhetorical_devices,
+        "thesis_refrains": thesis_refrains,
+        "argument_rules": argument_rules,
+        "sample_titles": list(local_style_context.get("sample_titles") or [])[:6],
+        "sample_local_floor": sample_local_floor,
+        "style_signal_source": style_signal_source,
         "style_thesis": _trim_text(payload.get("style_thesis"), 220),
         "source_support": source_support,
         "defaulted_fields": defaulted_fields,
@@ -1683,13 +2192,30 @@ def _normalize_v3_critic_payload(
     }
 
 
-def _build_v3_author_floor(bundle: StoneWritingAnalysisBundle) -> dict[str, Any]:
+def _build_v3_author_floor(
+    bundle: StoneWritingAnalysisBundle,
+    writing_packet: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    writing_packet = writing_packet or {}
+    sample_local_floor = dict(writing_packet.get("sample_local_floor") or {})
+    if sample_local_floor:
+        return {
+            "author_core": dict(sample_local_floor.get("author_core") or {}),
+            "style_fingerprint": dict(sample_local_floor.get("style_fingerprint") or {}),
+            "stable_moves": list(sample_local_floor.get("stable_moves") or [])[:8],
+            "forbidden_moves": list(sample_local_floor.get("forbidden_moves") or [])[:8],
+            "critic_rubrics": dict(bundle.author_model.get("critic_rubrics") or {}),
+            "signal_source": str(sample_local_floor.get("signal_source") or "selected_samples"),
+            "sample_titles": list(sample_local_floor.get("sample_titles") or [])[:6],
+        }
     return {
         "author_core": dict(bundle.author_model.get("author_core") or {}),
         "style_fingerprint": dict(bundle.author_model.get("style_fingerprint") or {}),
         "stable_moves": list(bundle.author_model.get("stable_moves") or [])[:8],
         "forbidden_moves": list(bundle.author_model.get("forbidden_moves") or [])[:8],
         "critic_rubrics": dict(bundle.author_model.get("critic_rubrics") or {}),
+        "signal_source": "author_model",
+        "sample_titles": [],
     }
 
 
@@ -1699,12 +2225,17 @@ def _build_v3_draft_guardrails(writing_packet: dict[str, Any], blueprint: dict[s
         "entry_scene": writing_packet.get("entry_scene"),
         "felt_cost": writing_packet.get("felt_cost"),
         "style_fingerprint_brief": dict(writing_packet.get("style_fingerprint_brief") or {}),
+        "style_signal_source": writing_packet.get("style_signal_source"),
         "hard_constraints": [
             "人称和自称不能漂。",
             "结尾姿态不能跑成总结或立论。",
             "不要把作者高频词堆成标签墙。",
         ],
         "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "persona_markers": list(writing_packet.get("persona_markers") or [])[:4],
+        "rhetorical_devices": list(writing_packet.get("rhetorical_devices") or [])[:6],
+        "thesis_refrains": list(writing_packet.get("thesis_refrains") or [])[:6],
+        "argument_rules": list(writing_packet.get("argument_rules") or [])[:4],
         "connective_keep": list(writing_packet.get("connective_keep") or [])[:6],
         "connective_avoid": list(writing_packet.get("connective_avoid") or [])[:4],
         "cadence_rules": list(writing_packet.get("cadence_rules") or [])[:4],
@@ -1731,7 +2262,12 @@ def _build_v3_line_edit_brief(
         "current_word_count": estimate_word_count(draft),
         "language_constraint": "保持全文为自然简体中文，不要混入整句英文或分析说明。",
         "style_fingerprint_brief": dict(writing_packet.get("style_fingerprint_brief") or {}),
+        "style_signal_source": writing_packet.get("style_signal_source"),
         "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "persona_markers": list(writing_packet.get("persona_markers") or [])[:4],
+        "rhetorical_devices": list(writing_packet.get("rhetorical_devices") or [])[:6],
+        "thesis_refrains": list(writing_packet.get("thesis_refrains") or [])[:6],
+        "argument_rules": list(writing_packet.get("argument_rules") or [])[:4],
         "cadence_rules": list(writing_packet.get("cadence_rules") or [])[:4],
         "closure_guardrails": list(writing_packet.get("closure_guardrails") or [])[:4],
         "overfit_limits": list(writing_packet.get("overfit_limits") or [])[:6],
@@ -1847,6 +2383,7 @@ def _render_rerank_v3(payload: dict[str, Any]) -> str:
 
 def _render_style_packet_v3(payload: dict[str, Any]) -> str:
     lines = [
+        f"style_signal_source: {payload.get('style_signal_source') or ''}",
         f"entry_scene: {payload.get('entry_scene') or ''}",
         f"felt_cost: {payload.get('felt_cost') or ''}",
         f"value_lens: {payload.get('value_lens') or ''}",
@@ -1863,6 +2400,15 @@ def _render_style_packet_v3(payload: dict[str, Any]) -> str:
         "",
         "self_reference_rules:",
         *[f"- {item}" for item in (payload.get("self_reference_rules") or [])[:4]],
+        "",
+        "persona_markers:",
+        *[f"- {item}" for item in (payload.get("persona_markers") or [])[:4]],
+        "",
+        "rhetorical_devices:",
+        *[f"- {item}" for item in (payload.get("rhetorical_devices") or [])[:6]],
+        "",
+        "thesis_refrains:",
+        *[f"- {item}" for item in (payload.get("thesis_refrains") or [])[:6]],
         "",
         "connective_keep:",
         *[f"- {item}" for item in (payload.get("connective_keep") or [])[:6]],
@@ -1882,11 +2428,19 @@ def _normalize_writing_packet_v3(
     profile_selection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile_selection = profile_selection or {}
+    style_selected_profile_ids = [
+        str((item or {}).get("document_id") or "").strip()
+        for item in list(rerank.get("selected_documents") or [])
+        if isinstance(item, dict) and str((item or {}).get("document_id") or "").strip()
+    ]
+    if not style_selected_profile_ids:
+        style_selected_profile_ids = list(profile_selection.get("selected_profile_ids") or bundle.selected_profile_ids or [])[:24]
     style_packet = _normalize_style_packet_v3(
         payload,
         bundle=bundle,
         request_adapter=request_adapter,
         rerank=rerank,
+        selected_profile_ids=style_selected_profile_ids,
     )
     analysis_summary = dict(bundle.analysis_summary or {})
     compact_analysis_summary = _compact_analysis_summary_for_prompt_v3(analysis_summary)
@@ -1894,6 +2448,7 @@ def _normalize_writing_packet_v3(
     selected_profile_slices = list(profile_selection.get("profile_slices") or bundle.profile_slices or [])[:24]
     selected_profile_ids = list(profile_selection.get("selected_profile_ids") or bundle.selected_profile_ids or [])[:24]
     profile_selection_summary = dict(profile_selection.get("summary") or {})
+    selected_sample_context = _build_local_sample_packet_context_v3(bundle, style_selected_profile_ids, rerank)
     source_map = _build_source_map_v3(
         profile_index=profile_index,
         analysis_summary=analysis_summary,
@@ -1956,6 +2511,8 @@ def _normalize_writing_packet_v3(
             },
             "profile_slices": selected_profile_slices,
             "selected_profile_ids": selected_profile_ids,
+            "style_selected_profile_ids": style_selected_profile_ids[:24],
+            "selected_sample_context": selected_sample_context,
             "writing_guide": dict(bundle.writing_guide or {}),
             "source_map": source_map,
             "axis_source_map": axis_source_map,
@@ -2224,7 +2781,7 @@ def _call_writer_json_stage_v3(
                     label=f"{label} retry {attempt + 1}",
                     body=f"{label} retrying after attempt {attempt} failed: {_trim_text(exc, 160)}",
                     stage=stage,
-                    stream_key=self._stream_key(state, stage),
+                    stream_key=stream_key,
                     render_mode="plain",
                 )
     raise WritingPipelineError(stage, f"{label} failed after 3 attempts: {last_error}")
@@ -2239,11 +2796,12 @@ def _call_writer_text_stage_v3(
     label: str,
     messages: list[dict[str, Any]],
     temperature: float,
+    stream_suffix: str | None = None,
 ) -> str:
     if not client:
         raise WritingPipelineError(stage, f"{label} requires a configured writing model.")
     last_error: Exception | None = None
-    stream_key = self._stream_key(state, stage)
+    stream_key = self._stream_key(state, stage, suffix=stream_suffix)
     for attempt in range(1, 4):
         stream_handler, finalize_stream = self._make_stage_stream_handler(
             state,
@@ -2300,7 +2858,7 @@ def _call_writer_text_stage_v3(
                     label=f"{label} retry {attempt + 1}",
                     body=f"{label} retrying after attempt {attempt} failed: {_trim_text(exc, 160)}",
                     stage=stage,
-                    stream_key=self._stream_key(state, stage),
+                    stream_key=stream_key,
                     render_mode="plain",
                 )
     raise WritingPipelineError(stage, f"{label} failed after 3 attempts: {last_error}")
@@ -2336,6 +2894,8 @@ __all__ = [
     "_compact_shortlist_for_prompt_v3",
     "_normalize_rerank_v3",
     "_selected_anchor_records_v3",
+    "_build_selected_sample_style_context_v3",
+    "_build_local_sample_packet_context_v3",
     "_normalize_style_packet_v3",
     "_normalize_blueprint_v3",
     "_normalize_blueprint_axis_map_v3",

@@ -1690,10 +1690,11 @@ def test_v3_revision_action_uses_balance_mode_hard_failures_only():
 
     writing_packet = {
         "style_fingerprint_brief": {
-            "narrator_profile": {"person": "first"},
+            "narrator_profile": {"person": "first", "persona_markers": ["鄙人"]},
             "rhythm_profile": {"sentence_length_buckets": {"short": 3, "medium": 1, "long": 0}},
             "closure_profile": {"closure_moves": ["Leave residue instead of summary."]},
         },
+        "persona_markers": ["鄙人"],
         "connective_keep": ["可是", "然后"],
         "lexicon_keep": ["夜里", "门口", "路上"],
         "overfit_limits": ["夜里", "门口", "路上"],
@@ -1702,7 +1703,7 @@ def test_v3_revision_action_uses_balance_mode_hard_failures_only():
     critics = [{"critic_key": "feature_density", "pass": True, "verdict": "approve", "line_edits": []}]
 
     mild_report = _build_v3_draft_fingerprint_report(
-        "我夜里走回去，门口的灯还是亮着。可是我没有再解释什么，只是继续往前走。",
+        "鄙人夜里走回去，门口的灯还是亮着。可是鄙人没有再解释什么，只是继续往前走。",
         writing_packet,
         blueprint,
     )
@@ -1717,6 +1718,7 @@ def test_v3_revision_action_uses_balance_mode_hard_failures_only():
     assert "pronoun_drift" in hard_report["hard_failures"]
     assert "closure_summary" in hard_report["hard_failures"]
     assert "overfit_stack" in hard_report["hard_failures"]
+    assert "persona_drop" in hard_report["hard_failures"]
     assert _revision_action_v3(critics, hard_report) == "line_edit"
 
 
@@ -1796,6 +1798,233 @@ def test_v3_critics_respect_max_concurrency_and_preserve_order(monkeypatch):
     assert [item["critic_key"] for item in parallel_results] == expected_keys
     assert serial_max_active == 1
     assert 2 <= parallel_max_active <= 4
+
+
+def test_v3_selected_sample_style_context_captures_local_persona_markers():
+    from app.agents.stone.writing.packet_builder import _build_selected_sample_style_context_v3
+    from app.agents.stone.writing.service import StoneWritingAnalysisBundle
+
+    bundle = StoneWritingAnalysisBundle(
+        run_id="run-1",
+        source="stone_v3_baseline",
+        version_label="Stone v3",
+        target_role=None,
+        analysis_context=None,
+        facets=[],
+        prompt_text="",
+        stone_profiles=[
+            {
+                "document_id": "doc-1",
+                "title": "样本一",
+                "document_core": {"summary": "鄙人把荒唐抬高之后，再慢慢回落到鄙薄。"},
+                "voice_contract": {
+                    "person": "first",
+                    "distance": "旁观",
+                    "self_position": "抬高自我后回落",
+                    "cadence": "mixed",
+                    "sentence_shape": "mixed",
+                },
+                "structure_moves": {
+                    "opening_move": "开头先贴脸下判断。",
+                    "development_move": "先抬举，再冷讽回落。",
+                    "turning_move": "反观那些人时忽然下刀。",
+                    "closure_move": "结尾硬收，不做总结。",
+                },
+                "motif_and_scene_bank": {"lexicon_markers": ["素质", "品味", "修养", "艺术"]},
+                "value_and_judgment": {
+                    "value_lens": "moral decay",
+                    "judgment_mode": "mock elevation",
+                    "felt_cost": "先把荒唐抬高，再回落到鄙薄。",
+                },
+                "anchor_windows": {
+                    "opening": "鄙人一听便知其低下。",
+                    "closing": "这种人，修养真的很低。",
+                    "signature_lines": [
+                        "古语有云：三天不打，上房揭瓦。",
+                        "言重，言重；无他，唯手熟耳。",
+                    ],
+                },
+                "style_stats": {
+                    "connective_counts": {"反观": 2, "相较于": 1},
+                    "pronoun_counts": {"我": 1},
+                    "punctuation_counts": {"：": 2, "；": 1},
+                    "sentence_length_buckets": {"short": 1, "medium": 3, "long": 1},
+                },
+                "anti_patterns": ["不要改成中性旁观。"],
+            }
+        ],
+        author_model={"author_core": {"signature_motifs": ["夜里"]}},
+        profile_index={},
+    )
+
+    context = _build_selected_sample_style_context_v3(
+        bundle,
+        ["doc-1"],
+        {"selected_documents": [{"document_id": "doc-1"}], "anchor_ids": []},
+    )
+
+    brief = context["style_fingerprint_brief"]
+    assert "鄙人" in brief["persona_markers"]
+    assert "古语有云" in brief["rhetorical_devices"]
+    assert "素质" in brief["thesis_refrains"]
+    assert context["sample_local_floor"]["signal_source"] == "selected_samples"
+
+
+def test_v3_style_packet_prefers_selected_sample_floor_over_global_author_model():
+    from app.agents.stone.writing.packet_builder import _normalize_style_packet_v3
+    from app.agents.stone.writing.service import StoneWritingAnalysisBundle
+
+    bundle = StoneWritingAnalysisBundle(
+        run_id="run-2",
+        source="stone_v3_baseline",
+        version_label="Stone v3",
+        target_role=None,
+        analysis_context=None,
+        facets=[],
+        prompt_text="",
+        stone_profiles=[
+            {
+                "document_id": "doc-1",
+                "title": "样本一",
+                "document_core": {"summary": "鄙人把修养和品味反复挂在嘴边。"},
+                "voice_contract": {
+                    "person": "first",
+                    "distance": "旁观",
+                    "self_position": "高抬自我",
+                    "cadence": "mixed",
+                    "sentence_shape": "mixed",
+                },
+                "structure_moves": {
+                    "opening_move": "开头先贴脸下判断。",
+                    "development_move": "先抬举，再冷讽回落。",
+                    "turning_move": "反观时落刀。",
+                    "closure_move": "结尾硬收，不做总结。",
+                },
+                "motif_and_scene_bank": {"lexicon_markers": ["素质", "品味", "修养"]},
+                "value_and_judgment": {
+                    "value_lens": "moral decay",
+                    "judgment_mode": "mock elevation",
+                    "felt_cost": "先抬高，再回落。",
+                },
+                "anchor_windows": {
+                    "opening": "鄙人先下判断。",
+                    "closing": "这种人，修养真的很低。",
+                    "signature_lines": ["古语有云。", "反观这些人。"],
+                },
+                "style_stats": {
+                    "connective_counts": {"反观": 2},
+                    "pronoun_counts": {"我": 1},
+                    "punctuation_counts": {"：": 1},
+                    "sentence_length_buckets": {"short": 1, "medium": 2, "long": 1},
+                },
+                "anti_patterns": ["不要改成中性腔。"],
+            }
+        ],
+        author_model={
+            "author_core": {"signature_motifs": ["夜里", "门口"]},
+            "stable_moves": ["从夜路进入。"],
+            "forbidden_moves": ["不要总结。"],
+        },
+        profile_index={},
+    )
+
+    style_packet = _normalize_style_packet_v3(
+        {},
+        bundle=bundle,
+        request_adapter={
+            "entry_scene": "",
+            "felt_cost": "",
+            "value_lens": "",
+            "judgment_mode": "",
+            "distance": "",
+            "motif_terms": [],
+            "source_support": {},
+        },
+        rerank={"selected_documents": [{"document_id": "doc-1", "family_label": "satirical"}], "anchor_ids": []},
+        selected_profile_ids=["doc-1"],
+    )
+
+    assert style_packet["style_signal_source"] == "selected_samples"
+    assert "鄙人" in style_packet["persona_markers"]
+    assert "古语有云" in style_packet["rhetorical_devices"]
+    assert "素质" in style_packet["lexicon_keep"]
+    assert "不要改成中性腔。" in style_packet["do_not_do"]
+
+
+def test_v3_critic_stream_keys_and_text_stage_suffixes_are_round_scoped():
+    from app.agents.stone.writing.critics import _critic_stream_key_v3
+    from app.agents.stone.writing.packet_builder import _call_writer_text_stage_v3
+    from app.agents.stone.writing.service import WritingStreamState
+
+    class DummyService:
+        def __init__(self) -> None:
+            self.handler_stream_keys: list[str] = []
+            self.usage_stream_keys: list[str] = []
+            self.retry_stream_keys: list[str] = []
+
+        def _stream_key(self, state, stage, *, suffix=None):
+            del state
+            return f"{stage}:{suffix or 'base'}"
+
+        def _make_stage_stream_handler(self, state, *, message_kind, label, stage, stream_key, render_mode="markdown"):
+            del state, message_kind, label, stage, render_mode
+            self.handler_stream_keys.append(stream_key)
+            return (lambda _chunk: None, lambda: None)
+
+        def _record_llm_usage(self, state, *, stream_key, **kwargs):
+            del state, kwargs
+            self.usage_stream_keys.append(stream_key)
+
+        def _emit_live_writer_message(self, state, *, stream_key, **kwargs):
+            del state, kwargs
+            self.retry_stream_keys.append(stream_key)
+
+    class DummyClient:
+        class config:
+            model = "demo-model"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def chat_completion_result(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return _mock_result("")
+            return _mock_result("鄙人还得再说一句，这种货色确实低下。")
+
+    state = WritingStreamState(
+        id="stream-1",
+        project_id="project-1",
+        session_id="session-1",
+        user_turn_id="turn-1",
+        topic="topic",
+        target_word_count=80,
+        extra_requirements=None,
+        raw_message=None,
+    )
+    service = DummyService()
+    client = DummyClient()
+
+    round_1_key = _critic_stream_key_v3(service, state, "feature_density", round_index=1)
+    round_2_key = _critic_stream_key_v3(service, state, "feature_density", round_index=2)
+    assert round_1_key != round_2_key
+
+    result = _call_writer_text_stage_v3(
+        service,
+        state,
+        client,
+        stage="redraft",
+        label="整篇重写 第2轮",
+        messages=[{"role": "system", "content": "x"}, {"role": "user", "content": "y"}],
+        temperature=0.2,
+        stream_suffix="round_2",
+    )
+
+    assert result
+    assert service.handler_stream_keys == ["redraft:round_2", "redraft:round_2"]
+    assert service.usage_stream_keys == ["redraft:round_2", "redraft:round_2"]
+    assert service.retry_stream_keys == ["redraft:round_2"]
 
 
 def test_partial_preprocess_still_allows_author_analysis(client, app, monkeypatch):

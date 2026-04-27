@@ -96,11 +96,7 @@ def _emit_critic_payloads(
     payloads = [
         _build_critic_message_payload_v2(
             critic,
-            stream_key=self._stream_key(
-                state,
-                critic["critic_key"] if round_index == 1 else f"{critic['critic_key']}_round_{round_index}",
-                suffix=critic["critic_key"],
-            ),
+            stream_key=_critic_stream_key_v3(self, state, critic["critic_key"], round_index=round_index),
             stage=critic["critic_key"],
             label_suffix="" if round_index == 1 else f" 第{round_index}轮",
         )
@@ -227,7 +223,7 @@ def _run_revision_pipeline_v3(
                     f"沿用 writing_packet_v3 JSON：\n{json.dumps(writing_packet, ensure_ascii=False, indent=2)}\n\n"
                     f"新的 blueprint_v3 JSON：\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
                     f"selected_anchors JSON：\n{json.dumps(_selected_anchor_records_v3(analysis_bundle, rerank), ensure_ascii=False, indent=2)}\n\n"
-                    f"author_floor JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
+                    f"author_floor JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle, writing_packet), ensure_ascii=False, indent=2)}\n\n"
                     f"上一版 final_assessment JSON：\n{json.dumps(source_trace.get('final_assessment') or {}, ensure_ascii=False, indent=2)}"
                 ),
             },
@@ -413,6 +409,7 @@ def _run_revision_pipeline_v3(
                 stage="redraft",
                 label="再次重写 第2轮",
                 temperature=0.28,
+                stream_suffix="round_2",
                 messages=[
                     {
                         "role": "system",
@@ -446,7 +443,7 @@ def _run_revision_pipeline_v3(
                     "draft_fingerprint_report": current_fingerprint_report,
                 },
                 stage="redraft",
-                stream_key=self._stream_key(state, "revision_redraft_round_2"),
+                stream_key=self._stream_key(state, "redraft", suffix="round_2"),
             )
             revision_payloads.append(payload)
             self._emit_stage_payload(state, payload)
@@ -459,6 +456,7 @@ def _run_revision_pipeline_v3(
                 stage="line_edit",
                 label="按意见修订 第2轮",
                 temperature=0.1,
+                stream_suffix="round_2",
                 messages=[
                     {
                         "role": "system",
@@ -491,7 +489,7 @@ def _run_revision_pipeline_v3(
                     "draft_fingerprint_report": current_fingerprint_report,
                 },
                 stage="line_edit",
-                stream_key=self._stream_key(state, "revision_line_edit_round_2"),
+                stream_key=self._stream_key(state, "line_edit", suffix="round_2"),
             )
             revision_payloads.append(payload)
             self._emit_stage_payload(state, payload)
@@ -645,7 +643,7 @@ def _run_llm_first_pipeline_v3(
                     "你是 Stone v3 的请求适配器。\n"
                     "请先把写作需求翻译进作者自己的世界，再进入起草。\n"
                     "不要为了填满字段而使用空泛、安全、通用的模板词。\n"
-                    "如果某个关键字段没有足够证据，请尽量回到 author_model 和 corpus 先验，而不是发明一个漂亮但无根的说法。\n"
+                    "如果某个关键字段没有足够证据，请尽量回到题目本身与 corpus 先验，而不是发明一个漂亮但无根的说法。\n"
                     f"{_stone_json_chinese_instruction(preserve_tokens='desired_length_band, surface_form, anchor_preferences')}\n"
                     "只返回 JSON。"
                 ),
@@ -654,7 +652,6 @@ def _run_llm_first_pipeline_v3(
                 "role": "user",
                 "content": (
                     f"写作请求：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
-                    f"author_model_v3 JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
                     f"profile_index_v3 JSON：\n{json.dumps(analysis_bundle.profile_index, ensure_ascii=False, indent=2)}"
                 ),
             },
@@ -719,7 +716,7 @@ def _run_llm_first_pipeline_v3(
         state,
         message_kind="llm_rerank_v3",
         label="证据重排",
-        body="正在结合 v3 作者模型和证据预算，对 shortlist 做最终重排…",
+        body="正在结合题目相关样本和证据预算，对 shortlist 做最终重排…",
         stage="llm_rerank_v3",
         stream_key=self._stream_key(state, "llm_rerank_v3"),
     )
@@ -746,13 +743,21 @@ def _run_llm_first_pipeline_v3(
                 "content": (
                     f"写作请求：\n{render_writing_request(state.topic, state.target_word_count, state.extra_requirements)}\n\n"
                     f"request_adapter_v3 JSON：\n{json.dumps(request_adapter, ensure_ascii=False, indent=2)}\n\n"
-                    f"candidate_shortlist_v3 JSON：\n{json.dumps(shortlist, ensure_ascii=False, indent=2)}\n\n"
-                    f"author_floor JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle), ensure_ascii=False, indent=2)}"
+                    f"candidate_shortlist_v3 JSON：\n{json.dumps(shortlist, ensure_ascii=False, indent=2)}"
                 ),
             },
         ],
     )
     rerank = _normalize_rerank_v3(rerank_raw, analysis_bundle, shortlist)
+    selected_sample_context = _build_local_sample_packet_context_v3(
+        analysis_bundle,
+        [
+            str((item or {}).get("document_id") or "").strip()
+            for item in list(rerank.get("selected_documents") or [])
+            if isinstance(item, dict) and str((item or {}).get("document_id") or "").strip()
+        ],
+        rerank,
+    )
     rerank_payload = _build_writer_message_payload(
         message_kind="llm_rerank_v3",
         label="证据重排",
@@ -767,7 +772,7 @@ def _run_llm_first_pipeline_v3(
         state,
         message_kind="writing_packet_v3",
         label="写作包",
-        body="正在把已选证据、分析分面和画像切片压缩成一个可执行的写作包…",
+        body="正在把已选样本现场归纳成一个可执行的写作包…",
         stage="writing_packet_v3",
         stream_key=self._stream_key(state, "writing_packet_v3"),
     )
@@ -783,8 +788,8 @@ def _run_llm_first_pipeline_v3(
                 "content": (
                     "Stone v3 style packet builder.\n"
                     "你是 Stone v3 的写作包组装器。\n"
-                    "请把分析运行、采样画像和已选示例收束成一个紧凑可执行的 writing_packet。\n"
-                    "关键字段必须尽量锚定在题目相关的画像切片、分析分面和选中锚点上，不要把 packet 压成任何题目都能套用的模板。\n"
+                    "请先观察已选中的题目相关样本，再从样本现场总结出一个紧凑可执行的 writing_packet。\n"
+                    "优先保住样本里真实出现的人称、自称、修辞装置、判断回环和结尾姿态，不要把 packet 压成任何题目都能套用的模板。\n"
                     f"{_stone_json_chinese_instruction(preserve_tokens='family_labels, anchor_ids, selected_profile_ids')}\n"
                     "只返回 JSON。"
                 ),
@@ -796,16 +801,18 @@ def _run_llm_first_pipeline_v3(
                     f"request_adapter_v3 JSON：\n{json.dumps(request_adapter, ensure_ascii=False, indent=2)}\n\n"
                     f"profile_selection_v3 JSON：\n{json.dumps(profile_selection, ensure_ascii=False, indent=2)}\n\n"
                     f"llm_rerank_v3 JSON：\n{json.dumps(rerank, ensure_ascii=False, indent=2)}\n\n"
-                    f"analysis_bundle JSON：\n{json.dumps(_build_source_map_v3(profile_index=analysis_bundle.profile_index, analysis_summary=analysis_bundle.analysis_summary, rerank=rerank), ensure_ascii=False, indent=2)}"
+                    f"selected_sample_context JSON：\n{json.dumps(selected_sample_context, ensure_ascii=False, indent=2)}\n\n"
+                    f"selected_anchors JSON：\n{json.dumps(_selected_anchor_records_v3(analysis_bundle, rerank), ensure_ascii=False, indent=2)}"
                 ),
             },
         ],
     )
-    writing_packet = _normalize_style_packet_v3(
+    writing_packet = _normalize_writing_packet_v3(
         writing_packet_raw,
         bundle=analysis_bundle,
         request_adapter=request_adapter,
         rerank=rerank,
+        profile_selection=profile_selection,
     )
     writing_packet_payload = _build_writer_message_payload(
         message_kind="writing_packet_v3",
@@ -858,7 +865,7 @@ def _run_llm_first_pipeline_v3(
                     "content": (
                         "Stone v3 style packet builder.\n"
                         "你是 Stone v3 的写作包组装器。\n"
-                        "这是一轮写作包修正。你必须根据 packet_critic 的反馈，去掉模板化和通用兜底，把请求真正贴回作者证据。\n"
+                        "这是一轮写作包修正。你必须根据 packet_critic 的反馈，回到已选样本现场，去掉模板化和通用兜底，把请求真正贴回样本文体证据。\n"
                         f"{_stone_json_chinese_instruction(preserve_tokens='family_labels, anchor_ids, selected_profile_ids')}\n"
                         "只返回 JSON。"
                     ),
@@ -869,19 +876,20 @@ def _run_llm_first_pipeline_v3(
                         f"request_adapter_v3 JSON：\n{json.dumps(request_adapter, ensure_ascii=False, indent=2)}\n\n"
                         f"llm_rerank_v3 JSON：\n{json.dumps(rerank, ensure_ascii=False, indent=2)}\n\n"
                         f"上一版 writing_packet_v3 JSON：\n{json.dumps(writing_packet, ensure_ascii=False, indent=2)}\n\n"
+                        f"selected_sample_context JSON：\n{json.dumps(selected_sample_context, ensure_ascii=False, indent=2)}\n\n"
                         f"selected_anchors JSON：\n{json.dumps(_selected_anchor_records_v3(analysis_bundle, rerank), ensure_ascii=False, indent=2)}\n\n"
-                        f"author_model_v3 JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
                         f"packet_critic JSON：\n{json.dumps(packet_critic, ensure_ascii=False, indent=2)}\n\n"
                         "请优先修正关键字段缺证据、过度泛化和模板化的问题。"
                     ),
                 },
             ],
         )
-        writing_packet = _normalize_style_packet_v3(
+        writing_packet = _normalize_writing_packet_v3(
             repaired_packet_raw,
             bundle=analysis_bundle,
             request_adapter=request_adapter,
             rerank=rerank,
+            profile_selection=profile_selection,
         )
         writing_packet_payload = _build_writer_message_payload(
             message_kind="writing_packet_v3",
@@ -996,7 +1004,7 @@ def _run_llm_first_pipeline_v3(
                     f"writing_packet_v3 JSON：\n{json.dumps(writing_packet, ensure_ascii=False, indent=2)}\n\n"
                     f"blueprint_v3 JSON：\n{json.dumps(blueprint, ensure_ascii=False, indent=2)}\n\n"
                     f"selected_anchors JSON：\n{json.dumps(_selected_anchor_records_v3(analysis_bundle, rerank), ensure_ascii=False, indent=2)}\n\n"
-                    f"author_floor JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle), ensure_ascii=False, indent=2)}\n\n"
+                    f"author_floor JSON：\n{json.dumps(_build_v3_author_floor(analysis_bundle, writing_packet), ensure_ascii=False, indent=2)}\n\n"
                     f"draft_guardrails JSON：\n{json.dumps(_build_v3_draft_guardrails(writing_packet, blueprint), ensure_ascii=False, indent=2)}"
                 ),
             },
@@ -1177,6 +1185,7 @@ def _run_llm_first_pipeline_v3(
                 stage="redraft",
                 label="整篇重写 第2轮",
                 temperature=0.38,
+                stream_suffix="round_2",
                 messages=[
                     {
                         "role": "system",
@@ -1209,7 +1218,7 @@ def _run_llm_first_pipeline_v3(
                     "draft_fingerprint_report": current_fingerprint_report,
                 },
                 stage="redraft",
-                stream_key=self._stream_key(state, "redraft_round_2"),
+                stream_key=self._stream_key(state, "redraft", suffix="round_2"),
             )
             revision_payloads.append(payload)
             self._emit_stage_payload(state, payload)
@@ -1222,6 +1231,7 @@ def _run_llm_first_pipeline_v3(
                 stage="line_edit",
                 label="逐句修订 第2轮",
                 temperature=0.14,
+                stream_suffix="round_2",
                 messages=[
                     {
                         "role": "system",
@@ -1253,7 +1263,7 @@ def _run_llm_first_pipeline_v3(
                     "draft_fingerprint_report": current_fingerprint_report,
                 },
                 stage="line_edit",
-                stream_key=self._stream_key(state, "line_edit_round_2"),
+                stream_key=self._stream_key(state, "line_edit", suffix="round_2"),
             )
             revision_payloads.append(payload)
             self._emit_stage_payload(state, payload)

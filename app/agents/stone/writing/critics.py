@@ -91,6 +91,16 @@ def _build_packet_critic_message_payload_v3(
     }
 
 
+def _critic_stream_key_v3(
+    self: WritingAgentService,
+    state: WritingStreamState,
+    critic_key: str,
+    *,
+    round_index: int,
+) -> str:
+    return self._stream_key(state, critic_key, suffix=f"{critic_key}_round_{round_index}")
+
+
 def _review_packet_v3(
     self: WritingAgentService,
     state: WritingStreamState,
@@ -222,7 +232,7 @@ def _review_with_v3_critic(
         raise WritingPipelineError("critic", f"{spec['label']}审判器需要可用的写作模型。")
     stage_name = critic_key
     label = f"{spec['label']}审判" if round_index == 1 else f"{spec['label']}审判 第{round_index}轮"
-    stream_key = self._stream_key(state, stage_name, suffix=critic_key)
+    stream_key = _critic_stream_key_v3(self, state, critic_key, round_index=round_index)
     stream_handler, finalize_stream = self._make_stage_stream_handler(
         state,
         message_kind="critic",
@@ -492,6 +502,7 @@ __all__ = [
     "_normalize_packet_critic_payload",
     "_render_packet_critic_v3",
     "_build_packet_critic_message_payload_v3",
+    "_critic_stream_key_v3",
     "_review_packet_v3",
     "_review_with_v3_critic",
     "_run_v3_critics",
