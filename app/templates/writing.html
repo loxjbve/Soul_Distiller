@@ -4,7 +4,7 @@
 {% block title %}{{ channel_title }}{% endblock %}
 
 {% block extra_head %}
-<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260426f">
+<link rel="stylesheet" href="{{ request.url_for('static', path='writing-page.css') }}?v=20260428d">
 {% endblock %}
 
 {% block content %}
@@ -13,7 +13,7 @@
 
     <aside class="writing-rail" data-session-rail>
         <div class="writing-rail__header">
-            <div>
+            <div class="writing-rail__header-copy">
                 <p class="eyebrow">{{ writing_ui.sessions }}</p>
                 <h2>{{ writing_ui.sessions }}</h2>
             </div>
@@ -28,11 +28,13 @@
                 <button type="button" class="ghost-button writing-channel-header__toggle" data-toggle-sessions>
                     {{ writing_ui.toggle_sessions }}
                 </button>
-                <p class="eyebrow">{{ writing_ui.channel_live }}</p>
-                <h1 data-channel-title>{{ channel_title }}</h1>
-                <div class="writing-channel-header__chips">
-                    <span class="writing-pill writing-pill--baseline" data-baseline-pill>{{ writing_ui.baseline_missing_preprocess }}</span>
-                    <span class="writing-pill" data-session-title>{{ writing_ui.untitled_session }}</span>
+                <div class="writing-channel-header__identity">
+                    <p class="eyebrow">{{ writing_ui.channel_live }}</p>
+                    <h1 data-channel-title>{{ channel_title }}</h1>
+                    <div class="writing-channel-header__chips">
+                        <span class="writing-pill writing-pill--baseline" data-baseline-pill>{{ writing_ui.baseline_missing_preprocess }}</span>
+                        <span class="writing-pill writing-pill--session is-pending" data-session-title>{{ writing_ui.untitled_session }}</span>
+                    </div>
                 </div>
             </div>
             <div class="writing-channel-header__actions">
@@ -106,5 +108,5 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260426f"></script>
+<script type="module" defer src="{{ request.url_for('static', path='writing.js') }}?v=20260428d"></script>
 {% endblock %}

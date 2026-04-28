@@ -777,7 +777,7 @@ class AnalysisEngine:
             session,
             run.id,
             event_type="facet",
-            message=f"{facet_def.label} 宸查噸鏂板畬鎴愩€?",
+            message=f"{facet_def.label} 已重新完成。",
             level="success" if refreshed_facet and refreshed_facet.status == "completed" else "error",
             payload_json={"facet_key": facet_def.key},
         )

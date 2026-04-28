@@ -306,7 +306,7 @@ def _asset_label(asset_kind: str) -> str:
     if asset_kind == "stone_prototype_index_v2":
         return "Stone Prototype Index V2"
     if asset_kind == "profile_report":
-        return "鐢ㄦ埛鐢诲儚鎶ュ憡"
+        return "用户画像报告"
     return "Claude Code Skill"
 
 

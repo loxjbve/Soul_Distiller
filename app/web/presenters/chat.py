@@ -35,10 +35,12 @@ def _serialize_draft(draft) -> dict[str, Any]:
 
 def _serialize_chat_session(chat_session) -> dict[str, Any]:
     turns = sorted(chat_session.turns, key=lambda item: item.created_at) if getattr(chat_session, "turns", None) else []
+    raw_title = str(chat_session.title or "").strip() or None
     return {
         "id": chat_session.id,
         "session_kind": chat_session.session_kind,
-        "title": chat_session.title or "未命名会话",
+        "title": raw_title or "未命名会话",
+        "has_custom_title": bool(raw_title),
         "created_at": chat_session.created_at.isoformat() if chat_session.created_at else None,
         "last_active_at": chat_session.last_active_at.isoformat() if chat_session.last_active_at else None,
         "turn_count": len(turns),
@@ -125,6 +127,8 @@ def _normalize_writing_actor_name(value: Any, *, fallback: str = "写作 Agent")
     if not name:
         return fallback
     lowered = name.lower()
+    if name in {"?? Agent", "？? Agent", "？？Agent", "？？ Agent"}:
+        return "写作 Agent"
     if name in {"鍐欎綔 Agent", "鍐", "写作 Agent"}:
         return "写作 Agent"
     if name in {"浣?", "用户", "你"}:

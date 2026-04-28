@@ -26,9 +26,9 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
         "title": "Writing Workspace" if locale == "en-US" else "写作台",
         "eyebrow": "Writing Workspace" if locale == "en-US" else "Stone 写作台",
         "hero_note": (
-            "Read Stone v3 profiles, prototype retrieval, and holistic critics directly. The old multi-facet bridge is now legacy fallback only."
+            "Write against the live Stone v3 baseline with tighter evidence routing, quieter controls, and reusable session memory."
             if locale == "en-US"
-            else "直接读取 Stone v3 画像、原型检索和整体 critic；旧的多维分析写作桥接只作为 legacy fallback 保留。"
+            else "直接贴着 Stone v3 基线写作：原型证据、整体 critic 和会话主题都会在这里收束。"
         ),
         "new_session": "New Session" if locale == "en-US" else "新建会话",
         "rename_session": "Rename" if locale == "en-US" else "重命名",
@@ -43,9 +43,9 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
             else "例如：写雨夜车站，克制一点，别太抒情"
         ),
         "message_hint": (
-            "Type the topic or instruction freely. The system will infer the writing scale."
+            "Type the first instruction freely. The system will infer scale and auto-title the session from that opening prompt."
             if locale == "en-US"
-            else "直接输入创作主题或要求就行，不用再手动指定字数。"
+            else "直接输入第一句创作要求就行，系统会估算篇幅，并自动给当前话题起个简短标题。"
         ),
         "message_parse_error": (
             "Please enter a writing topic."
@@ -67,9 +67,9 @@ def _writing_workspace_ui(locale: str) -> dict[str, Any]:
         "baseline_missing_analysis": "Run Stone analysis before writing." if locale == "en-US" else "请先完成 Stone 分析，再进入写作。",
         "baseline_analysis_incomplete": "Stone analysis is incomplete. Writing can run only in degraded mode." if locale == "en-US" else "Stone 分析还不完整，当前只具备降级写作条件。",
         "baseline_incomplete_baseline": "Stone v3 baseline assets are incomplete." if locale == "en-US" else "Stone v3 基线资产还不完整。",
-        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作消息，先发一条命令开始。",
+        "empty_turns": "No writing tasks yet." if locale == "en-US" else "还没有写作记录，先发第一句要求开始。",
         "working": "Working..." if locale == "en-US" else "处理中...",
-        "untitled_session": "Untitled Session" if locale == "en-US" else "未命名会话",
+        "untitled_session": "Waiting for Topic" if locale == "en-US" else "等待主题",
         "rename_prompt": "Enter a new session title" if locale == "en-US" else "输入新的会话标题",
         "execution_failed": "Writing failed" if locale == "en-US" else "写作失败",
         "connection_interrupted": "Connection interrupted" if locale == "en-US" else "连接中断",

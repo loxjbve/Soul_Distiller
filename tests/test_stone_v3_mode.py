@@ -316,6 +316,9 @@ def _install_stone_v3_mocks(monkeypatch, *, fail_profile_on_text: str | None = N
                 )
             )
 
+        if "Stone session title summarizer" in system_text:
+            return _mock_result("KFC 深夜独白")
+
         if "Stone v3 request adapter" in system_text or "请求适配器" in system_text:
             return _mock_result(
                 json.dumps(
@@ -1572,6 +1575,44 @@ def test_writing_message_accepts_freeform_topic_without_explicit_word_count(clie
     assert assistant_turns[-1]["trace"]["raw_message"] == freeform_message
 
 
+def test_first_message_auto_titles_placeholder_writing_session(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Auto Title")
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={})
+    assert session_response.status_code == 200
+    session_payload = session_response.json()
+    session_id = session_payload["id"]
+
+    assert session_payload["title"] == "未命名会话"
+    assert session_payload["has_custom_title"] is False
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    message_payload = message_response.json()
+
+    assert message_payload["session_title"] == "KFC 深夜独白"
+    assert message_payload["has_custom_title"] is True
+    assert message_payload["session_title_source"] == "llm"
+
+    stream_id = message_payload["stream_id"]
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assert detail_payload["title"] == "KFC 深夜独白"
+    assert detail_payload["has_custom_title"] is True
+
+    sessions_payload = client.get(f"/api/projects/{project_id}/writing/sessions").json()
+    assert sessions_payload["sessions"][0]["title"] == "KFC 深夜独白"
+    assert sessions_payload["sessions"][0]["has_custom_title"] is True
+
+
 def test_follow_up_feedback_uses_revision_pipeline_from_blueprint_down(client, app, monkeypatch):
     project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Revision Flow")
 
@@ -1720,6 +1761,51 @@ def test_v3_revision_action_uses_balance_mode_hard_failures_only():
     assert "overfit_stack" in hard_report["hard_failures"]
     assert "persona_drop" in hard_report["hard_failures"]
     assert _revision_action_v3(critics, hard_report) == "line_edit"
+
+
+def test_v3_pronoun_contract_treats_author_idiolect_as_hard_constraint():
+    from app.agents.stone.writing.packet_builder import (
+        _apply_v3_pronoun_contract,
+        _build_v3_draft_fingerprint_report,
+        _build_v3_pronoun_contract,
+        _revision_action_v3,
+    )
+
+    profiles = [
+        {
+            "style_stats": {
+                "pronoun_counts": {
+                    "窝": 6,
+                    "泥": 4,
+                    "我": 1,
+                    "你": 1,
+                }
+            }
+        }
+    ]
+    contract = _build_v3_pronoun_contract(profiles=profiles)
+    writing_packet = {
+        "pronoun_contract": contract,
+        "style_fingerprint_brief": {
+            "narrator_profile": {"person": "first", "self_reference_terms": ["窝", "泥"]},
+            "rhythm_profile": {"sentence_length_buckets": {"short": 2, "medium": 2, "long": 0}},
+            "closure_profile": {"closure_moves": ["留在现场，不要总结。"]},
+            "pronoun_contract": contract,
+        },
+    }
+    blueprint = {"closure_residue": "收在现场。"}
+    critics = [{"critic_key": "feature_density", "pass": True, "verdict": "approve", "line_edits": []}]
+
+    drift_report = _build_v3_draft_fingerprint_report("我走进店里，你还在门口等。", writing_packet, blueprint)
+    fixed_text = _apply_v3_pronoun_contract("我走进店里，你还在门口等。", writing_packet)
+    fixed_report = _build_v3_draft_fingerprint_report(fixed_text, writing_packet, blueprint)
+
+    assert contract["expected_first_person"] == ["窝"]
+    assert contract["expected_second_person"] == ["泥"]
+    assert "idiolect_pronoun_drift" in drift_report["hard_failures"]
+    assert _revision_action_v3(critics, drift_report) == "line_edit"
+    assert fixed_text == "窝走进店里，泥还在门口等。"
+    assert fixed_report["hard_failures"] == []
 
 
 def test_v3_critics_respect_max_concurrency_and_preserve_order(monkeypatch):
@@ -1953,6 +2039,7 @@ def test_v3_style_packet_prefers_selected_sample_floor_over_global_author_model(
 
 def test_v3_critic_stream_keys_and_text_stage_suffixes_are_round_scoped():
     from app.agents.stone.writing.critics import _critic_stream_key_v3
+    from app.agents.stone.writing.packet_builder import _call_writer_json_stage_v3
     from app.agents.stone.writing.packet_builder import _call_writer_text_stage_v3
     from app.agents.stone.writing.service import WritingStreamState
 
@@ -1961,6 +2048,7 @@ def test_v3_critic_stream_keys_and_text_stage_suffixes_are_round_scoped():
             self.handler_stream_keys: list[str] = []
             self.usage_stream_keys: list[str] = []
             self.retry_stream_keys: list[str] = []
+            self.live_messages: list[dict[str, str]] = []
 
         def _stream_key(self, state, stage, *, suffix=None):
             del state
@@ -1976,8 +2064,9 @@ def test_v3_critic_stream_keys_and_text_stage_suffixes_are_round_scoped():
             self.usage_stream_keys.append(stream_key)
 
         def _emit_live_writer_message(self, state, *, stream_key, **kwargs):
-            del state, kwargs
+            del state
             self.retry_stream_keys.append(stream_key)
+            self.live_messages.append({"stream_key": stream_key, "label": kwargs.get("label") or "", "body": kwargs.get("body") or ""})
 
     class DummyClient:
         class config:
@@ -2025,6 +2114,99 @@ def test_v3_critic_stream_keys_and_text_stage_suffixes_are_round_scoped():
     assert service.handler_stream_keys == ["redraft:round_2", "redraft:round_2"]
     assert service.usage_stream_keys == ["redraft:round_2", "redraft:round_2"]
     assert service.retry_stream_keys == ["redraft:round_2"]
+
+    json_client = DummyClient()
+    json_service = DummyService()
+
+    def json_chat_completion_result(messages, **kwargs):
+        del messages, kwargs
+        json_client.calls += 1
+        if json_client.calls == 1:
+            return _mock_result(json.dumps({"selected_documents": [{"document_id": "wrong-doc"}], "anchor_ids": []}))
+        return _mock_result(json.dumps({"selected_documents": [{"document_id": "doc-1"}], "anchor_ids": ["anchor:1"]}))
+
+    json_client.chat_completion_result = json_chat_completion_result
+    json_result = _call_writer_json_stage_v3(
+        json_service,
+        state,
+        json_client,
+        stage="llm_rerank_v3",
+        label="rerank",
+        messages=[{"role": "system", "content": "x"}, {"role": "user", "content": "y"}],
+        stream_suffix="round_2",
+        payload_validator=lambda payload: payload
+        if payload.get("selected_documents") == [{"document_id": "doc-1"}]
+        else (_ for _ in ()).throw(ValueError("validator rejected payload")),
+        retry_feedback_builder=lambda exc, _attempt: f"Retry because: {exc}",
+    )
+
+    assert json_result["selected_documents"] == [{"document_id": "doc-1"}]
+    assert json_result["anchor_ids"] == ["anchor:1"]
+    assert json_client.calls == 2
+    assert json_service.handler_stream_keys == ["llm_rerank_v3:round_2", "llm_rerank_v3:round_2"]
+    assert json_service.usage_stream_keys == ["llm_rerank_v3:round_2", "llm_rerank_v3:round_2"]
+    assert json_service.retry_stream_keys == ["llm_rerank_v3:round_2"]
+    assert "validator rejected payload" in json_service.live_messages[0]["body"]
+
+
+def test_writing_rerank_falls_back_after_repeated_invalid_shortlist_ids(client, app, monkeypatch):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Stone V3 Rerank Fallback")
+
+    original_chat_completion_result = OpenAICompatibleClient.chat_completion_result
+    rerank_calls = {"count": 0}
+
+    def invalid_rerank_chat_completion_result(self, messages, **kwargs):
+        system_text = str(messages[0].get("content") or "")
+        if "Stone v3 reranker" in system_text or "閲嶆帓鍣?" in system_text:
+            rerank_calls["count"] += 1
+            return _mock_result(
+                json.dumps(
+                    {
+                        "selected_documents": [{"document_id": f"invalid-doc-{rerank_calls['count']}"}],
+                        "anchor_ids": [f"invalid-anchor-{rerank_calls['count']}"],
+                        "selection_reason": "bad ids",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        return original_chat_completion_result(self, messages, **kwargs)
+
+    monkeypatch.setattr(OpenAICompatibleClient, "chat_completion_result", invalid_rerank_chat_completion_result)
+
+    session_response = client.post(f"/api/projects/{project_id}/writing/sessions", json={"title": "Stone V3 Fallback"})
+    assert session_response.status_code == 200
+    session_id = session_response.json()["id"]
+
+    message_response = client.post(
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/messages",
+        json={"message": "Write about KFC at night, 400 words"},
+    )
+    assert message_response.status_code == 200
+    stream_id = message_response.json()["stream_id"]
+
+    events = _collect_sse_events(
+        client,
+        f"/api/projects/{project_id}/writing/sessions/{session_id}/streams/{stream_id}",
+    )
+    assert not [payload for name, payload in events if name == "error"]
+
+    rerank_stage = next(
+        payload
+        for name, payload in events
+        if name == "stage" and payload.get("stage") == "llm_rerank_v3"
+    )
+    assert rerank_calls["count"] == 3
+    assert rerank_stage["detail"]["attempt_count"] == 3
+    assert rerank_stage["detail"]["fallback_used"] is True
+    assert rerank_stage["detail"]["selection_mode"] == "shortlist_rule_fallback"
+    assert rerank_stage["detail"]["selected_documents"]
+    assert rerank_stage["detail"]["anchor_ids"]
+
+    detail_payload = client.get(f"/api/projects/{project_id}/writing/sessions/{session_id}").json()
+    assistant_turns = [turn for turn in detail_payload["turns"] if turn["role"] == "assistant"]
+    latest_turn = assistant_turns[-1]
+
+    assert latest_turn["trace"]["llm_rerank_v3"]["fallback_used"] is True
 
 
 def test_partial_preprocess_still_allows_author_analysis(client, app, monkeypatch):

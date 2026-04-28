@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-WRITER_ACTOR_NAME = "?? Agent"
+WRITER_ACTOR_NAME = "写作 Agent"
 
 
 def _iso_now() -> str:

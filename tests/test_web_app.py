@@ -1409,6 +1409,9 @@ def test_pages_render_simplified_chinese_and_lang(client):
         assert response.status_code == 200
         assert b'lang="zh-CN"' in response.content
         assert expected_text.encode("utf-8") in response.content
+        if path == "/settings":
+            assert b"OpenAI \\u5b98\\u65b9" in response.content
+            assert b"Gemini \\u5b98\\u65b9" in response.content
         assert b"\xef\xbf\xbd" not in response.content
         assert b"zh-Hant" not in response.content
 

@@ -207,7 +207,23 @@ def _extract_keyword_candidates(*values: Any, limit: int = 12) -> list[str]:
     return [token for token, _ in tokens.most_common(limit)]
 
 
-_STYLE_PRONOUN_TERMS = ("我", "我们", "自己", "你", "你们", "他", "她", "他们", "她们")
+_STYLE_PRONOUN_TERMS = (
+    "窝",
+    "窝们",
+    "咱",
+    "咱们",
+    "我",
+    "我们",
+    "自己",
+    "泥",
+    "泥们",
+    "你",
+    "你们",
+    "他",
+    "她",
+    "他们",
+    "她们",
+)
 _STYLE_CONNECTIVE_TERMS = ("但是", "不过", "其实", "只是", "所以", "因为", "如果", "可是", "然后", "后来")
 _STYLE_PUNCTUATION_TERMS = ("，", "。", "！", "？", "；", "：", "、", "…")
 
@@ -237,7 +253,7 @@ def _derive_style_stats(text: str) -> dict[str, Any]:
         if source.count(term) > 0
     }
     word_count = max(1, estimate_word_count(source))
-    self_reference_total = sum(pronoun_counts.get(term, 0) for term in ("我", "我们", "自己"))
+    self_reference_total = sum(pronoun_counts.get(term, 0) for term in ("窝", "窝们", "咱", "咱们", "我", "我们", "自己"))
     return {
         "pronoun_counts": pronoun_counts,
         "connective_counts": connective_counts,

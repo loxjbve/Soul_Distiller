@@ -21,6 +21,15 @@ _telegram_mode_spec.loader.exec_module(_telegram_mode)
 _create_ingested_telegram_project = _telegram_mode._create_ingested_telegram_project
 _seed_preprocess_tables = _telegram_mode._seed_preprocess_tables
 
+_stone_mode_spec = importlib.util.spec_from_file_location(
+    "local_test_stone_v3_mode",
+    Path(__file__).with_name("test_stone_v3_mode.py"),
+)
+assert _stone_mode_spec and _stone_mode_spec.loader
+_stone_mode = importlib.util.module_from_spec(_stone_mode_spec)
+_stone_mode_spec.loader.exec_module(_stone_mode)
+_create_v3_preprocessed_project = _stone_mode._create_v3_preprocessed_project
+
 
 @pytest.fixture()
 def live_server(app):
@@ -82,6 +91,67 @@ def test_shell_mode_switches_between_fixed_and_relaxed(page, live_server):
     page.set_viewport_size({"width": 1280, "height": 720})
     page.reload(wait_until="networkidle")
     assert page.evaluate("document.documentElement.dataset.shellMode") == "relaxed"
+
+
+@pytest.mark.frontend
+def test_writing_workspace_auto_titles_first_prompt_and_stays_contained(page, client, app, monkeypatch, live_server):
+    project_id, _ = _create_v3_preprocessed_project(client, app, monkeypatch, name="Frontend Writing Workspace")
+
+    page.set_viewport_size({"width": 1720, "height": 1080})
+    page.goto(f"{live_server}/projects/{project_id}/writing", wait_until="networkidle")
+
+    assert page.evaluate("document.documentElement.dataset.shellMode") == "fixed"
+    assert "等待主题" in (page.locator("[data-session-title]").text_content() or "")
+
+    page.locator("[data-message-input]").fill("Write about KFC at night, 400 words")
+    page.locator("[data-send-message]").click()
+
+    page.wait_for_function(
+        """
+        () => {
+            const pill = document.querySelector('[data-session-title]');
+            const current = document.querySelector('.writing-session-item.is-active strong');
+            return pill?.textContent?.includes('KFC 深夜独白') && current?.textContent?.includes('KFC 深夜独白');
+        }
+        """,
+        timeout=15000,
+    )
+    page.wait_for_function(
+        """
+        () => document.body.textContent.includes('\\u5206\\u6790: \\u5c31\\u7eea')
+        """,
+        timeout=15000,
+    )
+    assert not page.evaluate(
+        """
+        () => document.body.textContent.includes('\\u5206\\u6790: \\u964d\\u7ea7')
+        """
+    )
+
+    metrics = page.evaluate(
+        """
+        () => {
+            const rect = (selector) => {
+                const node = document.querySelector(selector);
+                if (!node) return null;
+                const box = node.getBoundingClientRect();
+                return { top: box.top, bottom: box.bottom, height: box.height };
+            };
+                return {
+                    content: rect('.page-shell'),
+                    shell: rect('.writing-shell'),
+                    rail: rect('.writing-rail'),
+                    stage: rect('.writing-stage'),
+                    composer: rect('.writing-composer'),
+                };
+        }
+        """
+    )
+
+    assert metrics["shell"]["bottom"] <= metrics["content"]["bottom"] + 1
+    assert metrics["rail"]["height"] > 320
+    assert metrics["stage"]["height"] > 500
+    assert metrics["composer"]["height"] > 80
 
 
 @pytest.mark.frontend

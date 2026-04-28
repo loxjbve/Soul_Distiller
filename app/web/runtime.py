@@ -82,9 +82,9 @@ def set_locale(locale: str, next: str = "/"):
 
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parents[1] / "templates"))
 PROVIDER_OPTIONS = (
-    {"value": "openai", "label": "OpenAI 瀹樻柟"},
-    {"value": "xai", "label": "xAI 瀹樻柟"},
-    {"value": "gemini", "label": "Gemini 瀹樻柟"},
+    {"value": "openai", "label": "OpenAI 官方"},
+    {"value": "xai", "label": "xAI 官方"},
+    {"value": "gemini", "label": "Gemini 官方"},
     {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
 )
 API_MODE_OPTIONS = (
@@ -94,7 +94,7 @@ API_MODE_OPTIONS = (
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
-    {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
+    {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
     {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
     {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
@@ -102,15 +102,15 @@ ASSET_KIND_OPTIONS = (
 
 
 PROVIDER_OPTIONS = (
-    {"value": "openai", "label": "OpenAI 瀹樻柟"},
-    {"value": "xai", "label": "xAI 瀹樻柟"},
-    {"value": "gemini", "label": "Gemini 瀹樻柟"},
+    {"value": "openai", "label": "OpenAI 官方"},
+    {"value": "xai", "label": "xAI 官方"},
+    {"value": "gemini", "label": "Gemini 官方"},
     {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
 )
 ASSET_KIND_OPTIONS = (
     {"value": "skill", "label": "Skill"},
     {"value": "cc_skill", "label": "Claude Code Skill"},
-    {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
+    {"value": "profile_report", "label": "用户画像报告"},
     {"value": "writing_guide", "label": "Writing Guide"},
     {"value": "stone_author_model_v3", "label": "Stone Author Model V3"},
     {"value": "stone_prototype_index_v3", "label": "Stone Prototype Index V3"},
@@ -974,7 +974,7 @@ def writing_page(
                 session,
                 project_id=project_id,
                 session_kind="writing",
-                title="新建写作会话",
+                title=None,
             )
         ]
     selected_session = sessions[0]
@@ -1066,9 +1066,9 @@ def settings_page(request: Request, session: SessionDep):
             settings_bootstrap=settings_bootstrap,
             provider_options=PROVIDER_OPTIONS,
             legacy_provider_options=(
-                {"value": "openai", "label": "OpenAI 瀹樻柟"},
-                {"value": "xai", "label": "xAI 瀹樻柟"},
-                {"value": "gemini", "label": "Gemini 瀹樻柟"},
+                {"value": "openai", "label": "OpenAI 官方"},
+                {"value": "xai", "label": "xAI 官方"},
+                {"value": "gemini", "label": "Gemini 官方"},
                 {"value": "openai-compatible", "label": "OpenAI Compatible 自定义入口"},
             ),
             api_mode_options=API_MODE_OPTIONS,
@@ -2218,7 +2218,7 @@ def create_writing_session_api(project_id: str, payload: PreprocessSessionCreate
         session,
         project_id=project_id,
         session_kind="writing",
-        title=payload.title or "新建写作会话",
+        title=payload.title,
     )
     return _ok_response("写作会话已创建。", **_serialize_chat_session(chat_session))
 
@@ -2830,7 +2830,7 @@ def _asset_options_for_project(project) -> tuple[dict[str, str], ...]:
         )
     return (
         {"value": "cc_skill", "label": "Claude Code Skill"},
-        {"value": "profile_report", "label": "鐢ㄦ埛鐢诲儚鎶ュ憡"},
+        {"value": "profile_report", "label": "用户画像报告"},
     )
 
 

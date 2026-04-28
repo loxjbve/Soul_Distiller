@@ -229,6 +229,7 @@ def _run_revision_pipeline_v3(
             },
         ],
     )
+    draft = _apply_v3_pronoun_contract(draft, writing_packet)
     draft_fingerprint_report = _build_v3_draft_fingerprint_report(draft, writing_packet, blueprint)
     draft_payload = _build_writer_message_payload(
         message_kind="redraft",
@@ -309,6 +310,7 @@ def _run_revision_pipeline_v3(
                 },
             ],
         )
+        current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
         current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
         payload = _build_writer_message_payload(
             message_kind="redraft",
@@ -355,6 +357,7 @@ def _run_revision_pipeline_v3(
                 },
             ],
         )
+        current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
         current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
         payload = _build_writer_message_payload(
             message_kind="line_edit",
@@ -432,6 +435,7 @@ def _run_revision_pipeline_v3(
                     },
                 ],
             )
+            current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
             current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
             payload = _build_writer_message_payload(
                 message_kind="redraft",
@@ -478,6 +482,7 @@ def _run_revision_pipeline_v3(
                     },
                 ],
             )
+            current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
             current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
             payload = _build_writer_message_payload(
                 message_kind="line_edit",
@@ -497,7 +502,7 @@ def _run_revision_pipeline_v3(
         else:
             revision_action = second_action
 
-    final_text = current_text
+    final_text = _apply_v3_pronoun_contract(current_text, writing_packet)
     final_assessment = _build_final_assessment_v2(
         final_text,
         active_critics,
@@ -747,8 +752,11 @@ def _run_llm_first_pipeline_v3(
                 ),
             },
         ],
+        payload_validator=lambda payload: _normalize_rerank_v3(payload, analysis_bundle, shortlist),
+        retry_feedback_builder=lambda exc, _attempt: _build_rerank_retry_feedback_v3(shortlist, exc),
+        fallback_payload_builder=lambda exc: _build_rerank_fallback_v3(shortlist, reason=str(exc)),
     )
-    rerank = _normalize_rerank_v3(rerank_raw, analysis_bundle, shortlist)
+    rerank = rerank_raw
     selected_sample_context = _build_local_sample_packet_context_v3(
         analysis_bundle,
         [
@@ -1010,6 +1018,7 @@ def _run_llm_first_pipeline_v3(
             },
         ],
     )
+    draft = _apply_v3_pronoun_contract(draft, writing_packet)
     draft_fingerprint_report = _build_v3_draft_fingerprint_report(draft, writing_packet, blueprint)
     draft_payload = _build_writer_message_payload(
         message_kind="draft_v3",
@@ -1087,6 +1096,7 @@ def _run_llm_first_pipeline_v3(
                 },
             ],
         )
+        current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
         current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
         redraft_payload = _build_writer_message_payload(
             message_kind="redraft",
@@ -1133,6 +1143,7 @@ def _run_llm_first_pipeline_v3(
                 },
             ],
         )
+        current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
         current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
         line_edit_payload = _build_writer_message_payload(
             message_kind="line_edit",
@@ -1207,6 +1218,7 @@ def _run_llm_first_pipeline_v3(
                     },
                 ],
             )
+            current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
             current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
             payload = _build_writer_message_payload(
                 message_kind="redraft",
@@ -1252,6 +1264,7 @@ def _run_llm_first_pipeline_v3(
                     },
                 ],
             )
+            current_text = _apply_v3_pronoun_contract(current_text, writing_packet)
             current_fingerprint_report = _build_v3_draft_fingerprint_report(current_text, writing_packet, blueprint)
             payload = _build_writer_message_payload(
                 message_kind="line_edit",
@@ -1271,7 +1284,7 @@ def _run_llm_first_pipeline_v3(
         else:
             revision_action = second_action
 
-    final_text = current_text
+    final_text = _apply_v3_pronoun_contract(current_text, writing_packet)
     final_assessment = _build_final_assessment_v2(
         final_text,
         active_critics,

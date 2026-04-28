@@ -1216,6 +1216,121 @@ def _normalize_rerank_v3(
     }
 
 
+def _build_rerank_retry_feedback_v3(shortlist: dict[str, Any], error: Exception) -> str:
+    compact_shortlist = _compact_shortlist_for_prompt_v3(shortlist)
+    document_ids = [
+        str(item.get("document_id") or "").strip()
+        for item in shortlist.get("documents") or []
+        if isinstance(item, dict) and str(item.get("document_id") or "").strip()
+    ]
+    anchor_ids: list[str] = []
+    for item in shortlist.get("documents") or []:
+        if not isinstance(item, dict):
+            continue
+        for anchor in item.get("anchor_registry") or []:
+            if not isinstance(anchor, dict):
+                continue
+            anchor_id = str(anchor.get("id") or "").strip()
+            if anchor_id and anchor_id not in anchor_ids:
+                anchor_ids.append(anchor_id)
+    return (
+        f"上一次输出无效，原因：{_trim_text(error, 180)}。\n"
+        "请重新输出一个 JSON 对象。\n"
+        "`selected_documents` 里的 `document_id` 只能从下面这些值里选："
+        f"{', '.join(document_ids[:12])}。\n"
+        "`anchor_ids` 只能从 shortlist 已出现的锚点里选；如果拿不准，优先返回分数最高的 1 到 3 个文档，"
+        "并从这些文档的 anchors 里挑 3 到 8 个。\n"
+        "不要改写 document_id 或 anchor_id，不要输出 shortlist 之外的值。\n\n"
+        f"shortlist compact JSON：\n{json.dumps(compact_shortlist, ensure_ascii=False, indent=2)}\n\n"
+        f"shortlist anchor_id sample：{', '.join(anchor_ids[:24])}"
+    )
+
+
+def _build_rerank_fallback_v3(shortlist: dict[str, Any], *, reason: str | None = None) -> dict[str, Any]:
+    selected_documents: list[dict[str, Any]] = []
+    selected_document_ids: list[str] = []
+    anchor_ids: list[str] = []
+    remaining_documents: list[dict[str, Any]] = []
+
+    for item in shortlist.get("documents") or []:
+        if not isinstance(item, dict):
+            continue
+        document_id = str(item.get("document_id") or "").strip()
+        if not document_id:
+            continue
+        remaining_documents.append(item)
+        if len(selected_documents) >= 3:
+            continue
+        selected_document_ids.append(document_id)
+        selected_documents.append(
+            {
+                "document_id": document_id,
+                "title": item.get("title"),
+                "family_id": item.get("family_id"),
+                "family_label": item.get("family_label"),
+                "score": item.get("score"),
+                "reasons": item.get("reasons"),
+            }
+        )
+        for anchor in item.get("anchor_registry") or []:
+            if not isinstance(anchor, dict):
+                continue
+            anchor_id = str(anchor.get("id") or "").strip()
+            if anchor_id and anchor_id not in anchor_ids:
+                anchor_ids.append(anchor_id)
+            if len(anchor_ids) >= 8:
+                break
+        if len(anchor_ids) >= 8:
+            break
+
+    if not anchor_ids:
+        for item in remaining_documents[len(selected_documents) :]:
+            document_id = str(item.get("document_id") or "").strip()
+            if not document_id:
+                continue
+            if document_id not in selected_document_ids and len(selected_documents) < 6:
+                selected_document_ids.append(document_id)
+                selected_documents.append(
+                    {
+                        "document_id": document_id,
+                        "title": item.get("title"),
+                        "family_id": item.get("family_id"),
+                        "family_label": item.get("family_label"),
+                        "score": item.get("score"),
+                        "reasons": item.get("reasons"),
+                    }
+                )
+            for anchor in item.get("anchor_registry") or []:
+                if not isinstance(anchor, dict):
+                    continue
+                anchor_id = str(anchor.get("id") or "").strip()
+                if anchor_id and anchor_id not in anchor_ids:
+                    anchor_ids.append(anchor_id)
+                if len(anchor_ids) >= 8:
+                    break
+            if len(anchor_ids) >= 8:
+                break
+
+    if not selected_documents:
+        raise ValueError("candidate_shortlist_v3 had no usable documents for rerank fallback.")
+    if not anchor_ids:
+        raise ValueError("candidate_shortlist_v3 had no usable anchors for rerank fallback.")
+
+    fallback_reason = _trim_text(reason, 220)
+    rerank_notes = ["LLM rerank fallback: top shortlist candidates were selected by rule."]
+    if fallback_reason:
+        rerank_notes.append(fallback_reason)
+    return {
+        "selected_documents": selected_documents[:6],
+        "anchor_ids": anchor_ids[:8],
+        "selection_reason": "LLM 重排结果连续无效，已回退到 shortlist 规则排序。",
+        "rerank_notes": rerank_notes[:6],
+        "fallback_used": True,
+        "fallback_reason": fallback_reason,
+        "selection_mode": "shortlist_rule_fallback",
+    }
+
+
 def _selected_anchor_records_v3(bundle: StoneWritingAnalysisBundle, rerank: dict[str, Any]) -> list[dict[str, Any]]:
     selected_ids = set(rerank.get("anchor_ids") or [])
     anchors = [item for item in bundle.source_anchors if item.get("id") in selected_ids]
@@ -1253,6 +1368,14 @@ _LOCAL_THESIS_MARKERS_V3 = (
     "\u5272\u5e2d",
 )
 
+_V3_FIRST_PERSON_TERMS = ("窝", "窝们", "咱", "咱们", "我", "我们", "自己")
+_V3_SECOND_PERSON_TERMS = ("泥", "泥们", "你", "你们")
+_V3_THIRD_PERSON_TERMS = ("他", "她", "它", "他们", "她们", "它们")
+_V3_IDIOLECT_FIRST_PERSON_TERMS = ("窝", "窝们", "咱", "咱们")
+_V3_IDIOLECT_SECOND_PERSON_TERMS = ("泥", "泥们")
+_V3_GENERIC_FIRST_PERSON_TERMS = ("我", "我们")
+_V3_GENERIC_SECOND_PERSON_TERMS = ("你", "你们")
+
 
 def _aggregate_profile_style_counter_v3(profiles: list[dict[str, Any]], key: str) -> Counter[str]:
     counter: Counter[str] = Counter()
@@ -1267,6 +1390,82 @@ def _aggregate_profile_style_counter_v3(profiles: list[dict[str, Any]], key: str
             except (TypeError, ValueError):
                 continue
     return counter
+
+
+def _dominant_v3_term(counter: Counter[str], candidates: tuple[str, ...]) -> str:
+    best = ""
+    best_count = 0
+    for term in candidates:
+        count = int(counter.get(term) or 0)
+        if count > best_count:
+            best = term
+            best_count = count
+    return best
+
+
+def _build_v3_pronoun_contract(
+    *,
+    profiles: list[dict[str, Any]] | None = None,
+    style_fingerprint_brief: dict[str, Any] | None = None,
+    request_adapter: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    profile_counter = _aggregate_profile_style_counter_v3(list(profiles or []), "pronoun_counts")
+    brief = dict(style_fingerprint_brief or {})
+    narrator = dict(brief.get("narrator_profile") or {})
+    explicit_terms = _normalize_string_list(narrator.get("self_reference_terms"), limit=8, item_limit=12)
+    explicit_terms.extend(_normalize_string_list(brief.get("persona_markers"), limit=4, item_limit=12))
+    explicit_text = normalize_whitespace(
+        " ".join(
+            [
+                " ".join(explicit_terms),
+                json.dumps(request_adapter or {}, ensure_ascii=False),
+                json.dumps(payload or {}, ensure_ascii=False),
+            ]
+        )
+    )
+    first_idiolect = _dominant_v3_term(profile_counter, _V3_IDIOLECT_FIRST_PERSON_TERMS)
+    second_idiolect = _dominant_v3_term(profile_counter, _V3_IDIOLECT_SECOND_PERSON_TERMS)
+    if not first_idiolect:
+        first_idiolect = next((term for term in _V3_IDIOLECT_FIRST_PERSON_TERMS if term in explicit_text), "")
+    if not second_idiolect:
+        second_idiolect = next((term for term in _V3_IDIOLECT_SECOND_PERSON_TERMS if term in explicit_text), "")
+
+    expected_first = [first_idiolect] if first_idiolect else []
+    expected_second = [second_idiolect] if second_idiolect else []
+    generic_first = [term for term in _V3_GENERIC_FIRST_PERSON_TERMS if term not in expected_first]
+    generic_second = [term for term in _V3_GENERIC_SECOND_PERSON_TERMS if term not in expected_second]
+    rules: list[str] = []
+    if expected_first:
+        rules.append(f"第一人称自称固定使用：{expected_first[0]}；不要改成{'/'.join(generic_first)}。")
+    if expected_second:
+        rules.append(f"第二人称称呼固定使用：{expected_second[0]}；不要改成{'/'.join(generic_second)}。")
+    return {
+        "expected_first_person": expected_first,
+        "expected_second_person": expected_second,
+        "avoid_first_person": generic_first if expected_first else [],
+        "avoid_second_person": generic_second if expected_second else [],
+        "rules": rules,
+        "source": "profile_pronoun_counts" if (expected_first or expected_second) and profile_counter else "request_or_brief",
+    }
+
+
+def _apply_v3_pronoun_contract(text: str, writing_packet: dict[str, Any] | None) -> str:
+    source = str(text or "")
+    contract = dict((writing_packet or {}).get("pronoun_contract") or {})
+    expected_first = _normalize_string_list(contract.get("expected_first_person"), limit=2, item_limit=8)
+    expected_second = _normalize_string_list(contract.get("expected_second_person"), limit=2, item_limit=8)
+    normalized = source
+    if expected_first and expected_first[0] == "窝":
+        normalized = normalized.replace("我们", "窝们")
+        normalized = re.sub(r"(?<!自)我", "窝", normalized)
+    elif expected_first and expected_first[0] == "咱":
+        normalized = normalized.replace("我们", "咱们")
+        normalized = re.sub(r"(?<!自)我", "咱", normalized)
+    if expected_second and expected_second[0] == "泥":
+        normalized = normalized.replace("你们", "泥们")
+        normalized = normalized.replace("你", "泥")
+    return normalized
 
 
 def _selected_full_profiles_v3(
@@ -1393,7 +1592,7 @@ def _build_selected_sample_style_context_v3(
     pronoun_terms = [
         term
         for term, _count in pronoun_counter.most_common(6)
-        if term in {"\u6211", "\u6211\u4eec", "\u81ea\u5df1", "\u4f60", "\u4f60\u4eec"}
+        if term in {*_V3_FIRST_PERSON_TERMS, *_V3_SECOND_PERSON_TERMS}
     ]
     self_reference_terms = _unique_preserve_order([*persona_markers, *pronoun_terms])[:6]
     opening_moves = _unique_preserve_order(
@@ -1517,6 +1716,15 @@ def _build_selected_sample_style_context_v3(
             f"\u81ea\u79f0\u9762\u5177\u4f18\u5148\uff1a{', '.join(persona_markers[:3])}" if persona_markers else "",
         ]
     )[:4]
+    pronoun_contract = _build_v3_pronoun_contract(
+        profiles=profiles,
+        style_fingerprint_brief=style_fingerprint_brief,
+    )
+    style_fingerprint_brief["pronoun_contract"] = pronoun_contract
+    style_fingerprint_brief["self_reference_rules"] = _unique_preserve_order(
+        list(style_fingerprint_brief.get("self_reference_rules") or [])
+        + list(pronoun_contract.get("rules") or [])
+    )[:6]
     style_fingerprint_brief["overfit_limits"] = _unique_preserve_order(
         list(style_fingerprint_brief.get("overfit_limits") or [])
         + [
@@ -1653,6 +1861,15 @@ def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, An
         limit=4,
         item_limit=48,
     )
+    pronoun_contract = _build_v3_pronoun_contract(
+        style_fingerprint_brief={
+            "narrator_profile": {
+                "self_reference_terms": self_reference_terms,
+                "persona_markers": persona_markers,
+            },
+        },
+        payload=author_model,
+    )
     return {
         "narrator_profile": {
             "person": person,
@@ -1689,8 +1906,10 @@ def _build_style_fingerprint_brief(author_model: dict[str, Any]) -> dict[str, An
             f"人称保持：{person}",
             f"自称优先使用：{', '.join(self_reference_terms)}" if self_reference_terms else "",
             f"优先保留作者自称面具：{', '.join(persona_markers)}" if persona_markers else "",
+            *list(pronoun_contract.get("rules") or []),
             _trim_text(narrator_profile.get("self_position"), 40),
-        ])[:4],
+        ])[:6],
+        "pronoun_contract": pronoun_contract,
         "connective_keep": connective_keep,
         "connective_avoid": overfit_terms[:4],
         "cadence_rules": _unique_preserve_order([
@@ -1721,9 +1940,9 @@ def _split_text_sentences_v3(text: str) -> list[str]:
 
 def _draft_pronoun_stats_v3(text: str) -> dict[str, int]:
     return {
-        "first": sum(text.count(token) for token in ("我", "我们", "自己")),
-        "second": sum(text.count(token) for token in ("你", "你们")),
-        "third": sum(text.count(token) for token in ("他", "她", "它", "他们", "她们", "它们")),
+        "first": sum(text.count(token) for token in _V3_FIRST_PERSON_TERMS),
+        "second": sum(text.count(token) for token in _V3_SECOND_PERSON_TERMS),
+        "third": sum(text.count(token) for token in _V3_THIRD_PERSON_TERMS),
     }
 
 
@@ -1765,6 +1984,21 @@ def _build_v3_draft_fingerprint_report(
         limit=4,
         item_limit=12,
     )
+    pronoun_contract = dict(writing_packet.get("pronoun_contract") or brief.get("pronoun_contract") or {})
+    expected_first_terms = _normalize_string_list(pronoun_contract.get("expected_first_person"), limit=4, item_limit=8)
+    expected_second_terms = _normalize_string_list(pronoun_contract.get("expected_second_person"), limit=4, item_limit=8)
+    avoid_first_terms = _normalize_string_list(pronoun_contract.get("avoid_first_person"), limit=4, item_limit=8)
+    avoid_second_terms = _normalize_string_list(pronoun_contract.get("avoid_second_person"), limit=4, item_limit=8)
+    expected_first_hits = {term: text.count(term) for term in expected_first_terms if term}
+    expected_second_hits = {term: text.count(term) for term in expected_second_terms if term}
+    avoid_first_hits = {term: text.count(term) for term in avoid_first_terms if term and text.count(term) > 0}
+    avoid_second_hits = {term: text.count(term) for term in avoid_second_terms if term and text.count(term) > 0}
+    idiolect_pronoun_hard_fail = bool(
+        avoid_first_hits
+        or avoid_second_hits
+        or (expected_first_terms and pronoun_stats.get("first", 0) > 0 and not any(expected_first_hits.values()))
+        or (expected_second_terms and pronoun_stats.get("second", 0) > 0 and not any(expected_second_hits.values()))
+    )
     rhetorical_devices = _normalize_string_list(brief.get("rhetorical_devices"), limit=6, item_limit=16)
     thesis_refrains = _normalize_string_list(brief.get("thesis_refrains"), limit=6, item_limit=16)
     expected_lexicon = _unique_preserve_order([*connective_keep, *lexicon_keep, *thesis_refrains[:4]])[:12]
@@ -1782,6 +2016,8 @@ def _build_v3_draft_fingerprint_report(
     hard_failures: list[str] = []
     if pronoun_hard_fail:
         hard_failures.append("pronoun_drift")
+    if idiolect_pronoun_hard_fail:
+        hard_failures.append("idiolect_pronoun_drift")
     if closure_hard_fail:
         hard_failures.append("closure_summary")
     if overfit_hard_fail:
@@ -1795,6 +2031,15 @@ def _build_v3_draft_fingerprint_report(
             "counts": pronoun_stats,
             "score": 1.0 if not pronoun_hard_fail else 0.25,
             "hard_fail": pronoun_hard_fail,
+        },
+        "idiolect_pronoun_match": {
+            "contract": pronoun_contract,
+            "expected_first_hits": expected_first_hits,
+            "expected_second_hits": expected_second_hits,
+            "avoid_first_hits": avoid_first_hits,
+            "avoid_second_hits": avoid_second_hits,
+            "score": 0.2 if idiolect_pronoun_hard_fail else 1.0,
+            "hard_fail": idiolect_pronoun_hard_fail,
         },
         "persona_match": {
             "expected_markers": persona_markers,
@@ -1863,6 +2108,28 @@ def _normalize_style_packet_v3(
         dict(local_style_context.get("style_fingerprint_brief") or {})
         or _build_style_fingerprint_brief(bundle.author_model)
     )
+    pronoun_profiles: list[dict[str, Any]] = []
+    seen_pronoun_profile_ids: set[str] = set()
+    for profile in [
+        *_selected_full_profiles_v3(bundle, selected_profile_ids, rerank),
+        *list(bundle.stone_profiles or []),
+    ]:
+        profile_id = str(profile.get("document_id") or id(profile))
+        if profile_id in seen_pronoun_profile_ids:
+            continue
+        seen_pronoun_profile_ids.add(profile_id)
+        pronoun_profiles.append(profile)
+    pronoun_contract = _build_v3_pronoun_contract(
+        profiles=pronoun_profiles,
+        style_fingerprint_brief=style_fingerprint_brief,
+        request_adapter=request_adapter,
+        payload=payload,
+    )
+    style_fingerprint_brief["pronoun_contract"] = pronoun_contract
+    style_fingerprint_brief["self_reference_rules"] = _unique_preserve_order(
+        list(style_fingerprint_brief.get("self_reference_rules") or [])
+        + list(pronoun_contract.get("rules") or [])
+    )[:6]
     global_translation_rules = list(bundle.author_model.get("translation_rules") or [])
     global_first_rule = next((dict(item) for item in global_translation_rules if isinstance(item, dict)), {})
 
@@ -1950,7 +2217,8 @@ def _normalize_style_packet_v3(
         ])[:8],
         "anchor_ids": list(rerank.get("anchor_ids") or [])[:8],
         "style_fingerprint_brief": style_fingerprint_brief,
-        "self_reference_rules": list(style_fingerprint_brief.get("self_reference_rules") or [])[:4],
+        "self_reference_rules": list(style_fingerprint_brief.get("self_reference_rules") or [])[:6],
+        "pronoun_contract": pronoun_contract,
         "connective_keep": _unique_preserve_order([
             *_normalize_string_list(payload.get("connective_keep"), limit=6),
             *_normalize_string_list(style_fingerprint_brief.get("connective_keep"), limit=6),
@@ -2220,6 +2488,7 @@ def _build_v3_author_floor(
 
 
 def _build_v3_draft_guardrails(writing_packet: dict[str, Any], blueprint: dict[str, Any]) -> dict[str, Any]:
+    pronoun_contract = dict(writing_packet.get("pronoun_contract") or {})
     return {
         "language_constraint": "全文必须使用自然、完整的简体中文，不要输出整句英文或提示词式表达。",
         "entry_scene": writing_packet.get("entry_scene"),
@@ -2228,10 +2497,12 @@ def _build_v3_draft_guardrails(writing_packet: dict[str, Any], blueprint: dict[s
         "style_signal_source": writing_packet.get("style_signal_source"),
         "hard_constraints": [
             "人称和自称不能漂。",
+            *list(pronoun_contract.get("rules") or []),
             "结尾姿态不能跑成总结或立论。",
             "不要把作者高频词堆成标签墙。",
         ],
-        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "pronoun_contract": pronoun_contract,
+        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:6],
         "persona_markers": list(writing_packet.get("persona_markers") or [])[:4],
         "rhetorical_devices": list(writing_packet.get("rhetorical_devices") or [])[:6],
         "thesis_refrains": list(writing_packet.get("thesis_refrains") or [])[:6],
@@ -2257,13 +2528,19 @@ def _build_v3_line_edit_brief(
     writing_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     writing_packet = writing_packet or {}
+    pronoun_contract = dict(writing_packet.get("pronoun_contract") or {})
     return {
         "target_word_count": target_word_count,
         "current_word_count": estimate_word_count(draft),
         "language_constraint": "保持全文为自然简体中文，不要混入整句英文或分析说明。",
         "style_fingerprint_brief": dict(writing_packet.get("style_fingerprint_brief") or {}),
         "style_signal_source": writing_packet.get("style_signal_source"),
-        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:4],
+        "pronoun_contract": pronoun_contract,
+        "hard_constraints": [
+            *list(pronoun_contract.get("rules") or []),
+            "逐句修订必须优先修正人称私方言，不要保留普通话我/你漂移。",
+        ],
+        "self_reference_rules": list(writing_packet.get("self_reference_rules") or [])[:6],
         "persona_markers": list(writing_packet.get("persona_markers") or [])[:4],
         "rhetorical_devices": list(writing_packet.get("rhetorical_devices") or [])[:6],
         "thesis_refrains": list(writing_packet.get("thesis_refrains") or [])[:6],
@@ -2399,7 +2676,7 @@ def _render_style_packet_v3(payload: dict[str, Any]) -> str:
         *[f"- {item}" for item in (payload.get("lexicon_keep") or [])[:8]],
         "",
         "self_reference_rules:",
-        *[f"- {item}" for item in (payload.get("self_reference_rules") or [])[:4]],
+        *[f"- {item}" for item in (payload.get("self_reference_rules") or [])[:6]],
         "",
         "persona_markers:",
         *[f"- {item}" for item in (payload.get("persona_markers") or [])[:4]],
@@ -2721,11 +2998,16 @@ def _call_writer_json_stage_v3(
     label: str,
     messages: list[dict[str, Any]],
     stream_suffix: str | None = None,
+    payload_validator=None,
+    retry_feedback_builder=None,
+    fallback_payload_builder=None,
 ) -> dict[str, Any]:
     if not client:
         raise WritingPipelineError(stage, f"{label} requires a configured writing model.")
     last_error: Exception | None = None
     stream_key = self._stream_key(state, stage, suffix=stream_suffix)
+    base_messages = list(messages)
+    attempt_messages = list(base_messages)
     for attempt in range(1, 4):
         stream_handler, finalize_stream = self._make_stage_stream_handler(
             state,
@@ -2739,7 +3021,7 @@ def _call_writer_json_stage_v3(
         started_at = time.perf_counter()
         try:
             response = client.chat_completion_result(
-                messages,
+                attempt_messages,
                 model=client.config.model,
                 temperature=0.2,
                 max_tokens=3200,
@@ -2749,6 +3031,10 @@ def _call_writer_json_stage_v3(
             payload = parse_json_response(response.content, fallback=True)
             if not isinstance(payload, dict):
                 raise ValueError(f"{stage} did not return a JSON object.")
+            if payload_validator is not None:
+                validated_payload = payload_validator(payload)
+                if isinstance(validated_payload, dict):
+                    payload = validated_payload
             self._record_llm_usage(
                 state,
                 stage=stage,
@@ -2775,6 +3061,11 @@ def _call_writer_json_stage_v3(
                 )
             last_error = exc
             if attempt < 3:
+                attempt_messages = list(base_messages)
+                if retry_feedback_builder is not None:
+                    retry_feedback = str(retry_feedback_builder(exc, attempt) or "").strip()
+                    if retry_feedback:
+                        attempt_messages.append({"role": "user", "content": retry_feedback})
                 self._emit_live_writer_message(
                     state,
                     message_kind=stage,
@@ -2784,6 +3075,20 @@ def _call_writer_json_stage_v3(
                     stream_key=stream_key,
                     render_mode="plain",
                 )
+    if fallback_payload_builder is not None:
+        fallback_payload = fallback_payload_builder(last_error)
+        if isinstance(fallback_payload, dict):
+            self._emit_live_writer_message(
+                state,
+                message_kind=stage,
+                label=f"{label} fallback",
+                body=f"{label} exhausted retries and is continuing with a fallback result: {_trim_text(last_error, 160)}",
+                detail={"reason": str(last_error) if last_error is not None else ""},
+                stage=stage,
+                stream_key=stream_key,
+                render_mode="plain",
+            )
+            return fallback_payload
     raise WritingPipelineError(stage, f"{label} failed after 3 attempts: {last_error}")
 
 
@@ -2905,6 +3210,8 @@ __all__ = [
     "_build_v3_author_floor",
     "_build_v3_draft_guardrails",
     "_build_v3_line_edit_brief",
+    "_build_v3_pronoun_contract",
+    "_apply_v3_pronoun_contract",
     "_revision_action_v3",
     "_stone_json_chinese_instruction",
     "_STONE_BODY_CHINESE_ONLY",

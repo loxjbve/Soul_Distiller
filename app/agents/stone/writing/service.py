@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections import Counter
@@ -25,6 +26,7 @@ from app.analysis.stone_v3 import compact_stone_profile_v3
 
 STONE_WRITING_FACETS: tuple[FacetDefinition, ...] = get_facets_for_mode("stone")
 WRITER_ACTOR_NAME = "写作 Agent"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -144,7 +146,7 @@ class WritingAgentService:
         raw_message: str | None = None,
         max_concurrency: int | None = None,
         target_word_count_source: str = "explicit",
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         normalized_topic = str(topic or "").strip()
         if not normalized_topic:
             raise ValueError("Topic is required.")
@@ -156,6 +158,7 @@ class WritingAgentService:
             chat_session = repository.get_chat_session(session, session_id, session_kind="writing")
             if not chat_session or chat_session.project_id != project_id:
                 raise ValueError("Writing session not found.")
+            existing_turn_count = len(list(chat_session.turns or []))
             project = repository.get_project(session, project_id)
             resolved_writing_settings = repository.get_project_stone_writing_settings(project)
             resolved_max_concurrency = repository.normalize_stone_writing_max_concurrency(
@@ -187,8 +190,16 @@ class WritingAgentService:
                     "project_writing_settings": resolved_writing_settings,
                 },
             )
-            if not chat_session.title:
+            session_title_source = "existing" if str(chat_session.title or "").strip() else "placeholder"
+            if existing_turn_count == 0 and _should_auto_title_session(chat_session.title):
+                generated_title, session_title_source = self._resolve_initial_session_title(
+                    session,
+                    normalized_message or normalized_topic,
+                )
+                repository.rename_chat_session(session, chat_session, title=generated_title)
+            elif not chat_session.title:
                 repository.rename_chat_session(session, chat_session, title=_derive_session_title(normalized_topic))
+                session_title_source = "fallback"
             stream_id = str(uuid4())
             state = WritingStreamState(
                 id=stream_id,
@@ -214,7 +225,13 @@ class WritingAgentService:
             future = self.executor.submit(self._execute, state)
             with self.lock:
                 self.futures[stream_id] = future
-        return {"stream_id": stream_id, "user_turn_id": user_turn.id}
+        return {
+            "stream_id": stream_id,
+            "user_turn_id": user_turn.id,
+            "session_title": str(chat_session.title or "").strip() or _derive_session_title(normalized_topic),
+            "has_custom_title": bool(str(chat_session.title or "").strip()),
+            "session_title_source": session_title_source,
+        }
 
     def stream_events(self, stream_id: str):
         with self.lock:
@@ -424,6 +441,46 @@ class WritingAgentService:
         log_path = getattr(self.config, "llm_log_path", None)
         return OpenAICompatibleClient(config, log_path=str(log_path) if log_path else None)
 
+    def _resolve_initial_session_title(self, session, topic: str) -> tuple[str, str]:
+        fallback = _derive_session_title(topic)
+        config = repository.get_service_config(session, "chat_service")
+        client = self._build_client(config)
+        if not client:
+            return fallback, "fallback"
+        try:
+            response = client.chat_completion_result(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Stone session title summarizer.\n"
+                            "Write a concise session title for the first user message.\n"
+                            "Return only the title text with no quotes, no numbering, and no extra commentary.\n"
+                            "Keep it specific, natural, and compact."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "First user message:\n"
+                            f"{topic}\n\n"
+                            "Prefer a short title in the same language as the message."
+                        ),
+                    },
+                ],
+                model=client.config.model,
+                temperature=0.15,
+                max_tokens=32,
+                timeout=20,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Session title summarization failed; using fallback title. error=%s", exc)
+            return fallback, "fallback"
+        candidate = _normalize_generated_session_title(response.content)
+        if candidate:
+            return candidate, "llm"
+        return fallback, "fallback"
+
     def _stream_key(self, state: WritingStreamState, stage: str, *, suffix: str | None = None) -> str:
         key = f"{state.id}:{stage}"
         return f"{key}:{suffix}" if suffix else key
@@ -524,8 +581,45 @@ class WritingAgentService:
 
 
 def _derive_session_title(topic: str) -> str:
-    clean = re.sub(r"\s+", " ", str(topic or "").strip())
-    return clean[:48] or "New writing session"
+    clean = normalize_whitespace(str(topic or "").strip())
+    if not clean:
+        return "New writing session"
+    for marker in ("\n", "。", "！", "？", ".", "!", "?", "；", ";", "，", ",", "：", ":"):
+        head, *_tail = clean.split(marker, 1)
+        clipped = head.strip()
+        if 4 <= len(clipped) <= 24:
+            return clipped
+    return clean[:24] or "New writing session"
+
+
+def _should_auto_title_session(title: str | None) -> bool:
+    normalized = normalize_whitespace(str(title or "").strip()).casefold()
+    if not normalized:
+        return True
+    return normalized in {
+        "new writing session",
+        "new session",
+        "untitled session",
+        "新建写作会话",
+        "新建会话",
+        "未命名会话",
+        "等待主题",
+    }
+
+
+def _normalize_generated_session_title(value: Any) -> str:
+    text = _clean_model_text(value)
+    if not text:
+        return ""
+    text = normalize_whitespace(text)
+    text = text.splitlines()[0].strip()
+    text = re.sub(r"^(title|session title|标题)\s*[:：-]\s*", "", text, flags=re.IGNORECASE).strip()
+    text = text.strip("`\"'“”‘’[](){}<>")
+    if not text:
+        return ""
+    if _should_auto_title_session(text):
+        return ""
+    return text[:24]
 
 from app.agents.stone.writing.streaming import _build_writer_message_payload, _format_sse
 from app.agents.stone.writing.text_utils import _fit_word_count, _light_trim_to_word_count

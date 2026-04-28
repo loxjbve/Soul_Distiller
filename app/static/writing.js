@@ -27,7 +27,15 @@ if (shell) {
         sending: false,
         turnElements: new Map(),
         emptyStateEl: null,
+        selectedTurnKey: null,
+        timelineTrackEl: null,
+        timelineDetailEl: null,
+        sessionDetails: new Map(),
     };
+
+    if (state.currentSessionId) {
+        state.sessionDetails.set(state.currentSessionId, state.currentSession);
+    }
 
     const elements = {
         sessionList: shell.querySelector("[data-session-list]"),
@@ -60,9 +68,9 @@ if (shell) {
         elements.newSession?.addEventListener("click", async () => {
             const payload = await fetchJson(`/api/projects/${state.projectId}/writing/sessions`, {
                 method: "POST",
-                body: JSON.stringify({ title: ui.new_session || "新建会话" }),
+                body: JSON.stringify({}),
             });
-            syncSessionSummary(payload);
+            syncSessionSummary(payload, { promote: true });
             await loadSession(payload.id);
         });
 
@@ -84,6 +92,7 @@ if (shell) {
             syncSessionSummary(payload);
             if (state.currentSession) {
                 state.currentSession.title = payload.title;
+                state.currentSession.has_custom_title = payload.has_custom_title ?? Boolean(payload.title);
             }
             renderSessions();
             renderHeader();
@@ -106,9 +115,9 @@ if (shell) {
             if (!state.sessions.length) {
                 const created = await fetchJson(`/api/projects/${state.projectId}/writing/sessions`, {
                     method: "POST",
-                    body: JSON.stringify({ title: ui.new_session || "新建会话" }),
+                    body: JSON.stringify({}),
                 });
-                syncSessionSummary(created);
+                syncSessionSummary(created, { promote: true });
                 state.sessions = [created];
             }
             await loadSession(state.sessions[0].id);
@@ -192,14 +201,20 @@ if (shell) {
             if (elements.messageInput) {
                 elements.messageInput.value = "";
             }
+            if (state.currentSession && payload.session_title) {
+                state.currentSession.title = payload.session_title;
+                state.currentSession.has_custom_title = payload.has_custom_title ?? true;
+            }
             syncSessionSummary({
                 id: state.currentSessionId,
-                title: state.currentSession?.title,
+                title: payload.session_title || state.currentSession?.title,
+                has_custom_title: payload.has_custom_title ?? state.currentSession?.has_custom_title,
                 created_at: state.currentSession?.created_at,
                 last_active_at: new Date().toISOString(),
                 timeline_turn_count: state.currentSession?.turns?.length || 1,
-            });
+            }, { promote: true });
             renderSessions();
+            renderHeader();
             openStream(payload.stream_id);
         } catch (error) {
             appendLocalError(error?.message || String(error));
@@ -264,7 +279,7 @@ if (shell) {
                 created_at: state.currentSession?.created_at,
                 last_active_at: payload.created_at || new Date().toISOString(),
                 timeline_turn_count: state.currentSession?.turns?.length || 0,
-            });
+            }, { promote: true });
             renderSessions();
             restoreComposer();
         });
@@ -289,9 +304,12 @@ if (shell) {
     }
 
     async function loadSession(sessionId) {
+        cacheCurrentSession();
         const payload = await fetchJson(`/api/projects/${state.projectId}/writing/sessions/${sessionId}`);
         state.currentSessionId = sessionId;
-        state.currentSession = payload || { turns: [] };
+        state.currentSession = mergeSessionDetail(sessionId, payload || { turns: [] });
+        state.sessionDetails.set(sessionId, state.currentSession);
+        state.selectedTurnKey = null;
         syncCurrentUsageSummary();
         syncSessionSummary(payload);
         shell.dataset.sessionsOpen = "false";
@@ -315,8 +333,11 @@ if (shell) {
             elements.channelTitle.textContent = state.channelTitle || "";
         }
         if (elements.sessionTitle) {
-            elements.sessionTitle.textContent =
-                state.currentSession?.title || ui.untitled_session || "未命名会话";
+            const sessionTitle = state.currentSession?.has_custom_title
+                ? (state.currentSession?.title || ui.untitled_session || "未命名会话")
+                : (ui.untitled_session || "未命名会话");
+            elements.sessionTitle.textContent = sessionTitle;
+            elements.sessionTitle.classList.toggle("is-pending", !state.currentSession?.has_custom_title);
         }
     }
 
@@ -440,10 +461,25 @@ if (shell) {
         state.sessions.forEach((item) => {
             const button = document.createElement("button");
             button.type = "button";
-            button.className = `writing-session-item ${item.id === state.currentSessionId ? "is-active" : ""}`;
+            button.className = `writing-session-item ${item.id === state.currentSessionId ? "is-active" : ""} ${item.has_custom_title ? "" : "is-untitled"}`.trim();
+            const displayTitle = item.has_custom_title
+                ? (item.title || ui.untitled_session || "未命名会话")
+                : (ui.untitled_session || "未命名会话");
+            button.title = displayTitle;
+            const turnCount = Number(item.turn_count || 0);
+            const turnLabel = turnCount > 0
+                ? (bootstrap.locale === "en-US" ? `${turnCount} turns` : `${turnCount} 条`)
+                : (bootstrap.locale === "en-US" ? "Pending" : "待开始");
+            const sessionLabel = item.id === state.currentSessionId
+                ? (bootstrap.locale === "en-US" ? "Current" : "当前")
+                : (bootstrap.locale === "en-US" ? "Session" : "会话");
             button.innerHTML = `
-                <strong>${escapeHtml(item.title || ui.untitled_session || "未命名会话")}</strong>
-                <small>${escapeHtml(String(item.turn_count || 0))} 条 ${escapeHtml(formatSessionTime(item.last_active_at || item.created_at))}</small>
+                <span class="writing-session-item__topline">
+                    <span class="writing-session-item__status">${sessionLabel}</span>
+                    <span class="writing-session-item__count">${escapeHtml(turnLabel)}</span>
+                </span>
+                <strong>${escapeHtml(displayTitle)}</strong>
+                <small>${escapeHtml(formatSessionTime(item.last_active_at || item.created_at))}</small>
             `;
             button.addEventListener("click", () => {
                 void loadSession(item.id);
@@ -458,46 +494,65 @@ if (shell) {
         }
         state.turnElements = new Map();
         state.emptyStateEl = null;
+        state.timelineTrackEl = null;
+        state.timelineDetailEl = null;
         elements.chatList.innerHTML = "";
         const turns = Array.isArray(state.currentSession?.turns) ? state.currentSession.turns : [];
         if (!turns.length) {
-            const empty = document.createElement("p");
-            empty.className = "muted";
-            empty.textContent = ui.empty_turns || "还没有执行记录，先输入一条写作指令开始。";
+            const empty = document.createElement("section");
+            empty.className = "writing-empty-state";
+            empty.innerHTML = `
+                <strong>${escapeHtml(ui.untitled_session || "等待主题")}</strong>
+                <p>${escapeHtml(ui.empty_turns || "还没有写作记录，先发第一句要求开始。")}</p>
+                <span>${escapeHtml(ui.message_hint || "")}</span>
+            `;
             state.emptyStateEl = empty;
             elements.chatList.appendChild(empty);
             return;
+        }
+        const timeline = createTimelineShell();
+        elements.chatList.appendChild(timeline);
+        if (!state.selectedTurnKey || !turns.some((turn) => getTurnKey(turn) === state.selectedTurnKey)) {
+            const runningTurn = turns.find((turn) => String(turn.stream_state || "") === "streaming");
+            state.selectedTurnKey = getTurnKey(runningTurn || turns[turns.length - 1]);
         }
         turns.forEach((turn) => {
             const element = createTurnElement(turn);
             const key = getTurnKey(turn);
             state.turnElements.set(key, element);
-            elements.chatList.appendChild(element);
+            state.timelineTrackEl.appendChild(element);
         });
+        renderSelectedTurnDetails();
+    }
+
+    function createTimelineShell() {
+        const timeline = document.createElement("section");
+        timeline.className = "writing-agent-timeline";
+
+        const track = document.createElement("div");
+        track.className = "writing-agent-timeline__track";
+        track.setAttribute("role", "list");
+        track.addEventListener("wheel", handleTimelineWheel, { passive: false });
+        timeline.appendChild(track);
+
+        const detail = document.createElement("article");
+        detail.className = "writing-agent-timeline__detail";
+        detail.setAttribute("aria-live", "polite");
+        timeline.appendChild(detail);
+
+        state.timelineTrackEl = track;
+        state.timelineDetailEl = detail;
+        return timeline;
     }
 
     function createTurnElement(turn) {
-        const row = document.createElement("article");
-        const inner = document.createElement("div");
-        inner.className = "group-message__inner";
+        const row = document.createElement("button");
+        row.type = "button";
+        row.setAttribute("role", "listitem");
 
         const node = classifyTurn(turn);
-        const panel = document.createElement(node.kind === "command" ? "section" : "details");
-        panel.className = "group-message__panel";
-        if (panel instanceof HTMLDetailsElement) {
-            panel.open = shouldKeepPanelOpen(node, turn);
-            panel.addEventListener("toggle", () => {
-                row.classList.toggle("is-collapsed", !panel.open);
-            });
-        }
-
-        const summary = document.createElement(node.kind === "command" ? "div" : "summary");
+        const summary = document.createElement("div");
         summary.className = "group-message__summary";
-        if (panel instanceof HTMLDetailsElement) {
-            summary.addEventListener("click", () => {
-                panel.dataset.userToggled = "true";
-            });
-        }
 
         const metaLine = document.createElement("div");
         metaLine.className = "group-message__summary-top";
@@ -531,53 +586,18 @@ if (shell) {
         const metricsWrap = document.createElement("div");
         metricsWrap.className = "group-message__metrics";
         summary.appendChild(metricsWrap);
-        panel.appendChild(summary);
-
-        const panelBody = document.createElement("div");
-        panelBody.className = "group-message__panel-body";
-
-        const bubble = document.createElement("div");
-        bubble.className = "group-message__bubble";
-        if (turn.role === "user" || turn.render_mode === "plain") {
-            bubble.classList.add("group-message__bubble--plain");
-            bubble.textContent = turn.content || "";
-        } else {
-            renderMarkdownInto(bubble, turn.content || "");
-        }
-        panelBody.appendChild(bubble);
-
-        const details = document.createElement("details");
-        details.className = "group-message__details";
-        details.hidden = true;
-        details.addEventListener("toggle", () => {
-            details.dataset.userToggled = "true";
+        row.appendChild(summary);
+        row.addEventListener("click", () => {
+            selectTurn(getTurnKey(turn));
+            centerTimelineCard(row);
         });
-
-        const detailsSummary = document.createElement("summary");
-        detailsSummary.textContent = "结构化详情";
-        details.appendChild(detailsSummary);
-
-        const detailsPre = document.createElement("pre");
-        details.appendChild(detailsPre);
-        panelBody.appendChild(details);
-
-        panel.appendChild(panelBody);
-
-        inner.appendChild(panel);
-        row.appendChild(inner);
         row._refs = {
-            panel,
             summary,
             kindChip,
             title,
             statusChip,
             tail,
             metricsWrap,
-            bubble,
-            details,
-            detailsPre,
-            lastContent: null,
-            lastRenderMode: null,
         };
         updateTurnElement(row, turn);
         return row;
@@ -595,53 +615,189 @@ if (shell) {
         const node = classifyTurn(turn);
         row.className = `group-message group-message--${node.kind} group-message--status-${node.status}`;
         row.classList.toggle("is-streaming", node.status === "running");
-        row.classList.toggle("is-collapsed", refs.panel instanceof HTMLDetailsElement && !refs.panel.open);
+        row.classList.toggle("is-selected", getTurnKey(turn) === state.selectedTurnKey);
 
         refs.kindChip.textContent = node.kindLabel;
         refs.title.textContent = resolveTurnLabel(turn, node);
         refs.statusChip.textContent = node.statusLabel;
         refs.tail.textContent = `${resolveActorName(turn)} · ${formatMessageTime(turn.created_at)}`;
 
-        if (refs.panel instanceof HTMLDetailsElement && !refs.panel.dataset.userToggled) {
-            refs.panel.open = shouldKeepPanelOpen(node, turn);
-        }
-
         const keyFacts = buildKeyFacts(turn, node);
         refs.metricsWrap.innerHTML = keyFacts
             .map((item) => `<span class="group-message__metric">${escapeHtml(item)}</span>`)
             .join("");
         refs.metricsWrap.hidden = !keyFacts.length;
+        if (getTurnKey(turn) === state.selectedTurnKey) {
+            renderSelectedTurnDetails();
+        }
+    }
 
-        const shouldRenderPlain =
-            turn.role === "user" ||
-            turn.render_mode === "plain" ||
-            turn.stream_state === "streaming";
-        const content = turn.content || "";
-        const renderSignature = `${shouldRenderPlain ? "plain" : "markdown"}::${content}`;
-        if (refs.lastRenderMode !== renderSignature) {
-            refs.bubble.classList.toggle("group-message__bubble--plain", shouldRenderPlain);
-            if (shouldRenderPlain) {
-                refs.bubble.textContent = content;
-            } else {
-                renderMarkdownInto(refs.bubble, content);
-            }
-            refs.lastRenderMode = renderSignature;
+    function selectTurn(key) {
+        state.selectedTurnKey = key;
+        state.turnElements.forEach((element, itemKey) => {
+            element.classList.toggle("is-selected", itemKey === key);
+        });
+        renderSelectedTurnDetails();
+    }
+
+    function centerTimelineCard(element) {
+        if (!element || !state.timelineTrackEl) {
+            return;
+        }
+        const track = state.timelineTrackEl;
+        const targetLeft = element.offsetLeft - (track.clientWidth - element.offsetWidth) / 2;
+        track.scrollTo({
+            left: Math.max(0, targetLeft),
+            behavior: "smooth",
+        });
+    }
+
+    function handleTimelineWheel(event) {
+        const track = event.currentTarget;
+        if (!track || track.scrollWidth <= track.clientWidth) {
+            return;
+        }
+        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        if (!delta) {
+            return;
+        }
+        event.preventDefault();
+        track.scrollLeft += delta;
+    }
+
+    function getSelectedTurn() {
+        const turns = Array.isArray(state.currentSession?.turns) ? state.currentSession.turns : [];
+        if (!turns.length) {
+            return null;
+        }
+        return turns.find((turn) => getTurnKey(turn) === state.selectedTurnKey) || turns[turns.length - 1];
+    }
+
+    function renderSelectedTurnDetails() {
+        if (!state.timelineDetailEl) {
+            return;
+        }
+        const turn = getSelectedTurn();
+        if (!turn) {
+            state.timelineDetailEl.innerHTML = "";
+            return;
+        }
+        const node = classifyTurn(turn);
+        const keyFacts = buildKeyFacts(turn, node);
+        const detailFacts = buildDetailFacts(turn, node, keyFacts);
+        state.timelineDetailEl.className = `writing-agent-timeline__detail group-message--${node.kind} group-message--status-${node.status}`;
+        state.timelineDetailEl.innerHTML = `
+            <div class="writing-agent-detail__header">
+                <div>
+                    <span class="group-message__kind-chip">${escapeHtml(node.kindLabel)}</span>
+                    <h2>${escapeHtml(resolveTurnLabel(turn, node))}</h2>
+                </div>
+                <div class="group-message__summary-meta">
+                    <span class="group-message__status-chip">${escapeHtml(node.statusLabel)}</span>
+                    <span class="group-message__meta-tail">${escapeHtml(`${resolveActorName(turn)} · ${formatMessageTime(turn.created_at)}`)}</span>
+                </div>
+            </div>
+            <div class="writing-agent-detail__summary">
+                ${detailFacts.map((item) => `
+                    <div class="writing-agent-detail__fact">
+                        <span>${escapeHtml(item.label)}</span>
+                        <strong>${escapeHtml(item.value)}</strong>
+                    </div>
+                `).join("")}
+            </div>
+            <div class="writing-agent-detail__body"></div>
+        `;
+        const body = state.timelineDetailEl.querySelector(".writing-agent-detail__body");
+        if (!body) {
+            return;
+        }
+        if (node.status === "running") {
+            const streamPanel = document.createElement("section");
+            streamPanel.className = "writing-agent-detail__stream";
+            const label = document.createElement("span");
+            label.className = "writing-agent-detail__label";
+            label.textContent = "流式文本";
+            const bubble = document.createElement("div");
+            bubble.className = "group-message__bubble group-message__bubble--plain";
+            bubble.textContent = turn.content || "等待输出…";
+            streamPanel.appendChild(label);
+            streamPanel.appendChild(bubble);
+            body.appendChild(streamPanel);
+            return;
         }
 
-        const debugPayload = turn.trace?.debug;
-        const hasDebug = Boolean(debugPayload && Object.keys(debugPayload).length);
-        refs.details.hidden = !hasDebug;
-        if (hasDebug) {
-            refs.detailsPre.textContent = JSON.stringify(debugPayload, null, 2);
-            if (!refs.details.dataset.userToggled) {
-                refs.details.open = node.status === "running";
+        const outputPanel = document.createElement("section");
+        outputPanel.className = "writing-agent-detail__output";
+        const outputLabel = document.createElement("span");
+        outputLabel.className = "writing-agent-detail__label";
+        outputLabel.textContent = "原文";
+        const output = document.createElement("div");
+        output.className = "group-message__bubble group-message__bubble--plain";
+        output.textContent = turn.content || "无";
+        outputPanel.appendChild(outputLabel);
+        outputPanel.appendChild(output);
+        body.appendChild(outputPanel);
+    }
+
+    function buildDetailFacts(turn, node, keyFacts) {
+        const debug = turn.trace?.debug && typeof turn.trace.debug === "object" ? turn.trace.debug : {};
+        const usage = debug.usage && typeof debug.usage === "object" ? debug.usage : null;
+        const facts = [
+            { label: "状态", value: node.statusLabel },
+            { label: "执行者", value: resolveActorName(turn) },
+            { label: "阶段", value: normalizeStageLabel("", turn.message_kind, turn.stage || turn.trace?.stage) || turn.stage || turn.message_kind || "步骤" },
+        ];
+        if (usage) {
+            const total = Number(usage.total_tokens || usage.prompt_tokens || 0) + Number(!usage.total_tokens ? usage.completion_tokens || 0 : 0);
+            if (total > 0) {
+                facts.push({ label: "Token", value: formatTokenCount(total) });
             }
         }
-        row.classList.toggle("is-collapsed", refs.panel instanceof HTMLDetailsElement && !refs.panel.open);
+        keyFacts.slice(0, 4).forEach((fact) => {
+            const [label, ...rest] = String(fact).split(":");
+            facts.push({
+                label: rest.length ? label.trim() : "要点",
+                value: (rest.length ? rest.join(":") : fact).trim(),
+            });
+        });
+        return facts.filter((item) => item.value).slice(0, 8);
     }
 
     function getTurnKey(turn) {
         return String(turn.stream_key || turn.id || "");
+    }
+
+    function cacheCurrentSession() {
+        if (!state.currentSessionId || !state.currentSession) {
+            return;
+        }
+        state.sessionDetails.set(state.currentSessionId, state.currentSession);
+    }
+
+    function mergeSessionDetail(sessionId, payload) {
+        const incoming = payload && typeof payload === "object" ? payload : { turns: [] };
+        const cached = state.sessionDetails.get(sessionId);
+        if (!cached || !Array.isArray(cached.turns) || !Array.isArray(incoming.turns)) {
+            return incoming;
+        }
+        const incomingKeys = new Set(incoming.turns.map((turn) => getTurnKey(turn)));
+        const cachedHasExtraTurns = cached.turns.some((turn) => !incomingKeys.has(getTurnKey(turn)));
+        return {
+            ...cached,
+            ...incoming,
+            turns: cachedHasExtraTurns && cached.turns.length >= incoming.turns.length ? cached.turns : incoming.turns,
+        };
+    }
+
+    function shouldFollowStreamingTurn(nextKey) {
+        if (!state.selectedTurnKey) {
+            return true;
+        }
+        if (state.selectedTurnKey === nextKey) {
+            return true;
+        }
+        const selectedTurn = getSelectedTurn();
+        return Boolean(selectedTurn && String(selectedTurn.stream_state || "") === "streaming");
     }
 
     function clearEmptyState() {
@@ -687,14 +843,30 @@ if (shell) {
         }
 
         const key = getTurnKey(currentTurn);
+        const followStreaming = currentTurn.stream_state === "streaming" && shouldFollowStreamingTurn(key);
+        if (!state.selectedTurnKey || followStreaming) {
+            state.selectedTurnKey = key;
+        }
         clearEmptyState();
         const existingElement = state.turnElements.get(key);
         if (existingElement) {
             updateTurnElement(existingElement, currentTurn);
         } else if (elements.chatList) {
+            if (!state.timelineTrackEl) {
+                elements.chatList.innerHTML = "";
+                elements.chatList.appendChild(createTimelineShell());
+            }
             const element = createTurnElement(currentTurn);
             state.turnElements.set(key, element);
-            elements.chatList.appendChild(element);
+            state.timelineTrackEl.appendChild(element);
+        }
+        cacheCurrentSession();
+        selectTurn(state.selectedTurnKey);
+        if (followStreaming) {
+            const selectedElement = state.turnElements.get(state.selectedTurnKey);
+            if (selectedElement) {
+                centerTimelineCard(selectedElement);
+            }
         }
         if (shouldStick) {
             scrollToBottom();
@@ -747,21 +919,22 @@ if (shell) {
         };
     }
 
-    function syncSessionSummary(detail) {
+    function syncSessionSummary(detail, { promote = false } = {}) {
+        const existing = state.sessions.find((item) => item.id === detail.id) || {};
         const summary = {
             id: detail.id,
-            title: detail.title,
-            session_kind: detail.session_kind,
-            created_at: detail.created_at,
-            last_active_at: detail.last_active_at,
+            title: detail.title ?? existing.title,
+            has_custom_title: detail.has_custom_title ?? existing.has_custom_title ?? Boolean(detail.title),
+            session_kind: detail.session_kind ?? existing.session_kind,
+            created_at: detail.created_at ?? existing.created_at,
+            last_active_at: detail.last_active_at ?? existing.last_active_at,
             turn_count: detail.timeline_turn_count || detail.turn_count || detail.turns?.length || 0,
         };
-        const index = state.sessions.findIndex((item) => item.id === summary.id);
-        if (index >= 0) {
-            state.sessions[index] = summary;
-        } else {
-            state.sessions.unshift(summary);
+        if (promote || !existing.id) {
+            state.sessions = [summary, ...state.sessions.filter((item) => item.id !== summary.id)];
+            return;
         }
+        state.sessions = state.sessions.map((item) => (item.id === summary.id ? summary : item));
     }
 
     function closeStream() {
@@ -840,6 +1013,9 @@ if (shell) {
         const value = String(name || "").trim();
         if (!value) {
             return "";
+        }
+        if (value === "?? Agent" || value === "？? Agent" || value === "？？Agent" || value === "？？ Agent") {
+            return "写作 Agent";
         }
         if (value === "鍐欎綔 Agent" || value === "鍐" || value === "写作 Agent") {
             return "写作 Agent";
@@ -1002,9 +1178,12 @@ if (shell) {
         };
 
         if (stage === "generation_packet") {
-            pushFact("画像", debug.profile_count);
-            pushFact("锚点", debug.source_anchor_count);
-            pushFact("分析", debug.analysis_ready ? "就绪" : "降级");
+            const baselineDebug = debug.baseline && typeof debug.baseline === "object" ? debug.baseline : debug;
+            pushFact("画像", baselineDebug.profile_count);
+            pushFact("锚点", baselineDebug.source_anchor_count);
+            if (typeof baselineDebug.analysis_ready === "boolean") {
+                pushFact("分析", baselineDebug.analysis_ready ? "就绪" : "降级");
+            }
         } else if (stage === "request_adapter_v3") {
             pushFact("镜头", debug.value_lens);
             pushFact("距离", debug.distance);

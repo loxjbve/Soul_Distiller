@@ -47,7 +47,7 @@ def create_writing_session_api(
         session,
         project_id=project_id,
         session_kind="writing",
-        title=payload.title or "New writing session",
+        title=payload.title,
     )
     return runtime._ok_response("Writing session created.", **runtime._serialize_chat_session(chat_session))
 
