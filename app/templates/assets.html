@@ -253,11 +253,18 @@
                 </div>
                 <div class="panel-body panel-body--tight">
                     {% if versions %}
-                        <div class="version-list panel-scroll" data-panel-scroll>
+                        <div class="version-list panel-scroll mini-card-strip" data-panel-scroll data-mini-card-strip id="asset-version-list">
                             {% for version in versions %}
-                                <article class="version-card">
+                                <article
+                                    class="version-card mini-card"
+                                    data-mini-card
+                                    data-mini-card-id="{{ version.id }}"
+                                    data-version-number="v{{ version.version_number }}"
+                                    data-version-time="{{ version.published_at.strftime('%Y-%m-%d %H:%M') if version.published_at else '--' }}"
+                                    data-version-kind="{{ asset_label }}"
+                                >
                                     <div>
-                                        <strong>v{{ version.version_number }}</strong>
+                                        <strong class="mini-card__title">v{{ version.version_number }}</strong>
                                         <p>{{ version.published_at.strftime('%Y-%m-%d %H:%M') if version.published_at else '--' }}</p>
                                     </div>
                                     <span class="status-chip tone-ready">{{ asset_label }}</span>

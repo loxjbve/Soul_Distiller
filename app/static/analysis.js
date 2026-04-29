@@ -1,5 +1,6 @@
 import {
     clampPercent,
+    createMiniCardController,
     escapeHtml,
     fetchJson,
     formatDateTime,
@@ -25,6 +26,8 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         liveOutputByRequest: {},
         activeRequestKey: null,
         selectedFacetKey: null,
+        laneController: null,
+        resultController: null,
         stream: null,
         pollTimer: null,
     };
@@ -243,20 +246,19 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         const activeFacet = facets.find(f => f.facet_key === activeFacetKey);
         const status = normalizeStatus(activeFacet?.status || "queued");
 
-        if (status === "completed" || status === "failed") {
-            feedContainer.style.display = "none";
-            resultContainer.style.display = "flex";
-        } else {
-            feedContainer.style.display = "flex";
-            resultContainer.style.display = "none";
-        }
+        feedContainer.style.display = "flex";
+        resultContainer.style.display = status === "completed" || status === "failed" ? "flex" : "none";
     }
 
     function renderAgentLanes(payload) {
         if (!elements.laneStrip) {
             return;
         }
+        state.laneController?.destroy?.();
+        state.laneController = null;
         elements.laneStrip.innerHTML = "";
+        elements.laneStrip.classList.add("mini-card-strip");
+        elements.laneStrip.dataset.miniCardStrip = "";
 
         const facets = sortFacetsForQueue(payload?.facets || []);
 
@@ -270,19 +272,42 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             const status = normalizeStatus(facet.status || "queued");
             const button = document.createElement("button");
             button.type = "button";
-            button.className = `agent-lamp status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}`;
+            button.className = `agent-lamp mini-card status-${escapeHtml(status)}${state.selectedFacetKey === facet.facet_key ? " is-selected" : ""}`;
+            button.dataset.miniCard = "";
+            button.dataset.miniCardId = facet.facet_key || "";
             button.dataset.facetSelect = facet.facet_key || "";
             button.innerHTML = `
-                <span class="agent-lamp__label">${escapeHtml(findings.label || facet.facet_key || "维度")}</span>
-                <span class="agent-lamp__meta">${escapeHtml(buildAgentLampMeta(facet))}</span>
+                <span class="agent-lamp__label mini-card__title">${escapeHtml(findings.label || facet.facet_key || "维度")}</span>
+                <span class="agent-lamp__meta mini-card__meta">${escapeHtml(statusLabel(status))}</span>
                 <span class="agent-lamp__dot" aria-hidden="true"></span>
             `;
-            button.addEventListener("click", () => {
-                setSelectedFacet(facet.facet_key || null);
-            });
             fragment.appendChild(button);
         });
         elements.laneStrip.appendChild(fragment);
+        state.laneController = createMiniCardController({
+            root: elements.laneStrip.parentElement || elements.laneStrip,
+            strip: elements.laneStrip,
+            selectedId: state.selectedFacetKey,
+            getItem: (key) => {
+                const facet = facets.find((item) => String(item.facet_key || "") === String(key));
+                if (!facet) {
+                    return null;
+                }
+                const findings = facet.findings || {};
+                const status = normalizeStatus(facet.status || "queued");
+                return {
+                    id: key,
+                    title: findings.label || facet.facet_key || "维度",
+                    status: statusLabel(status),
+                    meta: buildAgentLampMeta(facet),
+                    facts: [
+                        `阶段: ${phaseLabel(findings.phase || status)}`,
+                        `${Number(findings.hit_count || facet.evidence?.length || 0)} 条证据`,
+                    ],
+                };
+            },
+            onSelect: (key) => setSelectedFacet(key || null),
+        });
     }
 
     function renderFacetQueue(facets, runStatus) {
@@ -335,18 +360,21 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
 
         const fragment = document.createDocumentFragment();
         events.slice(0, 200).forEach((event) => {
-            const line = document.createElement("div");
+            const line = document.createElement("details");
             const text = [
                 event.event_type || "event",
                 event.message || "",
             ].filter(Boolean).join(" ");
-            line.className = `analysis-event-line level-${escapeHtml((event.level || "info").toLowerCase())}`;
-            line.title = event.payload && Object.keys(event.payload).length
-                ? JSON.stringify(event.payload, null, 2)
-                : "";
+            line.className = `analysis-event-line event-item level-${escapeHtml((event.level || "info").toLowerCase())}`;
             line.innerHTML = `
-                <span class="analysis-event-line__text">${escapeHtml(text)}</span>
-                <span class="analysis-event-line__time">${escapeHtml(formatDateTime(event.created_at))}</span>
+                <summary class="event-item-summary">
+                    <span class="analysis-event-line__text">${escapeHtml(trimText(text, 110))}</span>
+                    <span class="analysis-event-line__time">${escapeHtml(formatDateTime(event.created_at))}</span>
+                </summary>
+                <div class="event-item-body">
+                    <p>${escapeHtml(text || "暂无事件详情。")}</p>
+                    ${event.payload && Object.keys(event.payload).length ? `<pre>${escapeHtml(JSON.stringify(event.payload, null, 2))}</pre>` : ""}
+                </div>
             `;
             fragment.appendChild(line);
         });
@@ -382,7 +410,11 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
         if (!elements.resultNav) {
             return;
         }
+        state.resultController?.destroy?.();
+        state.resultController = null;
         elements.resultNav.innerHTML = "";
+        elements.resultNav.classList.add("mini-card-strip");
+        elements.resultNav.dataset.miniCardStrip = "";
 
         const fragment = document.createDocumentFragment();
         orderedFacets.forEach((facet, index) => {
@@ -390,21 +422,44 @@ if (bootstrap?.project_id && bootstrap?.run_id) {
             const status = normalizeStatus(facet.status || "queued");
             const button = document.createElement("button");
             button.type = "button";
-            button.className = `analysis-result-tab status-${escapeHtml(status)}${activeFacet?.facet_key === facet.facet_key ? " is-active" : ""}`;
+            button.className = `analysis-result-tab mini-card status-${escapeHtml(status)}${activeFacet?.facet_key === facet.facet_key ? " is-active is-selected" : ""}`;
+            button.dataset.miniCard = "";
+            button.dataset.miniCardId = facet.facet_key || "";
             button.innerHTML = `
                 <div class="analysis-result-tab__head">
                     <span class="analysis-result-tab__index">${escapeHtml(String(index + 1).padStart(2, "0"))}</span>
-                    <strong>${escapeHtml(findings.label || facet.facet_key || "维度")}</strong>
+                    <strong class="mini-card__title">${escapeHtml(findings.label || facet.facet_key || "维度")}</strong>
                     <span class="analysis-result-tab__dot" aria-hidden="true"></span>
                 </div>
-                <div class="analysis-result-tab__summary">${escapeHtml(trimText(findings.summary || buildFacetLead(facet), 88))}</div>
+                <div class="analysis-result-tab__summary mini-card__meta">${escapeHtml(statusLabel(status))}</div>
             `;
-            button.addEventListener("click", () => {
-                setSelectedFacet(facet.facet_key || null);
-            });
             fragment.appendChild(button);
         });
         elements.resultNav.appendChild(fragment);
+        state.resultController = createMiniCardController({
+            root: elements.resultNav.parentElement || elements.resultNav,
+            strip: elements.resultNav,
+            selectedId: activeFacet?.facet_key,
+            getItem: (key) => {
+                const facet = orderedFacets.find((item) => String(item.facet_key || "") === String(key));
+                if (!facet) {
+                    return null;
+                }
+                const findings = facet.findings || {};
+                const status = normalizeStatus(facet.status || "queued");
+                return {
+                    id: key,
+                    title: findings.label || facet.facet_key || "维度",
+                    status: statusLabel(status),
+                    meta: phaseLabel(findings.phase || status),
+                    facts: [
+                        `${Number(findings.hit_count || facet.evidence?.length || 0)} 条证据`,
+                        trimText(findings.summary || buildFacetLead(facet), 60),
+                    ],
+                };
+            },
+            onSelect: (key) => setSelectedFacet(key || null),
+        });
     }
 
     function buildResultDetail(facet, runStatus, orderedFacets) {

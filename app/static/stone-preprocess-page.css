@@ -274,14 +274,14 @@
 }
 
 .page-stone-preprocess .stone-preprocess-topic-lamps {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(264px, 1fr));
+    display: flex;
+    flex-direction: row;
     gap: 12px;
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
-    align-content: start;
-    padding-right: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 2px 4px 10px 0;
 }
 
 .page-stone-preprocess .stone-agent-lamp {
@@ -302,6 +302,17 @@
         box-shadow 160ms ease,
         background 160ms ease;
     outline: none;
+    flex: 0 0 178px;
+    min-height: 88px;
+}
+
+.page-stone-preprocess .stone-agent-lamp__preview,
+.page-stone-preprocess .stone-agent-lamp__meta {
+    display: none;
+}
+
+.page-stone-preprocess .stone-preprocess-document-detail {
+    margin-top: 12px;
 }
 
 .page-stone-preprocess .stone-agent-lamp:hover,

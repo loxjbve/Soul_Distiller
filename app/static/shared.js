@@ -149,6 +149,183 @@ export function setButtonBusy(button, busy, busyLabel) {
     button.textContent = busy ? (busyLabel || "Working...") : button.dataset.defaultLabel;
 }
 
+export function createMiniCardController({
+    root,
+    strip,
+    detailPanel = null,
+    getItem,
+    renderDetail,
+    onSelect = null,
+    selectedId = null,
+} = {}) {
+    const host = root || strip;
+    const track = strip || host?.querySelector?.("[data-mini-card-strip]");
+    if (!host || !track || typeof getItem !== "function") {
+        return { select: () => {}, destroy: () => {} };
+    }
+
+    let currentId = selectedId ? String(selectedId) : "";
+    let tooltip = host.querySelector(":scope > .mini-card-preview");
+    if (!tooltip) {
+        tooltip = document.createElement("div");
+        tooltip.className = "mini-card-preview";
+        tooltip.hidden = true;
+        host.appendChild(tooltip);
+    }
+
+    const cardSelector = "[data-mini-card]";
+
+    const cardId = (card) => String(card?.dataset?.miniCardId || "");
+    const cards = () => Array.from(track.querySelectorAll(cardSelector));
+
+    const centerCard = (card) => {
+        if (!card) {
+            return;
+        }
+        const targetLeft = card.offsetLeft - (track.clientWidth - card.offsetWidth) / 2;
+        track.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+    };
+
+    const renderTooltip = (card, event) => {
+        const item = getItem(cardId(card), card);
+        if (!item) {
+            return;
+        }
+        const facts = Array.isArray(item.facts) ? item.facts.slice(0, 2) : [];
+        tooltip.innerHTML = `
+            <strong>${escapeHtml(item.title || "详情")}</strong>
+            <span>${escapeHtml([item.status, item.meta].filter(Boolean).join(" · "))}</span>
+            ${facts.length ? `<p>${facts.map((fact) => escapeHtml(String(fact))).join(" / ")}</p>` : ""}
+        `;
+        tooltip.hidden = false;
+        positionTooltip(event);
+    };
+
+    const positionTooltip = (event) => {
+        if (tooltip.hidden) {
+            return;
+        }
+        const margin = 12;
+        const x = Math.min(window.innerWidth - tooltip.offsetWidth - margin, Math.max(margin, event.clientX + 14));
+        const y = Math.min(window.innerHeight - tooltip.offsetHeight - margin, Math.max(margin, event.clientY + 14));
+        tooltip.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    };
+
+    const hideTooltip = () => {
+        tooltip.hidden = true;
+    };
+
+    const select = (id, { center = true, notify = true } = {}) => {
+        currentId = String(id || "");
+        cards().forEach((card) => card.classList.toggle("is-selected", cardId(card) === currentId));
+        const item = getItem(currentId);
+        if (detailPanel && item) {
+            if (typeof renderDetail === "function") {
+                renderDetail(detailPanel, item);
+            } else {
+                renderMiniCardDetail(detailPanel, item);
+            }
+        }
+        if (notify && typeof onSelect === "function") {
+            onSelect(currentId, item);
+        }
+        if (center) {
+            centerCard(track.querySelector(`${cardSelector}[data-mini-card-id="${CSS.escape(currentId)}"]`));
+        }
+    };
+
+    const onClick = (event) => {
+        const card = event.target.closest(cardSelector);
+        if (!card || !track.contains(card)) {
+            return;
+        }
+        select(cardId(card));
+    };
+
+    const onMouseOver = (event) => {
+        const card = event.target.closest(cardSelector);
+        if (card && track.contains(card)) {
+            renderTooltip(card, event);
+        }
+    };
+
+    const onMouseMove = (event) => {
+        if (!tooltip.hidden) {
+            positionTooltip(event);
+        }
+    };
+
+    const onMouseOut = (event) => {
+        if (!event.relatedTarget || !event.target.closest(cardSelector)?.contains(event.relatedTarget)) {
+            hideTooltip();
+        }
+    };
+
+    const onWheel = (event) => {
+        if (event.target.closest("[data-detail-panel]")) {
+            return;
+        }
+        if (track.scrollWidth <= track.clientWidth) {
+            return;
+        }
+        const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? track.clientWidth : 1;
+        const rawDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        const delta = rawDelta * unit;
+        if (!delta) {
+            return;
+        }
+        event.preventDefault();
+        track.scrollBy({ left: delta, behavior: "auto" });
+    };
+
+    track.addEventListener("click", onClick);
+    track.addEventListener("mouseover", onMouseOver);
+    track.addEventListener("mousemove", onMouseMove);
+    track.addEventListener("mouseout", onMouseOut);
+    host.addEventListener("wheel", onWheel, { passive: false });
+    track.addEventListener("wheel", onWheel, { passive: false });
+
+    if (currentId) {
+        select(currentId, { center: false, notify: false });
+    }
+
+    return {
+        select,
+        destroy() {
+            track.removeEventListener("click", onClick);
+            track.removeEventListener("mouseover", onMouseOver);
+            track.removeEventListener("mousemove", onMouseMove);
+            track.removeEventListener("mouseout", onMouseOut);
+            host.removeEventListener("wheel", onWheel);
+            track.removeEventListener("wheel", onWheel);
+        },
+    };
+}
+
+export function renderMiniCardDetail(panel, item = {}) {
+    if (!panel) {
+        return;
+    }
+    const facts = Array.isArray(item.facts) ? item.facts : [];
+    panel.innerHTML = `
+        <div class="detail-panel__head">
+            <div>
+                <span class="status-chip">${escapeHtml(item.status || "详情")}</span>
+                <h3>${escapeHtml(item.title || "详情")}</h3>
+            </div>
+            ${item.meta ? `<span class="detail-panel__meta">${escapeHtml(item.meta)}</span>` : ""}
+        </div>
+        <div class="fact-grid">
+            ${facts.map((fact) => {
+                const label = typeof fact === "object" ? fact.label : "要点";
+                const value = typeof fact === "object" ? fact.value : fact;
+                return `<article class="fact-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></article>`;
+            }).join("")}
+        </div>
+        <div class="source-text-panel">${escapeHtml(item.body || item.raw || item.preview || "暂无详情。")}</div>
+    `;
+}
+
 export function markdownToHtml(source) {
     const codeBlocks = [];
     let text = String(source || "").replace(/```([\w-]+)?\n([\s\S]*?)```/g, (_, lang, code) => {

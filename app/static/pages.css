@@ -408,8 +408,17 @@
     }
 
     .page-project--telegram-parent .persona-stage-card--target .panel-scroll,
-    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target .panel-scroll {
+    .page-project--telegram-parent [data-telegram-persona-studio] .persona-stage-step--target .panel-scroll,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-card--target .panel-scroll,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-stage-step--target .panel-scroll {
+        max-height: min(46vh, 620px);
+        overflow-y: auto;
         padding-right: 4px;
+    }
+
+    .page-project--telegram-parent [data-telegram-persona-studio] .persona-top-user-card,
+    .page-project--telegram-child .telegram-bind-needed-form .persona-top-user-card {
+        min-height: 64px;
     }
 
     .page-project--telegram-parent .persona-stage-card--target > label,

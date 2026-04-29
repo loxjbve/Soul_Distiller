@@ -71,10 +71,11 @@
 
 .asset-stream-log {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 8px;
     max-height: 220px;
-    overflow: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
     font-family: var(--font-mono);
     font-size: 0.8rem;
 }
@@ -84,6 +85,10 @@
 }
 
 .asset-stream-log__entry {
+    appearance: none;
+    text-align: left;
+    color: inherit;
+    flex: 0 0 190px;
     padding: 8px 10px;
     border-radius: 10px;
     background: rgba(6, 10, 18, 0.45);
@@ -162,9 +167,12 @@
 
 .asset-document-status-board {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
     margin-bottom: 8px;
+    overflow-x: auto;
+    overflow-y: visible;
+    padding-bottom: 4px;
 }
 
 .asset-track-pill {
@@ -179,8 +187,8 @@
     background: rgba(255, 255, 255, 0.02);
     cursor: pointer;
     transition: all 0.2s ease;
-    min-width: 200px;
-    flex: 1;
+    min-width: 128px;
+    flex: 0 0 148px;
 }
 
 .asset-track-pill:hover {
@@ -228,6 +236,28 @@
     font-size: 0.7rem;
     color: var(--text-secondary);
     font-family: var(--font-mono);
+    max-width: 72px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.asset-inline-detail {
+    margin-top: 10px;
+}
+
+.version-list.mini-card-strip {
+    display: flex;
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 6px;
+}
+
+.version-list.mini-card-strip .version-card {
+    flex: 0 0 220px;
+    min-height: 132px;
 }
 
 @keyframes pulse-border {

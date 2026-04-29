@@ -1,8 +1,10 @@
 import {
     clampPercent,
+    createMiniCardController,
     escapeHtml,
     fetchJson,
     parseSseBlock,
+    renderMiniCardDetail,
     safeParseJson,
     setButtonBusy,
     showNotice,
@@ -63,6 +65,9 @@ if (bootstrap?.project_id) {
         chunkCount: 0,
         charCount: 0,
         logs: [],
+        logController: null,
+        documentController: null,
+        versionController: null,
         activePage: isStoneAsset ? "preview" : (splitDocumentKeys[0] || (elements.singleMarkdown ? "markdown" : "")),
         activeStreamDocument: "",
         documents: splitDocumentKeys.reduce((accumulator, key) => {
@@ -79,6 +84,7 @@ if (bootstrap?.project_id) {
     refreshDraftState();
     renderStoneAssetPreview();
     renderStreamLog();
+    bindVersionCards();
 
     elements.form?.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -285,6 +291,7 @@ if (bootstrap?.project_id) {
             parts.push(`batch ${payload.batch_index}/${payload.batch_total}`);
         }
         state.logs.unshift({
+            id: `${Date.now()}-${state.eventCount}-${state.logs.length}`,
             message: text,
             tone,
             meta: parts.join(" | "),
@@ -298,20 +305,50 @@ if (bootstrap?.project_id) {
         if (!elements.streamLog) {
             return;
         }
+        state.logController?.destroy?.();
+        state.logController = null;
         if (!state.logs.length) {
             elements.streamLog.innerHTML = `<div class="asset-stream-log__empty">No stream activity yet.</div>`;
             return;
         }
+        elements.streamLog.classList.add("mini-card-strip");
+        elements.streamLog.dataset.miniCardStrip = "";
         elements.streamLog.innerHTML = state.logs.map((entry) => `
-            <article class="asset-stream-log__entry" data-tone="${escapeHtml(entry.tone || "info")}">
+            <button
+                type="button"
+                class="asset-stream-log__entry mini-card"
+                data-tone="${escapeHtml(entry.tone || "info")}"
+                data-mini-card
+                data-mini-card-id="${escapeHtml(entry.id)}"
+            >
                 <div class="asset-stream-log__meta">
-                    <span>${escapeHtml(entry.meta || "stream")}</span>
+                    <span class="mini-card__title">${escapeHtml(entry.meta || "stream")}</span>
                     <span>${escapeHtml(entry.tone || "info")}</span>
                 </div>
-                <div>${escapeHtml(entry.message || "")}</div>
-                ${entry.failureReason ? `<div class="helper-text">${escapeHtml(entry.failureReason)}</div>` : ""}
-            </article>
+                <div class="mini-card__meta">${escapeHtml(entry.message || "")}</div>
+            </button>
         `).join("");
+        state.logController = createMiniCardController({
+            root: elements.streamLog.parentElement || elements.streamLog,
+            strip: elements.streamLog,
+            detailPanel: ensureAssetDetailPanel(elements.streamLog.parentElement || elements.streamLog, "asset-stream-detail"),
+            selectedId: state.logs[0]?.id,
+            getItem: (key) => {
+                const entry = state.logs.find((item) => String(item.id) === String(key));
+                if (!entry) return null;
+                return {
+                    id: entry.id,
+                    title: entry.meta || "stream",
+                    status: entry.tone || "info",
+                    meta: "Asset generation event",
+                    facts: [
+                        { label: "类型", value: entry.tone || "info" },
+                        { label: "事件数", value: String(state.eventCount) },
+                    ],
+                    body: [entry.message, entry.failureReason].filter(Boolean).join("\n\n"),
+                };
+            },
+        });
     }
 
     function bindEditorTabs() {
@@ -328,7 +365,9 @@ if (bootstrap?.project_id) {
         editorPages.forEach((page) => {
             page.classList.toggle("is-active", page.dataset.editorPage === pageKey);
         });
-        renderDocumentStatus();
+        if (!options.skipStatusRender) {
+            renderDocumentStatus();
+        }
         updateActiveDocumentLabel();
 
         if (options.scrollTab && elements.docStatus) {
@@ -536,13 +575,18 @@ if (bootstrap?.project_id) {
         if (!elements.docStatus) {
             return;
         }
+        state.documentController?.destroy?.();
+        state.documentController = null;
+        elements.docStatus.classList.add("mini-card-workbench");
         if (!splitDocumentKeys.length) {
             const hasContent = Boolean(elements.singleMarkdown?.value);
             elements.docStatus.innerHTML = `
                 <button
                     type="button"
-                    class="asset-track-pill ${hasContent ? "is-ready" : "is-missing"} ${state.activePage === "markdown" ? "is-active" : ""}"
+                    class="asset-track-pill mini-card ${hasContent ? "is-ready" : "is-missing"} ${state.activePage === "markdown" ? "is-active is-selected" : ""}"
                     data-document-jump="markdown"
+                    data-mini-card
+                    data-mini-card-id="markdown"
                 >
                     <div class="asset-track-pill__info">
                         <span class="asset-track-pill__dot"></span>
@@ -552,6 +596,7 @@ if (bootstrap?.project_id) {
                 </button>
             `;
             bindDocumentStatusActions();
+            bindDocumentStatusController(["markdown"]);
             updateActiveDocumentLabel();
             return;
         }
@@ -566,8 +611,10 @@ if (bootstrap?.project_id) {
             return `
                 <button
                     type="button"
-                    class="asset-track-pill ${statusClass} ${isActive ? "is-active" : ""} ${isStreaming ? "is-streaming" : ""}"
+                    class="asset-track-pill mini-card ${statusClass} ${isActive ? "is-active is-selected" : ""} ${isStreaming ? "is-streaming" : ""}"
                     data-document-jump="${escapeHtml(key)}"
+                    data-mini-card
+                    data-mini-card-id="${escapeHtml(key)}"
                 >
                     <div class="asset-track-pill__info">
                         <span class="asset-track-pill__dot"></span>
@@ -587,8 +634,10 @@ if (bootstrap?.project_id) {
             return `
                 <button
                     type="button"
-                    class="asset-track-pill is-ready ${isActive ? "is-active" : ""}"
+                    class="asset-track-pill mini-card is-ready ${isActive ? "is-active is-selected" : ""}"
                     data-document-jump="${escapeHtml(tab.key)}"
+                    data-mini-card
+                    data-mini-card-id="${escapeHtml(tab.key)}"
                     style="min-width: auto; flex: 0 0 auto;"
                 >
                     <div class="asset-track-pill__info">
@@ -600,7 +649,68 @@ if (bootstrap?.project_id) {
 
         elements.docStatus.innerHTML = documentPills + extraTabs;
         bindDocumentStatusActions();
+        bindDocumentStatusController([...splitDocumentKeys, "json", "prompt", "notes"]);
         updateActiveDocumentLabel();
+    }
+
+    function bindDocumentStatusController(keys) {
+        if (!elements.docStatus) {
+            return;
+        }
+        elements.docStatus.classList.add("mini-card-strip");
+        elements.docStatus.dataset.miniCardStrip = "";
+        state.documentController = createMiniCardController({
+            root: elements.docStatus.parentElement || elements.docStatus,
+            strip: elements.docStatus,
+            detailPanel: ensureAssetDetailPanel(elements.docStatus.parentElement || elements.docStatus, "asset-document-detail"),
+            selectedId: state.activePage,
+            getItem: (key) => buildDocumentDetailItem(key, keys),
+            onSelect: (key) => {
+                if (key) {
+                    activateEditorPage(key, { scrollTab: false, skipStatusRender: true });
+                }
+            },
+        });
+    }
+
+    function buildDocumentDetailItem(key, keys = []) {
+        const pageKey = keys.includes(key) ? key : state.activePage;
+        const label = pageKey === "markdown" && !splitDocumentKeys.length
+            ? (assetKind === "profile_report" ? "profile_report.md" : "draft.md")
+            : splitDocumentKeys.includes(pageKey)
+                ? resolveDocumentFilename(pageKey)
+                : pageKey;
+        const text = getDocumentText(pageKey);
+        return {
+            id: pageKey,
+            title: label,
+            status: text.trim() ? "ready" : "empty",
+            meta: pageKey,
+            facts: [
+                { label: "字符", value: String(text.length) },
+                { label: "状态", value: state.locked && state.activeStreamDocument === pageKey ? "生成中" : "可编辑" },
+            ],
+            body: text || "暂无内容。",
+        };
+    }
+
+    function getDocumentText(pageKey) {
+        if (splitDocumentKeys.includes(pageKey)) {
+            return String(documentEditors[pageKey]?.value || "");
+        }
+        if (pageKey === "markdown") {
+            return String(elements.singleMarkdown?.value || "");
+        }
+        if (pageKey === "json") {
+            return String(elements.jsonPayload?.value || "");
+        }
+        if (pageKey === "prompt") {
+            return String(elements.promptText?.value || "");
+        }
+        if (pageKey === "notes") {
+            return String(elements.notes?.value || "");
+        }
+        return "";
     }
 
     function bindDocumentStatusActions() {
@@ -619,6 +729,53 @@ if (bootstrap?.project_id) {
                 }
                 activateEditorPage(pageKey);
             });
+        });
+    }
+
+    function ensureAssetDetailPanel(parent, id) {
+        if (!parent) {
+            return null;
+        }
+        let panel = parent.querySelector(`#${CSS.escape(id)}`);
+        if (!panel) {
+            panel = document.createElement("section");
+            panel.id = id;
+            panel.className = "detail-panel asset-inline-detail";
+            panel.dataset.detailPanel = "";
+            parent.appendChild(panel);
+        }
+        return panel;
+    }
+
+    function bindVersionCards() {
+        const versionList = document.getElementById("asset-version-list");
+        if (!versionList) {
+            return;
+        }
+        state.versionController?.destroy?.();
+        state.versionController = createMiniCardController({
+            root: versionList.parentElement || versionList,
+            strip: versionList,
+            detailPanel: ensureAssetDetailPanel(versionList.parentElement || versionList, "asset-version-detail"),
+            selectedId: versionList.querySelector("[data-mini-card]")?.dataset.miniCardId || "",
+            getItem: (key) => {
+                const card = versionList.querySelector(`[data-mini-card-id="${CSS.escape(String(key || ""))}"]`);
+                if (!card) return null;
+                const links = Array.from(card.querySelectorAll("a"))
+                    .map((link) => link.textContent.trim())
+                    .filter(Boolean);
+                return {
+                    id: key,
+                    title: card.dataset.versionNumber || card.querySelector("strong")?.textContent || "Version",
+                    status: card.dataset.versionKind || assetKind,
+                    meta: card.dataset.versionTime || "--",
+                    facts: [
+                        { label: "类型", value: card.dataset.versionKind || assetKind },
+                        { label: "导出", value: links.join(" / ") || "download" },
+                    ],
+                    body: `发布时间：${card.dataset.versionTime || "--"}\n可用操作：${links.join(" / ") || "Download"}`,
+                };
+            },
         });
     }
 

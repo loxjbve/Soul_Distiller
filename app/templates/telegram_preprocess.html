@@ -102,6 +102,11 @@
                             <strong>等待新的 LLM 请求开始。</strong>
                         </div>
                     </div>
+                    <section
+                        id="telegram-preprocess-agent-detail"
+                        class="detail-panel telegram-preprocess-agent-detail"
+                        data-detail-panel
+                    ></section>
                 </section>
 
                 <details class="telegram-preprocess-topic-board" open>
@@ -150,6 +155,11 @@
                             </div>
                         {% endif %}
                     </div>
+                    <section
+                        id="telegram-preprocess-topic-detail"
+                        class="detail-panel telegram-preprocess-topic-detail"
+                        data-detail-panel
+                    ></section>
                 </details>
 
                 <p class="section-note telegram-preprocess-error" id="telegram-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>

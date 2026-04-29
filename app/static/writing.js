@@ -1,6 +1,7 @@
 import {
     escapeHtml,
     fetchJson,
+    createMiniCardController,
     renderMarkdownInto,
     safeParseJson,
     setButtonBusy,
@@ -30,6 +31,8 @@ if (shell) {
         selectedTurnKey: null,
         timelineTrackEl: null,
         timelineDetailEl: null,
+        timelineTooltipEl: null,
+        timelineController: null,
         sessionDetails: new Map(),
     };
 
@@ -494,6 +497,8 @@ if (shell) {
         }
         state.turnElements = new Map();
         state.emptyStateEl = null;
+        state.timelineController?.destroy?.();
+        state.timelineController = null;
         state.timelineTrackEl = null;
         state.timelineDetailEl = null;
         elements.chatList.innerHTML = "";
@@ -522,21 +527,23 @@ if (shell) {
             state.turnElements.set(key, element);
             state.timelineTrackEl.appendChild(element);
         });
+        bindTimelineController();
         renderSelectedTurnDetails();
     }
 
     function createTimelineShell() {
         const timeline = document.createElement("section");
-        timeline.className = "writing-agent-timeline";
+        timeline.className = "writing-agent-timeline mini-card-workbench";
 
         const track = document.createElement("div");
-        track.className = "writing-agent-timeline__track";
+        track.className = "writing-agent-timeline__track mini-card-strip";
         track.setAttribute("role", "list");
-        track.addEventListener("wheel", handleTimelineWheel, { passive: false });
+        track.dataset.miniCardStrip = "";
         timeline.appendChild(track);
 
         const detail = document.createElement("article");
-        detail.className = "writing-agent-timeline__detail";
+        detail.className = "writing-agent-timeline__detail detail-panel";
+        detail.dataset.detailPanel = "";
         detail.setAttribute("aria-live", "polite");
         timeline.appendChild(detail);
 
@@ -549,6 +556,8 @@ if (shell) {
         const row = document.createElement("button");
         row.type = "button";
         row.setAttribute("role", "listitem");
+        row.dataset.miniCard = "";
+        row.dataset.miniCardId = getTurnKey(turn);
 
         const node = classifyTurn(turn);
         const summary = document.createElement("div");
@@ -587,10 +596,6 @@ if (shell) {
         metricsWrap.className = "group-message__metrics";
         summary.appendChild(metricsWrap);
         row.appendChild(summary);
-        row.addEventListener("click", () => {
-            selectTurn(getTurnKey(turn));
-            centerTimelineCard(row);
-        });
         row._refs = {
             summary,
             kindChip,
@@ -614,8 +619,11 @@ if (shell) {
         }
         const node = classifyTurn(turn);
         row.className = `group-message group-message--${node.kind} group-message--status-${node.status}`;
+        row.classList.add("mini-card");
         row.classList.toggle("is-streaming", node.status === "running");
         row.classList.toggle("is-selected", getTurnKey(turn) === state.selectedTurnKey);
+        row._turn = turn;
+        row.setAttribute("aria-label", `${resolveTurnLabel(turn, node)} ${node.statusLabel} ${resolveActorName(turn)}`);
 
         refs.kindChip.textContent = node.kindLabel;
         refs.title.textContent = resolveTurnLabel(turn, node);
@@ -652,17 +660,31 @@ if (shell) {
         });
     }
 
-    function handleTimelineWheel(event) {
-        const track = event.currentTarget;
-        if (!track || track.scrollWidth <= track.clientWidth) {
-            return;
-        }
-        const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-        if (!delta) {
-            return;
-        }
-        event.preventDefault();
-        track.scrollLeft += delta;
+    function bindTimelineController() {
+        state.timelineController?.destroy?.();
+        const turnsByKey = new Map((state.currentSession?.turns || []).map((turn) => [getTurnKey(turn), turn]));
+        state.timelineController = createMiniCardController({
+            root: state.timelineTrackEl?.closest(".writing-agent-timeline"),
+            strip: state.timelineTrackEl,
+            selectedId: state.selectedTurnKey,
+            getItem: (key) => {
+                const turn = turnsByKey.get(String(key));
+                if (!turn) {
+                    return null;
+                }
+                const node = classifyTurn(turn);
+                return {
+                    id: key,
+                    title: resolveTurnLabel(turn, node),
+                    status: node.statusLabel,
+                    meta: `${resolveActorName(turn)} · ${formatMessageTime(turn.created_at)}`,
+                    facts: buildKeyFacts(turn, node).slice(0, 2),
+                };
+            },
+            onSelect: (key) => {
+                selectTurn(key);
+            },
+        });
     }
 
     function getSelectedTurn() {
@@ -859,8 +881,10 @@ if (shell) {
             const element = createTurnElement(currentTurn);
             state.turnElements.set(key, element);
             state.timelineTrackEl.appendChild(element);
+            bindTimelineController();
         }
         cacheCurrentSession();
+        state.timelineController?.select?.(state.selectedTurnKey, { center: false });
         selectTurn(state.selectedTurnKey);
         if (followStreaming) {
             const selectedElement = state.turnElements.get(state.selectedTurnKey);

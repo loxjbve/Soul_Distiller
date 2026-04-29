@@ -1,7 +1,9 @@
 import {
     clampPercent,
+    createMiniCardController,
     escapeHtml,
     fetchJson,
+    renderMiniCardDetail,
     safeParseJson,
     setStatusTone,
     updateText,
@@ -19,6 +21,8 @@ if (bootstrap?.project_id) {
         pollTimer: null,
         hoverDocId: "",
         hoverPointer: null,
+        pinnedDocId: "",
+        documentController: null,
     };
 
     const elements = {
@@ -49,6 +53,7 @@ if (bootstrap?.project_id) {
         hovercardTitle: document.getElementById("stone-hovercard-title"),
         hovercardStatus: document.getElementById("stone-hovercard-status"),
         hovercardBody: document.getElementById("stone-hovercard-body"),
+        documentDetail: document.getElementById("stone-preprocess-document-detail"),
         startButton: document.querySelector(".stone-preprocess-start-form__submit"),
         concurrencyInput: document.querySelector('.stone-preprocess-start-form input[name="concurrency"]'),
     };
@@ -84,6 +89,9 @@ if (bootstrap?.project_id) {
         });
 
         elements.topicLamps?.addEventListener("mouseout", (event) => {
+            if (state.pinnedDocId) {
+                return;
+            }
             const currentCard = findLampCard(event.target);
             if (!(currentCard instanceof HTMLElement)) {
                 return;
@@ -93,6 +101,23 @@ if (bootstrap?.project_id) {
                 return;
             }
             hideHovercard();
+        });
+
+        elements.topicLamps?.addEventListener("click", (event) => {
+            const card = findLampCard(event.target);
+            if (!(card instanceof HTMLElement)) {
+                return;
+            }
+            const docId = String(card.dataset.docId || "");
+            state.pinnedDocId = state.pinnedDocId === docId ? "" : docId;
+            elements.topicLamps.querySelectorAll(".stone-agent-lamp").forEach((item) => {
+                item.classList.toggle("is-selected", item === card && Boolean(state.pinnedDocId));
+            });
+            if (state.pinnedDocId) {
+                showHovercardForCard(card, event);
+            } else {
+                hideHovercard();
+            }
         });
 
         elements.topicLamps?.addEventListener("focusin", (event) => {
@@ -273,6 +298,8 @@ if (bootstrap?.project_id) {
         if (!elements.topicLamps) {
             return;
         }
+        state.documentController?.destroy?.();
+        state.documentController = null;
         if (!documents.length) {
             elements.topicLamps.innerHTML = `
                 <div class="empty-panel stone-empty-panel">
@@ -283,7 +310,53 @@ if (bootstrap?.project_id) {
             hideHovercard();
             return;
         }
+        elements.topicLamps.classList.add("mini-card-strip");
+        elements.topicLamps.dataset.miniCardStrip = "";
         elements.topicLamps.innerHTML = documents.map((doc) => renderDocumentCard(doc)).join("");
+        state.documentController = createMiniCardController({
+            root: elements.topicLamps.parentElement || elements.topicLamps,
+            strip: elements.topicLamps,
+            detailPanel: elements.documentDetail,
+            selectedId: state.pinnedDocId || String(documents[0]?.id || ""),
+            getItem: (key) => buildDocumentDetailItem(getDocumentById(key)),
+            renderDetail: renderDocumentDetail,
+            onSelect: (key) => {
+                state.pinnedDocId = key;
+                hideHovercard();
+            },
+        });
+    }
+
+    function buildDocumentDetailItem(doc) {
+        if (!doc) {
+            return null;
+        }
+        const profile = doc.stone_profile_v3 || {};
+        const status = String(doc.lamp_status || deriveLampStatus(doc));
+        return {
+            id: String(doc.id || ""),
+            title: doc.title || doc.filename || `文章 ${doc.document_index || ""}`,
+            status: buildStatusLabel(status),
+            meta: doc.filename || `#${doc.document_index || "--"}`,
+            facts: [
+                { label: "序号", value: String(doc.document_index || "--") },
+                { label: "长度", value: profile.length_band || "--" },
+                { label: "语气", value: profile.surface_form || "--" },
+                { label: "类型", value: profile.prototype_family || "--" },
+            ],
+            body: buildDocumentPreview(doc),
+            raw: doc.raw_text || doc.text || "",
+        };
+    }
+
+    function renderDocumentDetail(panel, item) {
+        if (!panel || !item) {
+            return;
+        }
+        renderMiniCardDetail(panel, {
+            ...item,
+            body: [item.body, item.raw ? `\n原文\n${item.raw}` : ""].filter(Boolean).join("\n\n"),
+        });
     }
 
     function renderDocumentCard(doc) {
@@ -300,7 +373,9 @@ if (bootstrap?.project_id) {
 
         return `
             <article
-                class="stone-agent-lamp status-${escapeHtml(status)}${status === "running" ? " is-live" : ""}"
+                class="stone-agent-lamp mini-card status-${escapeHtml(status)}${status === "running" ? " is-live" : ""}${state.pinnedDocId === String(doc.id || "") ? " is-selected" : ""}"
+                data-mini-card
+                data-mini-card-id="${escapeHtml(doc.id || "")}"
                 data-doc-id="${escapeHtml(doc.id || "")}"
                 data-doc-index="${escapeHtml(String(doc.document_index || 0))}"
                 data-has-profile="${doc.has_profile ? "true" : "false"}"
@@ -309,10 +384,10 @@ if (bootstrap?.project_id) {
                 <span class="stone-agent-lamp__dot" aria-hidden="true"></span>
                 <div class="stone-agent-lamp__body">
                     <div class="stone-agent-lamp__head">
-                        <strong>${escapeHtml(doc.title || doc.filename || `文章 ${doc.document_index || ""}`)}</strong>
+                        <strong class="mini-card__title">${escapeHtml(doc.title || doc.filename || `文章 ${doc.document_index || ""}`)}</strong>
                         <span class="stone-agent-lamp__index">${String(doc.document_index || 0).padStart(2, "0")}</span>
                     </div>
-                    <small>${escapeHtml(doc.filename || "")}</small>
+                    <small class="mini-card__meta">${escapeHtml(status)}</small>
                     ${metaTags.length ? `<div class="stone-agent-lamp__meta">${metaTags.map((tag) => `<span class="stone-agent-lamp__tag">${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
                     <p class="stone-agent-lamp__preview">${escapeHtml(buildDocumentPreview(doc))}</p>
                 </div>

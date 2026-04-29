@@ -219,6 +219,11 @@
                         </div>
                     {% endif %}
                 </div>
+                <section
+                    id="stone-preprocess-document-detail"
+                    class="detail-panel stone-preprocess-document-detail"
+                    data-detail-panel
+                ></section>
 
                 <p class="section-note stone-preprocess-error" id="stone-preprocess-error" {% if not selected_run_data or not selected_run_data.error_message %}hidden{% endif %}>
                     {{ selected_run_data.error_message if selected_run_data else "" }}

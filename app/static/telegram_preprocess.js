@@ -1,8 +1,10 @@
 import {
     clampPercent,
+    createMiniCardController,
+    escapeHtml,
     fetchJson,
     formatDateTime,
-    openModal,
+    renderMiniCardDetail,
     safeParseJson,
     setStatusTone,
     updateText,
@@ -25,6 +27,8 @@ if (bootstrap?.project_id) {
         traceEventKeys: new Set(),
         traceTracks: [],
         selectedTrackId: "",
+        traceController: null,
+        topicController: null,
     };
 
     const elements = {
@@ -40,6 +44,7 @@ if (bootstrap?.project_id) {
         inputTokenChip: document.getElementById("telegram-preprocess-input-token-chip"),
         outputTokenChip: document.getElementById("telegram-preprocess-output-token-chip"),
         topicLamps: document.getElementById("telegram-preprocess-topic-lamps"),
+        topicDetail: document.getElementById("telegram-preprocess-topic-detail"),
         error: document.getElementById("telegram-preprocess-error"),
         agentNote: document.getElementById("telegram-preprocess-agent-note"),
         agentList: document.getElementById("telegram-preprocess-agent-list"),
@@ -47,6 +52,7 @@ if (bootstrap?.project_id) {
         agentModalTitle: document.getElementById("telegram-preprocess-agent-modal-title"),
         agentModalNote: document.getElementById("telegram-preprocess-agent-modal-note"),
         agentModalBody: document.getElementById("telegram-preprocess-agent-modal-body"),
+        agentDetail: document.getElementById("telegram-preprocess-agent-detail"),
     };
 
     bindEvents();
@@ -221,6 +227,8 @@ if (bootstrap?.project_id) {
         if (!elements.topicLamps) {
             return;
         }
+        state.topicController?.destroy?.();
+        state.topicController = null;
         elements.topicLamps.innerHTML = "";
         if (!items.length) {
             const empty = document.createElement("div");
@@ -229,18 +237,44 @@ if (bootstrap?.project_id) {
             elements.topicLamps.appendChild(empty);
             return;
         }
+        elements.topicLamps.classList.add("mini-card-strip");
+        elements.topicLamps.dataset.miniCardStrip = "";
         items.forEach((item) => {
             const lamp = document.createElement("article");
-            lamp.className = `telegram-topic-lamp status-${item.status}${item.current ? " is-current" : ""}`;
+            lamp.className = `telegram-topic-lamp mini-card status-${item.status}${item.current ? " is-current is-selected" : ""}`;
+            lamp.dataset.miniCard = "";
+            lamp.dataset.miniCardId = String(item.index);
             lamp.innerHTML = `
                 <span class="telegram-topic-lamp__dot" aria-hidden="true"></span>
                 <div class="telegram-topic-lamp__body">
-                    <strong>${escapeHtml(item.label)}</strong>
-                    <small>${escapeHtml(item.meta)}</small>
+                    <strong class="mini-card__title">${escapeHtml(item.label)}</strong>
+                    <small class="mini-card__meta">${escapeHtml(item.meta)}</small>
                 </div>
                 <span class="telegram-topic-lamp__index">${String(item.index).padStart(2, "0")}</span>
             `;
             elements.topicLamps.appendChild(lamp);
+        });
+        const selected = items.find((item) => item.current) || items.find((item) => item.status === "completed") || items[0];
+        state.topicController = createMiniCardController({
+            root: elements.topicLamps.parentElement || elements.topicLamps,
+            strip: elements.topicLamps,
+            detailPanel: elements.topicDetail,
+            selectedId: selected ? String(selected.index) : "",
+            getItem: (key) => {
+                const topic = items.find((item) => String(item.index) === String(key));
+                if (!topic) return null;
+                return {
+                    id: String(topic.index),
+                    title: topic.label,
+                    status: traceStatusLabel(topic.status),
+                    meta: topic.meta || `Topic ${topic.index}`,
+                    facts: [
+                        { label: "序号", value: String(topic.index).padStart(2, "0") },
+                        { label: "状态", value: traceStatusLabel(topic.status) },
+                    ],
+                    body: topic.meta || "暂无摘要。",
+                };
+            },
         });
     }
 
@@ -248,6 +282,8 @@ if (bootstrap?.project_id) {
         if (!elements.agentList) {
             return;
         }
+        state.traceController?.destroy?.();
+        state.traceController = null;
         const tracks = buildTraceTracks();
         state.traceTracks = tracks;
 
@@ -274,10 +310,65 @@ if (bootstrap?.project_id) {
             return;
         }
 
+        elements.agentList.classList.add("mini-card-strip");
+        elements.agentList.dataset.miniCardStrip = "";
         elements.agentList.innerHTML = tracks.map((track) => renderTraceTrackCard(track)).join("");
+        state.traceController = createMiniCardController({
+            root: elements.agentList.parentElement || elements.agentList,
+            strip: elements.agentList,
+            detailPanel: elements.agentDetail,
+            selectedId: state.selectedTrackId,
+            getItem: (key) => {
+                const track = state.traceTracks.find((item) => String(item.id) === String(key));
+                if (!track) {
+                    return null;
+                }
+                return {
+                    id: key,
+                    title: track.label,
+                    status: traceStatusLabel(track.status),
+                    meta: [track.modeLabel, track.stageLabel].filter(Boolean).join(" · "),
+                    facts: [
+                        { label: "事件", value: `${track.events.length}` },
+                        { label: "请求", value: track.requestKey || track.agent || "--" },
+                    ],
+                    body: track.liveText || track.responsePreview || track.message || track.promptPreview || "Waiting for streamed content.",
+                };
+            },
+            renderDetail: renderTraceDetailPanel,
+            onSelect: (key) => {
+                state.selectedTrackId = key;
+                renderTraceModal();
+            },
+        });
         if (isModalOpen(elements.agentModal)) {
             renderTraceModal();
         }
+    }
+
+    function renderTraceDetailPanel(panel, item) {
+        const track = state.traceTracks.find((candidate) => String(candidate.id) === String(item?.id || ""));
+        if (!panel || !track) {
+            renderMiniCardDetail(panel, item);
+            return;
+        }
+        const latestContent = track.liveText || track.responsePreview || track.promptPreview || track.message || "Waiting for streamed content.";
+        panel.innerHTML = `
+            <div class="detail-panel__head">
+                <div>
+                    <span class="status-chip ${traceStatusTone(track.status)}">${escapeHtml(traceStatusLabel(track.status))}</span>
+                    <h3>${escapeHtml(track.label)}</h3>
+                </div>
+                <span class="detail-panel__meta">${escapeHtml(track.updatedAt ? formatDateTime(track.updatedAt) : track.stageLabel || "--")}</span>
+            </div>
+            <div class="fact-grid">
+                <article class="fact-card"><span>模式</span><strong>${escapeHtml(track.modeLabel || "--")}</strong></article>
+                <article class="fact-card"><span>阶段</span><strong>${escapeHtml(track.stageLabel || "--")}</strong></article>
+                <article class="fact-card"><span>事件</span><strong>${escapeHtml(String(track.events.length))}</strong></article>
+                <article class="fact-card"><span>请求</span><strong>${escapeHtml(track.requestKey || track.agent || "--")}</strong></article>
+            </div>
+            <div class="source-text-panel">${escapeHtml(latestContent)}</div>
+        `;
     }
 
     function renderTraceTrackCard(track) {
@@ -292,16 +383,18 @@ if (bootstrap?.project_id) {
         return `
             <button
                 type="button"
-                class="telegram-agent-lamp status-${escapeHtml(track.status)}${isActive ? " is-live" : ""}"
+                class="telegram-agent-lamp mini-card status-${escapeHtml(track.status)}${isActive ? " is-live" : ""}"
+                data-mini-card
+                data-mini-card-id="${escapeHtml(track.id)}"
                 data-trace-track="${escapeHtml(track.id)}"
             >
                 <span class="telegram-agent-lamp__dot" aria-hidden="true"></span>
                 <div class="telegram-agent-lamp__body">
                     <div class="telegram-agent-lamp__head">
-                        <strong>${escapeHtml(track.label)}</strong>
+                        <strong class="mini-card__title">${escapeHtml(track.label)}</strong>
                         <span class="status-chip ${traceStatusTone(track.status)}">${escapeHtml(traceStatusLabel(track.status))}</span>
                     </div>
-                    <small>${escapeHtml(metaParts.join(" · "))}</small>
+                    <small class="mini-card__meta">${escapeHtml(traceStatusLabel(track.status))}</small>
                     <p>${escapeHtml(preview)}</p>
                 </div>
             </button>

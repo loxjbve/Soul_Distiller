@@ -313,14 +313,19 @@
 
 .page-telegram-preprocess .telegram-preprocess-topic-lamps {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
     gap: 8px;
     flex: 1 1 auto;
     min-height: 0;
-    max-height: clamp(280px, 42vh, 560px);
-    overflow: auto;
+    max-height: min(34vh, 300px);
+    overflow-x: hidden;
+    overflow-y: auto;
     align-content: start;
     padding-right: 4px;
+}
+
+.page-telegram-preprocess .telegram-preprocess-agent-detail {
+    margin-top: 12px;
 }
 
 .page-telegram-preprocess .telegram-topic-lamp {
