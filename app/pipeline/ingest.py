@@ -269,6 +269,7 @@ class DocumentIngestService:
         source_map = {
             ".json": "json",
             ".jsonl": "jsonl",
+            ".csv": "csv",
             ".txt": "text",
             ".md": "markdown",
             ".log": "log",

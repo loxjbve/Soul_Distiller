@@ -26,7 +26,8 @@ def analyze_facet_with_llm(
     config = ServiceConfig(**llm_config)
     client = OpenAICompatibleClient(config, log_path=llm_log_path)
     excerpt_text = "\n\n".join(
-        f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}\n{chunk['content'][:900]}"
+        f"[{chunk['chunk_id']}] {chunk['document_title']} / {chunk['filename']}"
+        f"{_chunk_metadata_line(chunk)}\n{chunk['content'][:900]}"
         for chunk in chunks
     )
     messages = build_facet_analysis_messages(
@@ -36,6 +37,7 @@ def analyze_facet_with_llm(
         target_role=target_role,
         analysis_context=analysis_context,
     )
+
     endpoint_path = "/responses" if normalize_api_mode(config.api_mode) == "responses" else "/chat/completions"
     request_payload: dict[str, Any] = {
         "messages": messages,
@@ -105,3 +107,18 @@ def analyze_facet_with_llm(
         request_url=getattr(last_error, "request_url", None),
         request_payload=getattr(last_error, "request_payload", None),
     )
+
+
+def _chunk_metadata_line(chunk: dict[str, Any]) -> str:
+    metadata = dict(chunk.get("metadata") or {})
+    fields = {
+        "channel": metadata.get("channel"),
+        "date": metadata.get("date") or metadata.get("sent_at") or metadata.get("approx_date"),
+        "confidence": metadata.get("confidence"),
+        "scope": metadata.get("scope"),
+        "speaker": metadata.get("speaker") or metadata.get("sender_name"),
+        "message_id": metadata.get("message_id"),
+        "source_format": metadata.get("source_format"),
+    }
+    parts = [f"{key}={value}" for key, value in fields.items() if str(value or "").strip()]
+    return f"\nmetadata: {'; '.join(parts)}" if parts else ""

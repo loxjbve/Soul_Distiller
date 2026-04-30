@@ -41,6 +41,7 @@ from app.models import (
     utcnow,
 )
 from app.db import Database
+from app.persona_plus import get_persona_role_from_metadata, is_persona_mode
 from app.retrieval.service import RetrievalService
 from app.schemas import (
     DEFAULT_ANALYSIS_CONCURRENCY,

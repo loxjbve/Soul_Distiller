@@ -211,6 +211,7 @@ class IngestTaskManager:
         try:
             with self.db.session() as session:
                 project = repository.get_project(session, task.project_id)
+                project_mode = project.mode if project else None
             if project and project.mode == "telegram":
                 self._process_telegram_document(task, content)
                 self._update_task(task, status=TaskStage.STORING, progress_percent=90)
@@ -226,7 +227,7 @@ class IngestTaskManager:
                 self._update_task(task, status=TaskStage.COMPLETED, progress_percent=100, finished_at=utcnow().isoformat())
                 return
             if task.is_cancelled: return
-            result = extract_text(task.filename, content)
+            result = extract_text(task.filename, content, mode=project_mode)
             self._update_task(task, status=TaskStage.CHUNKING, progress_percent=40)
             if task.is_cancelled: return
             self._process_chunks(task, result)

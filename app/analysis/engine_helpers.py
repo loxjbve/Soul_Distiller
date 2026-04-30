@@ -79,6 +79,26 @@ def _collapse_whitespace(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def _source_metadata_fields(source: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(source.get("metadata") or {})
+    fields = {
+        "channel": metadata.get("channel"),
+        "date": metadata.get("date"),
+        "approx_date": metadata.get("approx_date"),
+        "confidence": metadata.get("confidence"),
+        "scope": metadata.get("scope"),
+        "speaker": metadata.get("speaker") or metadata.get("sender_name"),
+        "sender_name": metadata.get("sender_name") or metadata.get("speaker"),
+        "sent_at": metadata.get("sent_at") or metadata.get("date"),
+        "message_id": metadata.get("message_id"),
+        "source_format": metadata.get("source_format"),
+    }
+    clean_fields = {key: value for key, value in fields.items() if str(value or "").strip()}
+    if metadata:
+        clean_fields["metadata"] = metadata
+    return clean_fields
+
+
 def _strip_persona_card_label(text: str) -> tuple[str | None, str]:
     for label in GLOBAL_PERSONA_CARD_LABELS:
         for separator in ("：", ":", "-", " - "):
@@ -191,6 +211,7 @@ def _analyze_heuristically(
             "document_title": chunk["document_title"],
             "filename": chunk["filename"],
             "page_number": chunk["page_number"],
+            **_source_metadata_fields(chunk),
         }
         for chunk in chunks[:FACET_EVIDENCE_LIMIT]
     ]
@@ -243,6 +264,7 @@ def _normalize_facet_payload(
                 "document_title": source["document_title"],
                 "filename": source["filename"],
                 "page_number": source["page_number"],
+                **_source_metadata_fields(source),
             }
         )
     seen = {item["chunk_id"] for item in evidence}
@@ -261,6 +283,7 @@ def _normalize_facet_payload(
                 "document_title": chunk["document_title"],
                 "filename": chunk["filename"],
                 "page_number": chunk["page_number"],
+                **_source_metadata_fields(chunk),
             }
         )
         seen.add(chunk["chunk_id"])
